@@ -1,0 +1,73 @@
+# reflected_operators.ar — 演算子メソッドの反対側（`__radd__` など）と `NotImplemented`（python_builtins_plan.md のタスク 6-12）
+#
+# 二項演算子は CPython と同じ手順で演算子メソッドを探す:
+#   1. 左の演算子メソッド（`a + b` なら `a.__add__(b)`）
+#   2. それが無いか `NotImplemented` を返したら、右の反対側のメソッド（`b.__radd__(a)`）。比較は向きを
+#      入れ替えた名前（`a < b` の右は `b.__gt__(a)`）、`==` / `!=` は同じ名前
+#   3. 両方とも駄目なら、`==` / `!=` は同一性、ほかは `TypeError`（CPython と同じ文言）
+# `!=` は `__ne__` が無ければ `__eq__` の結果の反対。左が組み込みの値（`2 * v`）でも右の反対側を試す。
+#
+# ⚠ 以前は左の演算子メソッドだけを呼び、`2 * v` は `__rmul__` があっても `TypeError` だった。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/classes/reflected_operators.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+class Vec:
+    mut x: int
+    mut y: int
+
+    fn __add__(self, other: Any) -> Any:
+        if other is Vec:
+            return Vec(self.x + other.x, self.y + other.y)
+        return NotImplemented
+
+    fn __mul__(self, k: Any) -> Any:
+        if k is int:
+            return Vec(self.x * k, self.y * k)
+        return NotImplemented
+
+    fn __rmul__(self, k: Any) -> Any:
+        return self.__mul__(k)
+
+    fn __eq__(self, other: Any) -> Any:
+        if other is Vec:
+            return self.x == other.x and self.y == other.y
+        return NotImplemented
+
+    fn __repr__(self) -> str:
+        return f"Vec({self.x}, {self.y})"
+
+class Celsius:
+    mut deg: float
+
+    fn __gt__(self, other: Any) -> Any:
+        if other is float:
+            return self.deg > other
+        return NotImplemented
+
+let v = Vec(1, 2)
+emit([str(v + Vec(3, 4)), str(v * 3), str(3 * v)])
+# Vec(4, 6) Vec(3, 6) Vec(3, 6)
+emit([str(v == Vec(1, 2)), str(v != Vec(1, 2)), str(v != Vec(9, 9))])
+# True False True
+let t = Celsius(30.5)
+emit([str(t > 20.0), str(20.0 < t)])
+# True True
+
+# 両方とも NotImplemented なら TypeError（CPython と同じ文言）
+mut msg = ""
+try:
+    let w = v + 1
+except TypeError as e:
+    msg = str(e)
+emit([str(msg)])
+# unsupported operand type(s) for +: 'Vec' and 'int'
+
+# ── 出力を照らす ──
+check_output([
+    "Vec(4, 6) Vec(3, 6) Vec(3, 6)",
+    "True False True",
+    "True True",
+    "unsupported operand type(s) for +: 'Vec' and 'int'",
+    "",
+], "reflected_operators")

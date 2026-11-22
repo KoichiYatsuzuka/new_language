@@ -116,10 +116,16 @@ function Test-GateResult($Result) {
     $err = Read-GateText $Result.ErrPath
     if ($err -match 'Warning: compiled module .* is out of date') { $reasons += 'a compiled module (.arc) was out of date and the source ran instead (README 5)' }
     foreach ($e in $exp.Errors) { $reasons += $e }
-    $isErrorName = ([IO.Path]::GetFileNameWithoutExtension($Result.File) -match '_error$')
+    $stem = [IO.Path]::GetFileNameWithoutExtension($Result.File)
+    $isErrorName = ($stem -match '_error$')
+    $isWarnName = ($stem -match '_warning$')
     $hasExp = ($exp.Items.Count -gt 0)
+    # 警告だけを期待するテスト（`_warning`）は最後まで走る（警告は実行を止めない・README 3.4）
+    $warnOnly = $hasExp -and (@($exp.Items | Where-Object { $_.Stage -ne 'warning' }).Count -eq 0)
     if ($isErrorName -and -not $hasExp) { $reasons += 'the name ends with _error but there is no expectation (README 1)' }
-    if ($hasExp -and -not $isErrorName) { $reasons += 'there are expectations but the name does not end with _error (README 1)' }
+    if ($isWarnName -and -not $hasExp) { $reasons += 'the name ends with _warning but there is no expectation (README 1)' }
+    if ($hasExp -and $warnOnly -and -not $isWarnName) { $reasons += 'only warnings are expected but the name does not end with _warning (README 3.4)' }
+    if ($hasExp -and -not $warnOnly -and -not $isErrorName) { $reasons += 'errors are expected but the name does not end with _error (README 1)' }
 
     if (-not $hasExp) {
         if ($Result.Exit -ne 0 -or $diags.Count -gt 0) {
@@ -132,7 +138,9 @@ function Test-GateResult($Result) {
         return [pscustomobject]@{ Pass = ($reasons.Count -eq 0); Status = $(if ($reasons.Count -eq 0) { 'PASS' } else { 'FAILED' }); Reasons = $reasons }
     }
 
-    if ($Result.Exit -eq 0) { $reasons += 'exit 0: the forbidden code was accepted (expected it to stop)' }
+    if ($warnOnly) {
+        if ($Result.Exit -ne 0) { $reasons += "exit $($Result.Exit): a test that expects only warnings must run to the end (README 3.4)" }
+    } elseif ($Result.Exit -eq 0) { $reasons += 'exit 0: the forbidden code was accepted (expected it to stop)' }
     # 期待と診断の対応付け（断片のある期待から先に取る）
     $left = New-Object System.Collections.Generic.List[object]
     foreach ($d in $diags) { $left.Add([pscustomobject]@{ D = $d; Line = (Get-GateDiagLine $d $Result.File) }) }

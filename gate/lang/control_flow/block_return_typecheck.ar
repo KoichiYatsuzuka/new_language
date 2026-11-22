@@ -1,0 +1,96 @@
+# block_return_typecheck.ar — block_return / loop_yield の型検査（#35・タスク 5.2）
+#
+# `->T` アノテーションを持つブロック式では、`block_return` の値の型が検査される。
+# `->list[T]` の for/while 式では `loop_yield` の値が要素型 T に対して検査される。
+#
+# ⚠ タスク 5.2 で**静的検査が加わった**（以前は実行時だけ）。実行時検査は残してある。
+# ⚠⚠ **この例題がその静的検査の仕様を固定している。** 下の「6. 内側の注釈が効く」は、
+#    `block_return` と `loop_yield` の照合先を**別のスタックで持ってはいけない**ことを
+#    示す唯一の網（分けると内側の `->int` を貫いて外側の `list[int]` に届き偽エラーになる）。
+#
+# ⚠ 長らく **`--vm=off` にしか無い検査**で、VM 経路は素通りしていた（#35）。
+#    この例題が検知の唯一の網なので、削ると off/on の食い違いが再発しても分からない。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/block_return_typecheck.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 1. block_return that matches the annotation ===")])
+let a = block ->int:
+    block_return 7
+emit([str(a)])                          # 7
+
+emit([str("=== 2. block_return inside an if expression ===")])
+let b = if True ->str:
+    block_return "ok"
+else:
+    block_return "no"
+emit([str(b)])                          # ok
+
+emit([str("=== 3. block_return inside a match expression ===")])
+let c = match 1 ->str:
+    case 1:
+        block_return "one"
+    case _:
+        block_return "other"
+emit([str(c)])                          # one
+
+emit([str("=== 4. loop_yield matching the element type ===")])
+let d = for i in range(3) ->list[int]:
+    loop_yield i
+emit([str(d)])                          # [0, 1, 2]
+
+emit([str("=== 5. `->list[Any]` imposes no element type ===")])
+# ⚠ タスク 8.1（案 A）で**素の `->list` は書けなくなった**。要素型を問わないことを
+#   示すには `Any` と**明示**する。素の `list` と違い、`Any` は取り出して演算した
+#   瞬間に静的エラーになるので「黙って検査が消える」ことがない。
+let e = for i in range(3) ->list[Any]:
+    loop_yield "any"
+emit([str(e)])                          # ['any', 'any', 'any']
+
+emit([str("=== 6. the innermost annotation is the one that applies ===")])
+# 内側の if 式の注釈は `->int` なので list[T] ではなく、loop_yield は検査されない
+let f = for i in range(4) ->list[int]:
+    let _ = if i == 1 ->int:
+        loop_yield "not checked here"
+        block_return 0
+    else:
+        0
+    loop_yield i
+emit([str(f)])                          # [0, 'not checked here', 1, 2, 3]
+
+emit([str("=== 7. a block: statement uses the enclosing annotation ===")])
+let g = block ->int:
+    block:
+        # ここの block_return は外側の `->int` に対して検査される
+        block_return 5
+    block_return 1
+emit([str(g)])                          # 1
+
+emit([str("=== 8. a block: statement is transparent to loop_yield ===")])
+# `block:` **文**は蓄積先を持たない。中の loop_yield は外側の for/while 式へ届く。
+# ⚠ ここを「文が蓄積先を持つ」実装にすると値が吸い込まれて None になる（#35 で踏んだ）。
+let h = for i in range(3) ->list[int]:
+    block:
+        loop_yield i
+emit([str(h)])                          # [0, 1, 2]
+
+# ── 出力を照らす ──
+check_output([
+    "=== 1. block_return that matches the annotation ===",
+    "7",
+    "=== 2. block_return inside an if expression ===",
+    "ok",
+    "=== 3. block_return inside a match expression ===",
+    "one",
+    "=== 4. loop_yield matching the element type ===",
+    "[0, 1, 2]",
+    "=== 5. `->list[Any]` imposes no element type ===",
+    "['any', 'any', 'any']",
+    "=== 6. the innermost annotation is the one that applies ===",
+    "[0, 'not checked here', 1, 2, 3]",
+    "=== 7. a block: statement uses the enclosing annotation ===",
+    "1",
+    "=== 8. a block: statement is transparent to loop_yield ===",
+    "[0, 1, 2]",
+    "",
+], "block_return_typecheck")

@@ -1,0 +1,167 @@
+# try_finally_escape.ar — finally を跨ぐ脱出（return / break / continue / block_return）（#37）
+#
+# `finally` は**全ての出口**で走る。try 本体から `return` / `break` / `continue` /
+# `block_return` で抜けるときも、跳ぶ前に finally 本体が実行される。
+# 入れ子なら**内側の finally から**順に走る。
+#
+# ⚠ ここは長らく VM が丸ごと bail していた領域（#37）。この例題が唯一の網なので削らないこと。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/exceptions/try_finally_escape.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 1. return through finally ===")])
+fn ret() -> int:
+    try:
+        return 1
+    finally:
+        emit([str("fin")])
+emit([str(ret())])                      # fin / 1
+
+emit([str("=== 2. return through except + finally ===")])
+fn ret_exc() -> int:
+    try:
+        raise ValueError("x")
+    except ValueError:
+        return 9
+    finally:
+        emit([str("fin")])
+emit([str(ret_exc())])                  # fin / 9
+
+emit([str("=== 3. nested finally runs innermost first ===")])
+fn ret_nested() -> int:
+    try:
+        try:
+            return 1
+        finally:
+            emit([str("inner")])
+    finally:
+        emit([str("outer")])
+emit([str(ret_nested())])               # inner / outer / 1
+
+emit([str("=== 4. break through finally ===")])
+mut r = -1
+for i in range(4):
+    try:
+        if i == 2:
+            break
+        r = i
+    finally:
+        emit([str("fin " + str(i))])
+emit([str(r)])                          # fin 0 / fin 1 / fin 2 / 1
+
+emit([str("=== 5. continue through finally ===")])
+mut s = 0
+for i in range(4):
+    try:
+        if i < 2:
+            continue
+        s = s + i
+    finally:
+        emit([str("c " + str(i))])
+emit([str(s)])                          # 5
+
+emit([str("=== 6. break through nested finallys ===")])
+mut t = -1
+for i in range(3):
+    try:
+        try:
+            if i == 2:
+                break
+            t = i
+        finally:
+            emit([str("in " + str(i))])
+    finally:
+        emit([str("out " + str(i))])
+emit([str(t)])                          # 1
+
+emit([str("=== 7. block_return through finally ===")])
+let b = block ->int:
+    try:
+        block_return 7
+    finally:
+        emit([str("bfin")])
+emit([str(b)])                          # bfin / 7
+
+emit([str("=== 8. loop_yield does not escape (the try body just continues) ===")])
+let y = for i in range(3) ->list[int]:
+    try:
+        loop_yield i
+    finally:
+        emit([str("yfin")])
+emit([str(y)])                          # yfin x3 / [0, 1, 2]
+
+emit([str("=== 9. return from a loop inside a try/finally ===")])
+fn scan() -> int:
+    try:
+        for i in range(5):
+            if i == 3:
+                return i
+        return -1
+    finally:
+        emit([str("sfin")])
+emit([str(scan())])                     # sfin / 3
+
+emit([str("=== 10. break out of a try does not leave the handler behind ===")])
+fn esc() -> int:
+    for i in range(3):
+        try:
+            if i == 1:
+                break
+        finally:
+            emit([str("efin " + str(i))])
+    # ループの try は既に抜けているので、この raise は外側で捕まらねばならない
+    raise ValueError("must escape")
+    return 0
+try:
+    emit([str(esc())])
+except ValueError:
+    emit([str("caught outside")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== 1. return through finally ===",
+    "fin",
+    "1",
+    "=== 2. return through except + finally ===",
+    "fin",
+    "9",
+    "=== 3. nested finally runs innermost first ===",
+    "inner",
+    "outer",
+    "1",
+    "=== 4. break through finally ===",
+    "fin 0",
+    "fin 1",
+    "fin 2",
+    "1",
+    "=== 5. continue through finally ===",
+    "c 0",
+    "c 1",
+    "c 2",
+    "c 3",
+    "5",
+    "=== 6. break through nested finallys ===",
+    "in 0",
+    "out 0",
+    "in 1",
+    "out 1",
+    "in 2",
+    "out 2",
+    "1",
+    "=== 7. block_return through finally ===",
+    "bfin",
+    "7",
+    "=== 8. loop_yield does not escape (the try body just continues) ===",
+    "yfin",
+    "yfin",
+    "yfin",
+    "[0, 1, 2]",
+    "=== 9. return from a loop inside a try/finally ===",
+    "sfin",
+    "3",
+    "=== 10. break out of a try does not leave the handler behind ===",
+    "efin 0",
+    "efin 1",
+    "caught outside",
+    "",
+], "try_finally_escape")

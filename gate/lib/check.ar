@@ -21,3 +21,35 @@ fn check(let cond: bool, let what: str) -> None:
 # 必ず止める（ここに来たら誤り、という場所に置く）。⚠ `try` の中には置かない（README の 2.1）。
 fn fail(let what: str) -> None:
     raise GateCheckFailed(what)
+
+# ── 出力を貯めて照らす（README の 2.2）─────────────────────────────────────
+# `print` の代わりに `emit([str(a), str(b)], sep=.., end=..)` で貯め、`check_output([行, …], 説明)` で照らす。
+# `print` と同じく、値の間に sep（既定は空白 1 つ）、最後に end（既定は改行）を置く。None なら既定。
+mut _emitted = ""
+
+fn emit(let parts: list[str], let sep: Union[str, None] = None, let end: Union[str, None] = None) -> None:
+    mut s = " "
+    if sep is not None:
+        s = sep
+    mut e = "\n"
+    if end is not None:
+        e = end
+    _emitted = _emitted + s.join(parts) + e
+
+# 貯めた出力を改行で分けた行の並びが `lines` と同じでなければ止める（最初に違う行の番号と両方の行を文面に入れる）。
+# 出力が改行で終わるときは、最後の要素が "" になる。照らした後は貯めた出力を空にする。
+fn check_output(let lines: list[str], let what: str) -> None:
+    let got = _emitted.split("\n")
+    _emitted = ""
+    mut n = 0
+    while n < len(got) and n < len(lines):
+        if not (got[n] == lines[n]):
+            raise GateCheckFailed(what + ": output line " + str(n + 1) + ": expected " + repr(lines[n]) + ", got " + repr(got[n]))
+        n += 1
+    if not (len(got) == len(lines)):
+        mut extra = ""
+        if n < len(got):
+            extra = got[n]
+        else:
+            extra = lines[n]
+        raise GateCheckFailed(what + ": expected " + str(len(lines)) + " output line(s), got " + str(len(got)) + " (first extra: " + repr(extra) + ")")

@@ -1,0 +1,52 @@
+# builtin_args.ar — 組み込み関数の引数を宣言（src/built_in_stab/builtins.ars）で検査する
+#
+# ## 何が壊れていたか
+#
+# 型検査器が引数を検査していた組み込みは `range` / `len` だけで、`open("a.txt", 1)` /
+# `close("x")` / `repr(1, 2)` などは実行時まで通っていた。
+# ⇒ builtins.ars の仮引数（名前・順番・型・既定値）で、個数・キーワード引数の名前・型を検査する。
+#   `print` / `zip` は `let ...: Any`（個数自由の位置引数・キーワード引数は取らない）。
+#
+# 弾かれる例は builtin_args_error.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/builtin_args.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== open は宣言どおりの引数（キーワード引数の名前も実行時と同じ） ===")])
+
+let f = open("builtin_args.ar", FileOpenMode.read, StartPoint.top, encoding = Encoding.UTF_8)
+emit([str(len(f.read_line()) > 0)])       # True
+close(f)
+
+let g = open(Path("builtin_args.ar"), FileOpenMode.read)   # Path も渡せる
+emit([str(len(g.read_line()) > 0)])       # True
+close(g)
+
+emit([str("=== print / zip は位置引数を何個でも ===")])
+
+emit([str(1), str("a"), str([2])])                  # 1 a [2]
+for t in zip([1, 2], ["x", "y"], [True, False]):
+    emit([str(t)])                        # (1, 'x', True) / (2, 'y', False)
+
+emit([str("=== enumerate の start はキーワードで ===")])
+
+for i, x in enumerate(["p", "q"], start = 1):
+    emit([str(i), str(x)])                     # 1 p / 2 q
+
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== open は宣言どおりの引数（キーワード引数の名前も実行時と同じ） ===",
+    "True",
+    "True",
+    "=== print / zip は位置引数を何個でも ===",
+    "1 a [2]",
+    "(1, 'x', True)",
+    "(2, 'y', False)",
+    "=== enumerate の start はキーワードで ===",
+    "1 p",
+    "2 q",
+    "done",
+    "",
+], "builtin_args")

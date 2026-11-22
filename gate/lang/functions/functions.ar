@@ -1,0 +1,343 @@
+# functions.tl — basic functions, typed signatures, default params,
+#                closures, generators, and decorators
+
+# ============================================================
+# 1. Basic functions
+# ============================================================
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/functions.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== basic functions ===")])
+
+fn add(let a: int, let b: int) -> int:
+    return a + b
+
+fn greet(let name: str) -> str:
+    return "Hello, " + name
+
+fn factorial(mut n: int) -> int:
+    mut result = 1
+    while n > 1:
+        result *= n
+        n -= 1
+    return result
+
+emit([str(add(3, 4))])          # 7
+emit([str(greet("world"))])     # Hello, world
+emit([str(factorial(6))])       # 720
+
+# ============================================================
+# 2. Typed function signatures
+# ============================================================
+emit([str("=== typed function signatures ===")])
+
+# function[param_types]->ret: positional typed params
+fn apply(let f: function[let int]->int, let x: int) -> int:
+    return f(x)
+
+fn double(let n: int) -> int:
+    return n * 2
+
+emit([str(apply(double, 5))])   # 10
+
+# function{named_param:type}->ret: named typed params
+fn make_namer() -> function{let value:int}->int:
+    fn inner(let value: int) -> int:
+        return value * 3
+    return inner
+
+let namer = make_namer()
+emit([str(namer(value=7))])   # 21
+emit([str(namer(7))])          # 21 (positional also works)
+
+# function[]->ret: zero-parameter function
+fn make_const() -> function[]->int:
+    fn always42() -> int:
+        return 42
+    return always42
+
+let f0 = make_const()
+emit([str(f0())])   # 42
+
+# bare function: any signature (no static checking on args)
+fn call_any(let f: function) -> None:
+    f()
+
+fn say_hi() -> None:
+    emit([str("hi!")])
+
+call_any(say_hi)   # hi!
+
+# ============================================================
+# 3. Default parameters
+# ============================================================
+emit([str("=== default parameters ===")])
+
+fn greet_default(let name: str = "world") -> str:
+    return "Hello, " + name + "!"
+
+emit([str(greet_default())])         # Hello, world!
+emit([str(greet_default("Alice"))])  # Hello, Alice!
+
+# Multiple default parameters
+fn add_defaults(let a: int = 1, let b: int = 2) -> int:
+    return a + b
+
+emit([str(add_defaults())])       # 3
+emit([str(add_defaults(10))])     # 12
+emit([str(add_defaults(10, 20))]) # 30
+
+# Mixed: required then optional
+fn repeat(let s: str, let n: int = 3) -> str:
+    mut result = ""
+    for i in range(n):
+        result = result + s
+    return result
+
+emit([str(repeat("ab"))])     # ababab
+emit([str(repeat("ab", 2))])  # abab
+
+# Keyword argument with default
+fn scale(let x: int = 0, let y: int = 0) -> int:
+    return x * 100 + y
+
+emit([str(scale())])      # 0
+emit([str(scale(1))])     # 100
+emit([str(scale(y=5))])   # 5
+emit([str(scale(3, 4))])  # 304
+
+# Default in method
+class Counter:
+    mut count: int
+
+    fn __init__(mut self) -> None:
+        self.count = 0
+
+    fn increment(mut self, let by: int = 1) -> None:
+        self.count = self.count + by
+
+mut ctr = Counter()
+ctr.increment()
+ctr.increment()
+ctr.increment(5)
+emit([str(ctr.count)])  # 7
+
+# ============================================================
+# 4. Closures — let capture (deep copy at definition time)
+# ============================================================
+emit([str("=== closures: let capture ===")])
+
+fn make_greeter(let name: str) -> function[]->str:
+    fn inner_greet() -> str:
+        return "Hello, " + name
+    return inner_greet
+
+let greet_alice = make_greeter("Alice")
+let greet_bob   = make_greeter("Bob")
+emit([str(greet_alice())])   # Hello, Alice
+emit([str(greet_bob())])     # Hello, Bob
+
+# ============================================================
+# 5. Closures — mut capture (shared cell, independent per call)
+# ============================================================
+emit([str("=== closures: mut capture ===")])
+
+fn make_counter() -> function[]->int:
+    mut count = 0
+    fn inc() -> int:
+        count += 1
+        return count
+    return inc
+
+let ca = make_counter()
+let cb = make_counter()   # independent environment
+emit([str(ca())])   # 1
+emit([str(ca())])   # 2
+emit([str(cb())])   # 1 (cb is independent from ca)
+emit([str(ca())])   # 3
+
+# ============================================================
+# 6. Closures — static mut (shared across ALL calls)
+# ============================================================
+emit([str("=== closures: static mut ===")])
+
+fn make_global_counter() -> function[]->int:
+    static mut count = 0
+    fn inc() -> int:
+        count += 1
+        return count
+    return inc
+
+let sc1 = make_global_counter()
+let sc2 = make_global_counter()   # shares same count cell
+emit([str(sc1())])   # 1
+emit([str(sc2())])   # 2 (sc1 and sc2 share the static cell)
+emit([str(sc1())])   # 3
+
+# ============================================================
+# 7. Generators (gen + yield)
+# ============================================================
+emit([str("=== generators ===")])
+
+gen range_step(start: int, stop: int, step: int) -> int:
+    mut i = start
+    while i < stop:
+        yield i
+        i += step
+
+let g = range_step(0, 10, 3)
+emit([str(g.next())])   # 0
+emit([str(g.next())])   # 3
+emit([str(g.next())])   # 6
+emit([str(g.next())])   # 9
+
+mut total = 0
+for v in range_step(1, 6, 1):
+    total += v
+emit([str("sum 1-5:"), str(total)])   # 15
+
+# ============================================================
+# 8. Decorators
+# ============================================================
+emit([str("=== decorators: basic wrapper ===")])
+
+fn logged(let f: function) -> function:
+    fn wrapper() -> None:
+        emit([str(">> calling")])
+        f()
+        emit([str("<< done")])
+    return wrapper
+
+@logged
+fn hello() -> None:
+    emit([str("hello!")])
+
+hello()
+# >> calling
+# hello!
+# << done
+
+# Stacked decorators (applied bottom-up: logged first, then timed)
+fn timed(let f: function) -> function:
+    fn wrapper() -> None:
+        emit([str("[timed]")])
+        f()
+    return wrapper
+
+@timed
+@logged
+fn goodbye() -> None:
+    emit([str("goodbye!")])
+
+goodbye()
+# [timed]
+# >> calling
+# goodbye!
+# << done
+
+emit([str("=== decorators: call counter (closure + decorator) ===")])
+
+# Decorator that uses a mut closure to count invocations
+fn count_calls(let f: function) -> function:
+    mut calls = 0
+    fn wrapper() -> None:
+        calls += 1
+        emit([str("call #"), str(calls)])
+        f()
+    return wrapper
+
+@count_calls
+fn compute() -> None:
+    emit([str("computing...")])
+
+compute()   # call #1 / computing...
+compute()   # call #2 / computing...
+compute()   # call #3 / computing...
+
+emit([str("=== decorators: parameterised (decorator factory) ===")])
+
+# A decorator factory: repeat(n) returns a decorator that runs f n times
+fn repeat_deco(let n: int) -> function:
+    fn decorator(let f: function) -> function:
+        fn wrapper() -> None:
+            mut i = 0
+            while i < n:
+                f()
+                i += 1
+        return wrapper
+    return decorator
+
+@repeat_deco(3)
+fn ping() -> None:
+    emit([str("ping")])
+
+ping()
+# ping
+# ping
+# ping
+
+# ── 出力を照らす ──
+check_output([
+    "=== basic functions ===",
+    "7",
+    "Hello, world",
+    "720",
+    "=== typed function signatures ===",
+    "10",
+    "21",
+    "21",
+    "42",
+    "hi!",
+    "=== default parameters ===",
+    "Hello, world!",
+    "Hello, Alice!",
+    "3",
+    "12",
+    "30",
+    "ababab",
+    "abab",
+    "0",
+    "100",
+    "5",
+    "304",
+    "7",
+    "=== closures: let capture ===",
+    "Hello, Alice",
+    "Hello, Bob",
+    "=== closures: mut capture ===",
+    "1",
+    "2",
+    "1",
+    "3",
+    "=== closures: static mut ===",
+    "1",
+    "2",
+    "3",
+    "=== generators ===",
+    "0",
+    "3",
+    "6",
+    "9",
+    "sum 1-5: 15",
+    "=== decorators: basic wrapper ===",
+    ">> calling",
+    "hello!",
+    "<< done",
+    "[timed]",
+    ">> calling",
+    "goodbye!",
+    "<< done",
+    "=== decorators: call counter (closure + decorator) ===",
+    "call # 1",
+    "computing...",
+    "call # 2",
+    "computing...",
+    "call # 3",
+    "computing...",
+    "=== decorators: parameterised (decorator factory) ===",
+    "ping",
+    "ping",
+    "ping",
+    "",
+], "functions")

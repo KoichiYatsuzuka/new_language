@@ -1,0 +1,73 @@
+# bare_tuple_annotation.ar — `tuple` を静的側の型として解決する（タスク 8.3 / 8.1）
+#
+# ## 何が壊れていたか（8.3）
+#
+# `InferredType::from_ann` のプリミティブ表に **`tuple` が無かった**
+# （`list` / `dict` / `set` / `fixed_list` / `list_like` はある）。
+# 表に無い名前は `None` → 呼び出し側で `Unresolved`（＝**万能受容体**）になるので、
+# **注釈がまるごと無視**されていた。実測:
+#
+#   let t: tuple = 1          # 通っていた
+#   let b: tuple = [1, 2]     # list なのに通っていた
+#
+# ⇒ `InferredType::TupleAny` を足した。`ListOf` に対する `List` と同じ
+#   「型引数を書かなかった容器」の位置づけ。
+#
+# ⚠ 既存の `Tuple(Vec<_>)` は**要素数が固定**なので素の `tuple` を表せない。
+#   名前が `TupleAny` なのは `Tuple` が既に「型引数つき」側だから。
+#
+# ## ⚠⚠ タスク 8.1（案 A）で**注釈位置には書けなくなった**
+#
+# 素の容器型注釈（`list` / `dict` / `set` / `fixed_list` / `list_like` / `tuple`）は
+# 要素型が判らない＝要素の検査が全部消えるので、**注釈位置では禁止**した。
+# ⇒ 8.3 の成果は「注釈として使えること」ではなく、
+#   **`tuple` が型として解決されること**（そのおかげで 8.1 の禁止が `tuple` にも効く）。
+#
+# ⚠ **型テスト位置（`is` / `mustbe` / `case`）では従来どおり書ける。** そこでの
+#   `x is tuple` は「タプルかどうか」を問う正しい用法（`runtime_type_predicates.ar`）。
+#
+# 弾かれる例は bare_tuple_annotation_error.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/bare_tuple_annotation.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 型引数つきの tuple 注釈 ===")])
+
+let exact: tuple[int, str] = (1, "a")
+emit([str(exact)])
+emit([str(exact[0])])
+emit([str(exact[1])])
+
+fn show(pair: tuple[int, str]) -> None:
+    emit([str(pair)])
+
+show(exact)
+
+emit([str("=== 反復・添字 ===")])
+
+let nums: tuple[int, int, int] = (10, 20, 30)
+for v in nums:
+    emit([str(v)])
+
+emit([str("=== 型テスト位置では素の `tuple` が書ける ===")])
+
+# ⚠ ここは注釈ではないので 8.1 の禁止対象外。
+emit([str(exact is tuple)])               # True
+emit([str(exact is list)])                # False
+
+# ── 出力を照らす ──
+check_output([
+    "=== 型引数つきの tuple 注釈 ===",
+    "(1, 'a')",
+    "1",
+    "a",
+    "(1, 'a')",
+    "=== 反復・添字 ===",
+    "10",
+    "20",
+    "30",
+    "=== 型テスト位置では素の `tuple` が書ける ===",
+    "True",
+    "False",
+    "",
+], "bare_tuple_annotation")

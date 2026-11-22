@@ -1,5 +1,5 @@
 # check_self.ar — lib/check.ar の確かめ（正常系）。合う値では止まらず、合わない値では GateCheckFailed で止まること。
-from ..lib.check import check, check_eq, fail, GateCheckFailed
+from ..lib.check import check, check_eq, fail, GateCheckFailed, emit, check_output
 
 # 合う値では止まらない（型ごとに 1 つずつ）
 check_eq(1 + 2, 3, "int")
@@ -47,3 +47,30 @@ try:
 except Exception as e:
     is_exception = True
 check(is_exception, "GateCheckFailed is an Exception")
+
+# emit / check_output（README の 2.2）: print と同じ sep / end で貯め、合う出力では止まらない
+emit([str(1), str("a")])
+emit([str("x"), str("y")], sep=", ", end="")
+emit([str("!")], sep=None, end=None)
+emit([])
+check_output(["1 a", "x, y!", "", ""], "emit like print")
+check_output([""], "check_output empties the buffer")
+
+# 合わない出力では GateCheckFailed で止まり、最初に違う行の番号と両方の行が文面に入る
+emit([str("a")])
+emit([str("b")])
+caught = ""
+try:
+    check_output(["a", "c", ""], "out")
+except GateCheckFailed as e:
+    caught = str(e)
+check_eq(caught, "out: output line 2: expected 'c', got 'b'", "check_output reports the first differing line")
+
+# 行の数が違うときも止まる（貯めた出力は照らした時点で空になる）
+emit([str("a")])
+caught = ""
+try:
+    check_output(["a"], "short")
+except GateCheckFailed as e:
+    caught = str(e)
+check_eq(caught, "short: expected 1 output line(s), got 2 (first extra: '')", "check_output reports a different line count")

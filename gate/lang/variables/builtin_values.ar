@@ -1,0 +1,52 @@
+# builtin_values.ar — 組み込みの名前を値として使う・list(it) / tuple(it)（python_builtins_plan.md のタスク 1-7）
+#
+# 対になる誤りの例: builtin_values_error.ar
+#
+# 束縛されていない名前が組み込みの名前なら、名前の探索の最後の段で組み込みの値になる（CPython の builtins と同じ位置）。
+# 値は呼べ、関数へ渡せる。束縛した名前が勝つ。`list(it)` / `tuple(it)` はどのイテラブルも最後まで回す。
+# ⚠ 以前は `let f = repr` が `NameError: 'repr' is not defined`、`list(xs)` が静的に `name 'list' is not defined` だった。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/builtin_values.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 1. builtins as values ===")])
+let f = repr
+emit([str(f(3)), str(f("a"))])                     # 3 'a'
+emit([str(repr), str(len), str(list), str(int)])             # <built-in function repr> <built-in function len> <class 'list'> <class 'int'>
+
+fn apply(g: function->str, x: int) -> str:
+    return g(x)
+
+emit([str(apply(repr, 5))])                   # 5
+
+emit([str("=== 2. list(it) / tuple(it) ===")])
+let xs: list[int] = [3, 1]
+let d: dict[str, int] = {"k": 1, "j": 2}
+emit([str(list(xs)), str(list("ab")), str(list(d))])    # [3, 1] ['a', 'b'] ['k', 'j']
+emit([str(tuple(xs)), str(tuple(range(3))), str(list())])   # (3, 1) (0, 1, 2) []
+
+gen nums() -> int:
+    yield 1
+    yield 2
+
+emit([str(list(nums()))])                     # [1, 2]（遅延のジェネレータも最後まで回す）
+
+emit([str("=== 3. list(xs) is a copy ===")])
+mut ys = list(xs)
+ys.append(9)
+emit([str(xs), str(ys)])                           # [3, 1] [3, 1, 9]
+
+# ── 出力を照らす ──
+check_output([
+    "=== 1. builtins as values ===",
+    "3 'a'",
+    "<built-in function repr> <built-in function len> <class 'list'> <class 'int'>",
+    "5",
+    "=== 2. list(it) / tuple(it) ===",
+    "[3, 1] ['a', 'b'] ['k', 'j']",
+    "(3, 1) (0, 1, 2) []",
+    "[1, 2]",
+    "=== 3. list(xs) is a copy ===",
+    "[3, 1] [3, 1, 9]",
+    "",
+], "builtin_values")

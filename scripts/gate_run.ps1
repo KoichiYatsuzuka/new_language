@@ -35,11 +35,14 @@ function Get-GateExeHash([string]$Exe) {
 }
 
 # 対象のディレクトリの下の全ファイルの指紋。$Exclude（正規表現・相対パスに対して）に合うものは除く。
+# ⚠ テストが実行中に書く一時ファイル（`_tmp_*`・.gitignore と同じ規則）は常に除く。入れると実行するたびに指紋が
+#   変わり、保存した結果が二度と使われない（4-1 で gate/lang のファイル I/O のテストが踏んだ）。
 function Get-GateTreeFingerprint([string]$Root, [string]$Exclude) {
     $rootFull = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\')
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($f in [IO.Directory]::EnumerateFiles($rootFull, '*', [IO.SearchOption]::AllDirectories)) {
         $rel = $f.Substring($rootFull.Length + 1)
+        if ([IO.Path]::GetFileName($rel).StartsWith('_tmp_')) { continue }
         if ($Exclude -and ($rel -match $Exclude)) { continue }
         $fi = New-Object IO.FileInfo($f)
         $lines.Add(('{0}|{1}|{2}' -f $rel, $fi.Length, $fi.LastWriteTimeUtc.Ticks))

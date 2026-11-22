@@ -1,0 +1,73 @@
+# equality_list_dict.ar — `list` / `dict` の `==` 比較（B2）。
+#
+# ⚠ 以前は `values_eq` に `List` / `Dict` の腕が無く `_ => false` に落ちていたため、
+#   `[1,2] == [1,2]` はもちろん **`a == a`（同一オブジェクト）すら False** だった。
+#   参照比較になっていたのではなく純粋な抜けで、**エラーにならないので気付けなかった**。
+#   この形の例題が 1 本も無かったことが、全ゲートを素通りしていた理由。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/collections/equality_list_dict.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== list ===")])
+emit([str([1, 2] == [1, 2])])          # True
+emit([str([1, 2] == [1, 3])])          # False
+emit([str([1, 2] == [1])])             # False   長さ違い
+emit([str([] == [])])                  # True
+
+mut a = [1, 2]
+emit([str(a == a)])                    # True    同一オブジェクト
+emit([str(a != a)])                    # False   `!=` は `==` の否定
+
+emit([str("=== dict ===")])
+emit([str({"a": 1} == {"a": 1})])      # True
+emit([str({"a": 1} == {"a": 2})])      # False   値違い
+emit([str({"a": 1} == {"b": 1})])      # False   キー違い
+emit([str({"a": 1, "b": 2} == {"b": 2, "a": 1})])   # True   順序は無関係
+
+emit([str("=== 入れ子 ===")])
+emit([str([[1], [2]] == [[1], [2]])])              # True
+emit([str({"k": [1, 2]} == {"k": [1, 2]})])        # True
+emit([str([{"k": 1}] == [{"k": 1}])])              # True
+
+emit([str("=== 他のコレクションは元から正しい（対照） ===")])
+emit([str((1, 2) == (1, 2))])          # True
+emit([str({1, 2} == {1, 2})])          # True
+
+emit([str("=== `===`（参照同一性）は別物 ===")])
+# ⚠ `==` は構造比較、`===` は `Rc::ptr_eq`。混ぜないこと。
+emit([str([1] === [1])])               # False   構造は同じでも別オブジェクト
+emit([str(a === a)])                   # True
+
+emit([str("=== 包含検査も `==` を使う ===")])
+emit([str([1, 2] in [[1, 2], [3]])])   # True
+emit([str([9] in [[1, 2], [3]])])      # False
+
+# ── 出力を照らす ──
+check_output([
+    "=== list ===",
+    "True",
+    "False",
+    "False",
+    "True",
+    "True",
+    "False",
+    "=== dict ===",
+    "True",
+    "False",
+    "False",
+    "True",
+    "=== 入れ子 ===",
+    "True",
+    "True",
+    "True",
+    "=== 他のコレクションは元から正しい（対照） ===",
+    "True",
+    "True",
+    "=== `===`（参照同一性）は別物 ===",
+    "False",
+    "True",
+    "=== 包含検査も `==` を使う ===",
+    "True",
+    "False",
+    "",
+], "equality_list_dict")

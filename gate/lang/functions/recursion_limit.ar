@@ -1,0 +1,108 @@
+# recursion_limit.ar — 再帰の深さ上限と `RecursionError`（bug_fix.md B10 系統）
+#
+# ⚠⚠ 以前は上限が**全く無かった**ので、深い再帰は
+#    `thread 'main' has overflowed its stack` で**プロセスごと落ちていた**
+#    （トレースバックなし・exit 127・`try` でも捕まえられない）。
+#    今は catchable な `RecursionError` になる。
+#
+# ⚠ 上限は `Interpreter::MAX_CALL_DEPTH` = **1000**（CPython の既定と同じ）。
+#   ⚠⚠ **この定数とスタックサイズは対**。`main.rs` の `INTERP_STACK_SIZE` を先に
+#      広げずにここだけ上げると、**上限に当たる前にスタックが満ちて abort** に戻る。
+#   実測: main スレッドの既定（1MB）では深さ ~134 で満ちていた。
+#         専用スレッド（64MB）に移して **~9000** になったので、余裕約 9 倍。
+
+# ⚠ 数えているのは **`vm::run` の入れ子**（＝チャンク実行）であって関数呼び出しではない。
+#   関数・メソッド・ジェネレータ・最上位が**すべて同じ 1 箇所**を通るため。
+#   ⚠⚠ 関数側（`exec_fn_evaled`）で数えると**ジェネレータが素通りして落ちたまま**になる（実測）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/recursion_limit.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+fn countdown(let n: int) -> int:
+    if n == 0:
+        return 0
+    return 1 + countdown(n - 1)
+
+emit([str("=== 1. 上限内の再帰は普通に通る ===")])
+emit([str(countdown(100))])             # 100
+
+emit([str("=== 2. 深すぎる再帰は RecursionError（catch できる）===")])
+try:
+    emit([str(countdown(100000))])
+except RecursionError as e:
+    emit([str("caught RecursionError")])
+emit([str("捕まえた後も実行を続けられる")])
+
+emit([str("=== 3. 相互再帰も同じ ===")])
+fn is_odd(let n: int) -> bool:
+    if n == 0:
+        return False
+    return is_even(n - 1)
+
+fn is_even(let n: int) -> bool:
+    if n == 0:
+        return True
+    return is_odd(n - 1)
+
+emit([str(is_odd(7))])                  # True
+try:
+    emit([str(is_odd(100000))])
+except RecursionError as e:
+    emit([str("caught RecursionError (mutual)")])
+
+emit([str("=== 4. メソッドも同じ ===")])
+class Counter:
+    mut base: int
+
+    fn down(self, let n: int) -> int:
+        if n == 0:
+            return 0
+        return 1 + self.down(n - 1)
+
+let c = Counter(0)
+emit([str(c.down(50))])                 # 50
+try:
+    emit([str(c.down(100000))])
+except RecursionError as e:
+    emit([str("caught RecursionError (method)")])
+
+emit([str("=== 5. ジェネレータも同じ ===")])
+# ⚠ ジェネレータ本体は `exec_fn_evaled` を通らないので、関数側だけ守ると
+#   ここだけプロセスごと落ちたままになる。実際にそうなっていた。
+gen nest(let n: int) -> int:
+    if n > 0:
+        for v in nest(n - 1):
+            yield v
+    yield n
+
+mut total = 0
+for v in nest(10):
+    total += v
+emit([str(total)])                      # 55
+
+try:
+    mut t2 = 0
+    for v in nest(100000):
+        t2 += v
+    emit([str(t2)])
+except RecursionError as e:
+    emit([str("caught RecursionError (generator)")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== 1. 上限内の再帰は普通に通る ===",
+    "100",
+    "=== 2. 深すぎる再帰は RecursionError（catch できる）===",
+    "caught RecursionError",
+    "捕まえた後も実行を続けられる",
+    "=== 3. 相互再帰も同じ ===",
+    "True",
+    "caught RecursionError (mutual)",
+    "=== 4. メソッドも同じ ===",
+    "50",
+    "caught RecursionError (method)",
+    "=== 5. ジェネレータも同じ ===",
+    "55",
+    "caught RecursionError (generator)",
+    "",
+], "recursion_limit")

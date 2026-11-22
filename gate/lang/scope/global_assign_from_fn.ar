@@ -1,0 +1,135 @@
+# global_assign_from_fn.ar — 関数本体からのグローバル代入（#39）
+#
+# 関数の中から最上位の `mut` 変数へ代入できる（`nonlocal` は無く、外側を `mut` にすることで
+# 内側から書ける — 言語仕様どおり）。⚠ VM は長らくこれを bail していた（#39）。
+#
+# ⚠ 健全性の要点: この代入は **`scopes[0]` だけ**を対象にする。VM 関数は `scopes` を
+#    一切押さないので、`assign_var` のローカル走査に映るのは**呼び出し元のローカル**であり、
+#    そこを見ると同名の呼び出し元変数を書き換えてしまう。ケース 5 がその回帰検知。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/global_assign_from_fn.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 1. compound assignment to a global ===")])
+mut counter = 0
+fn bump() -> None:
+    counter += 1
+for i in range(3):
+    bump()
+emit([str(counter)])                    # 3
+
+emit([str("=== 2. plain assignment to a global ===")])
+mut slot = 0
+fn setit(let v: int) -> None:
+    slot = v
+setit(42)
+emit([str(slot)])                       # 42
+
+emit([str("=== 3. a closure writes both an outer local and a global ===")])
+mut total = 0
+fn outer() -> int:
+    mut acc = 10
+    fn inner() -> None:
+        acc += 1
+        total += 100
+    inner()
+    inner()
+    return acc
+emit([str(outer())])                    # 12
+emit([str(total)])                      # 200
+
+emit([str("=== 4. a method writes a global ===")])
+mut hits = 0
+class Counter:
+    fn __init__(mut self) -> None:
+        let _ = 0
+
+    fn tick(let self) -> int:
+        hits += 1
+        return hits
+let c = Counter()
+emit([str(c.tick())])                   # 1
+emit([str(c.tick())])                   # 2
+
+emit([str("=== 5. a same-named parameter in the caller must NOT be written ===")])
+# ⚠ グローバルと同名の**ローカル宣言**は静的型検査が禁じる（"already declared in an
+#    accessible scope"）。同名にできるのは**パラメータと for ターゲット**だけなので、
+#    呼び出し元フレームを守れているかはこの形で確かめる。
+mut shared = 0
+fn writes_global() -> None:
+    shared = 999
+fn caller(mut shared: int) -> int:
+    writes_global()
+    return shared
+emit([str(caller(1))])                  # 1   （呼び出し元のパラメータは 1 のまま）
+emit([str(shared)])                     # 999 （グローバルだけが書き換わる）
+
+emit([str("=== 6. a parameter shadows the global ===")])
+mut g6 = 5
+fn shadowing(let g6: int) -> int:
+    return g6 * 2
+emit([str(shadowing(3))])               # 6
+emit([str(g6)])                         # 5
+
+emit([str("=== 7. a for target must NOT shadow the global ===")])
+# ⚠⚠ 以前は `for i7 in range(3)` がグローバル `i7` を黙って覆っていた。
+#    今は再束縛としてエラー（規則 1・B4）
+#        → [for_target_shadow_error.ar](for_target_shadow_error.ar)
+mut i7 = 100
+fn loops() -> int:
+    mut total2 = 0
+    for k in range(3):
+        total2 = total2 + k
+    return total2
+emit([str(loops())])                    # 3
+emit([str(i7)])                         # 100
+
+emit([str("=== 8. static mut and a global in the same function ===")])
+mut g8 = 0
+fn ticks() -> int:
+    static mut n = 0
+    n += 1
+    g8 += n
+    return n
+let _ = ticks()
+let _ = ticks()
+emit([str(g8)])                         # 3
+
+emit([str("=== 9. writing a global from inside a block expression ===")])
+mut g9 = 0
+fn via_block() -> int:
+    let v = block ->int:
+        g9 += 7
+        block_return g9
+    return v
+emit([str(via_block())])                # 7
+emit([str(g9)])                         # 7
+
+# ── 出力を照らす ──
+check_output([
+    "=== 1. compound assignment to a global ===",
+    "3",
+    "=== 2. plain assignment to a global ===",
+    "42",
+    "=== 3. a closure writes both an outer local and a global ===",
+    "12",
+    "200",
+    "=== 4. a method writes a global ===",
+    "1",
+    "2",
+    "=== 5. a same-named parameter in the caller must NOT be written ===",
+    "1",
+    "999",
+    "=== 6. a parameter shadows the global ===",
+    "6",
+    "5",
+    "=== 7. a for target must NOT shadow the global ===",
+    "3",
+    "100",
+    "=== 8. static mut and a global in the same function ===",
+    "3",
+    "=== 9. writing a global from inside a block expression ===",
+    "7",
+    "7",
+    "",
+], "global_assign_from_fn")

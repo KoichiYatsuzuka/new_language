@@ -1,0 +1,50 @@
+# dunder_iter.ar — 辞書とジェネレータの `__iter__`（python_builtins_plan.md のタスク 1-4）
+#
+# - `d.__iter__()` はキーを挿入順に返すジェネレータ（CPython の dict_iter）
+# - `g.__iter__()` はそのジェネレータ自身（CPython の PyObject_SelfIter・`iter(g) is g`）
+# - list / set / str の `__iter__` は以前からある。結果の型は `generator[要素の型]`
+# ⚠ 以前は辞書とジェネレータで `AttributeError: ... has no method '__iter__'` だった。
+#   `for k in d:` / `for x in g:` は以前から動く。Python の `iter(x)`（3-3）がこれを使う。
+# ⚠ 辞書の `__iter__` は `for` と同じく呼んだ時点のキーの写しを回す（CPython は反復中に大きさが変わると
+#   RuntimeError）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/collections/dunder_iter.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 1. dict ===")])
+let d: dict[str, int] = {"b": 1, "a": 2}
+mut keys = d.__iter__()
+emit([str(keys.next()), str(keys.next())])          # b a
+
+emit([str("=== 2. generator returns itself ===")])
+gen nums() -> int:
+    yield 1
+    yield 2
+    yield 3
+
+mut g = nums()
+mut same = g.__iter__()
+emit([str(same.next())])                       # 1
+emit([str(g.next())])                          # 2（同じジェネレータなので続きから）
+emit([str(same === g)])                        # True
+
+emit([str("=== 3. list and str ===")])
+let xs: list[int] = [10, 20]
+mut e = xs.__iter__()
+emit([str(e.next()), str(e.next())])                # 10 20
+mut cs = "hi".__iter__()
+emit([str(cs.next()), str(cs.next())])              # h i
+
+# ── 出力を照らす ──
+check_output([
+    "=== 1. dict ===",
+    "b a",
+    "=== 2. generator returns itself ===",
+    "1",
+    "2",
+    "True",
+    "=== 3. list and str ===",
+    "10 20",
+    "h i",
+    "",
+], "dunder_iter")

@@ -1,0 +1,128 @@
+# condition_must_be_bool.ar — `if` / `while` の条件は `bool` 値のみ（決定 D-12・タスク 5.5）
+#
+# ## Arrow は真偽性を使わない
+#
+# | 書き方 | 真偽性（旧） | **`bool` 厳密（決定）** |
+# |---|---|---|
+# | `if 0:` | 書けた（偽） | **静的エラー** → `if n != 0:` |
+# | `if xs:`（リスト） | 書けた（空なら偽） | **静的エラー** → `if len(xs) > 0:` |
+# | `if some_func:` | 書けた（**常に真**） | **静的エラー** |
+#
+# 実利は「**常に真になる条件の書き間違い**」を静的に捕まえられること
+# （`()` を忘れた `if some_func:` がいちばん多い形）。
+#
+# ## ⚠⚠ 実行時の真偽性は撤去していない
+#
+# `is_truthy` は次で今も要る:
+#
+# | 用途 | 場所 |
+# |---|---|
+# | `not` / `and` / `or` の評価 | `interpreter/ops/operators.rs` |
+# | **ネイティブ ABI の関数表 export** | `native_api/` ・ `cpp_bridge/` ・ `partial_compiler/` |
+#
+# 関数表は C ABI なので削除・改名すると FFI が壊れる。D-12 は
+# 「**条件位置に静的検査を足す**」ことであって真偽性の撤去ではない。
+#
+# ## 前提はタスク 2.5（D-10）
+#
+# `and` / `or` が結果型を**被演算子の join** にしたので `if a and b:`（非 bool）が
+# ここで落ちる。結果型が `Bool` 固定のままなら通ってしまっていた。
+#
+# 弾かれる例は condition_must_be_bool_error.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/condition_must_be_bool.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== bool 値 ===")])
+
+let flag: bool = True
+if flag:
+    emit([str("flag")])                       # flag
+
+mut running: bool = True
+mut i: int = 0
+while running:
+    i += 1
+    if i >= 3:
+        running = False
+emit([str(i)])                                # 3
+
+emit([str("=== 比較で bool にする ===")])
+
+let n: int = 0
+if n != 0:
+    emit([str("nonzero")])
+else:
+    emit([str("zero")])                       # zero
+
+let xs: list[int] = []
+if len(xs) > 0:
+    emit([str("has items")])
+else:
+    emit([str("empty")])                      # empty
+
+emit([str("=== and / or は被演算子の join を返す（D-10） ===")])
+
+let a: bool = True
+let b: bool = False
+if a and b:
+    emit([str("both")])
+else:
+    emit([str("not both")])                   # not both
+
+if a or b:
+    emit([str("either")])                     # either
+
+emit([str("=== not は bool を返す ===")])
+
+if not b:
+    emit([str("not b")])                      # not b
+
+emit([str("=== __bool__ を持つクラスは明示的に呼ぶ ===")])
+
+# ⚠ `__bool__` が死ぬわけではない。`not` / `and` / `or` は今も `__bool__` を経由する。
+class Bag:
+    mut items: list[int]
+
+    fn __bool__(self) -> bool:
+        return len(self.items) > 0
+
+let empty = Bag([])
+if empty.__bool__():
+    emit([str("not empty")])
+else:
+    emit([str("empty")])                      # empty
+
+emit([str(not empty)])                        # True   ← not は __bool__ を呼ぶ
+
+emit([str("=== if 式・while 式の条件も同じ ===")])
+
+let r = if flag ->str:
+    block_return "yes"
+else:
+    block_return "no"
+emit([str(r)])                                # yes
+
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== bool 値 ===",
+    "flag",
+    "3",
+    "=== 比較で bool にする ===",
+    "zero",
+    "empty",
+    "=== and / or は被演算子の join を返す（D-10） ===",
+    "not both",
+    "either",
+    "=== not は bool を返す ===",
+    "not b",
+    "=== __bool__ を持つクラスは明示的に呼ぶ ===",
+    "empty",
+    "True",
+    "=== if 式・while 式の条件も同じ ===",
+    "yes",
+    "done",
+    "",
+], "condition_must_be_bool")

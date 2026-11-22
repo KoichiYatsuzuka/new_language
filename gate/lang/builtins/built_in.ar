@@ -1,0 +1,507 @@
+# built_in.tl — built-in functions and types demo.
+#
+# Sections:
+#   1. id()            — object identity
+#   2. enumerate()     — indexed iteration
+#   3. zip()           — parallel iteration
+#   4. File I/O        — Path, open/close, FileOpenMode, StartPoint, ByteRecognizingMode
+#                        （make_and_write の節だけ import[py] os で後始末する）
+#   5. String features — f/r/m/$-strings, %, format(), methods, regex, ord()
+
+# ── 1. id() ──────────────────────────────────────────────────────────────────
+# id() returns a pointer instance wrapping a uint value
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/built_in.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+let n = 42
+let p = id(n)
+emit([str("id(42) ="), str(str(p.value))])
+
+# Reference types: same variable → same id
+class Box:
+    mut val: int
+
+    fn __init__(mut self, let val: int) -> None:
+        self.val = val
+
+let a = Box(1)
+let b = a            # let→let: same Rc, same id
+let pa = id(a)
+let pb = id(b)
+emit([str("id(a) == id(b):"), str(str(pa.value == pb.value))])  # True
+
+# mut copy → new allocation → different id
+mut c = a
+let pc = id(c)
+emit([str("id(a) == id(c):"), str(str(pa.value == pc.value))])  # False
+
+# Value types: equal values → equal ids (value-based identity)
+let x = 0
+let y = x            # let→let: no copy for value types either
+let px = id(x)
+let py = id(y)
+emit([str("id(x) == id(y) (int 0):"), str(str(px.value == py.value))])  # True
+
+# uint type: id() value field is a uint
+let u = uint(100)
+let pu = id(u)
+emit([str("id(uint(100)) type is uint:"), str(str(pu.value is uint))])  # True
+
+# pointer is a new_type wrapping uint
+emit([str("pointer.value of id(a) is set:"), str(str(pa.value) != "0")])   # アドレスは実行ごとに違う（⚠ uint > 0 は実行時に TypeError になる）
+
+# ── 2. enumerate() ───────────────────────────────────────────────────────────
+# enumerate(iterable [, start=0]) — returns (index, value) tuples
+
+let fruits = ["apple", "banana", "cherry"]
+
+# Basic usage — index starts at 0
+for i, name in enumerate(fruits):
+    emit([str(i), str(name)])
+# 0 apple
+# 1 banana
+# 2 cherry
+
+emit([str("---")])
+
+# start= keyword shifts the index
+for i, name in enumerate(fruits, start=1):
+    emit([str(i), str(name)])
+# 1 apple
+# 2 banana
+# 3 cherry
+
+emit([str("---")])
+
+# enumerate over a tuple
+let coords = (10, 20, 30)
+for i, v in enumerate(coords):
+    emit([str(i), str(v)])
+# 0 10
+# 1 20
+# 2 30
+
+emit([str("---")])
+
+# ── 3. zip() ─────────────────────────────────────────────────────────────────
+# zip(iter1, iter2, ...) — stops at the shortest iterable
+
+let names = ["Alice", "Bob", "Carol"]
+let scores = [95, 82, 78]
+
+for name, score in zip(names, scores):
+    emit([str(name), str(score)])
+# Alice 95
+# Bob 82
+# Carol 78
+
+emit([str("---")])
+
+# Stops at the shortest input
+let short = [1, 2]
+let long = [10, 20, 30, 40]
+for ea, eb in zip(short, long):
+    emit([str(ea), str(eb)])
+# 1 10
+# 2 20
+
+emit([str("---")])
+
+# Three iterables at once
+let xs = [1, 2, 3]
+let ys = [4, 5, 6]
+let zs = [7, 8, 9]
+for ex, ey, ez in zip(xs, ys, zs):
+    emit([str(ex + ey + ez)])
+# 12
+# 15
+# 18
+
+emit([str("---")])
+
+# Combining enumerate and zip
+let za = [10, 20, 30]
+let zb = [40, 50, 60]
+for i, pair in enumerate(zip(za, zb)):
+    let zx, let zy = pair
+    emit([str(i), str(zx), str(zy)])
+# 0 10 40
+# 1 20 50
+# 2 30 60
+
+# ── 4. File I/O ───────────────────────────────────────────────────────────────
+# Path type (the built-in type `Path`; it was `path` before ffi_value_exchange_plan.md 7-25)
+let fp = Path("built_in.ar")
+emit([str(fp.value)])              # built_in.ar
+
+# enum values
+emit([str(FileOpenMode.read.value)])        # 2
+emit([str(StartPoint.top.value)])           # 0
+emit([str(ByteRecognizingMode.text.value)]) # 1
+emit([str(Encoding.UTF_8.value)])           # 1
+
+# rewrite mode: create or overwrite
+let f = open("_tmp_built_in_demo.txt", FileOpenMode.rewrite)
+f.write_line("Hello, world!")
+f.write_line("Second line.")
+f.write("No newline at end")
+close(f)
+
+# read mode: read all at once
+let g = open("_tmp_built_in_demo.txt", FileOpenMode.read)
+let all = g.read()
+emit([str(all)])
+# Hello, world!
+# Second line.
+# No newline at end
+close(g)
+
+# read_line — line by line
+let h = open("_tmp_built_in_demo.txt", FileOpenMode.read)
+let line1 = h.read_line()
+let line2 = h.read_line()
+let line3 = h.read_line()
+close(h)
+emit([str(line1)])   # Hello, world!\n
+emit([str(line2)])   # Second line.\n
+emit([str(line3)])   # No newline at end
+
+# read_letter — one character at a time
+let k = open("_tmp_built_in_demo.txt", FileOpenMode.read)
+let c1 = k.read_letter()
+let c2 = k.read_letter()
+let c3 = k.read_letter()
+close(k)
+emit([str(c1)])  # H
+emit([str(c2)])  # e
+emit([str(c3)])  # l
+
+# write mode: read-write (mid-file insertion)
+let w = open("_tmp_built_in_demo.txt", FileOpenMode.write)
+let _ = w.read_letter()   # H
+let _ = w.read_letter()   # e
+let _ = w.read_letter()   # l
+let _ = w.read_letter()   # l
+let _ = w.read_letter()   # o
+w.write(" there")
+close(w)
+
+let vf = open("_tmp_built_in_demo.txt", FileOpenMode.read)
+let inserted = vf.read_line()
+close(vf)
+emit([str(inserted)])   # Hello there, world!\n
+
+# backward read — start from end of file
+let bk = open("_tmp_built_in_demo.txt", FileOpenMode.read, StartPoint.end)
+let last_line = bk.read_line(backward = True)
+close(bk)
+emit([str(last_line)])   # No newline at end
+
+# make_and_write: create a new file
+# make_and_write は対象が既に存在すると RuntimeError になる（それが仕様）。
+# 例題を何度実行しても通るよう、Python の os.remove で前回の生成物を先に消しておく。
+# （まだ無い場合は FileNotFoundError になるので握りつぶす）
+import[py] os
+try:
+    os.remove("_tmp_built_in_new.txt")
+except Exception as e:
+    emit([str("no leftover to clean")])
+
+let nf = open("_tmp_built_in_new.txt", FileOpenMode.make_and_write)
+nf.write("Created fresh!")
+close(nf)
+let nfr = open("_tmp_built_in_new.txt", FileOpenMode.read)
+emit([str(nfr.read())])   # Created fresh!
+close(nfr)
+
+# byte mode
+let bf = open("_tmp_built_in_bytes.txt", FileOpenMode.rewrite, StartPoint.top, ByteRecognizingMode.byte)
+bf.write(bytes([72, 101, 108, 108, 111]))   # "Hello" in bytes (byte mode reads and writes bytes)
+close(bf)
+
+let br = open("_tmp_built_in_bytes.txt", FileOpenMode.read, StartPoint.top, ByteRecognizingMode.byte)
+let data = br.read()
+close(br)
+emit([str(data)])   # b'Hello'
+
+# ── 5. String features ────────────────────────────────────────────────────────
+
+# f-string (interpolation)
+let name = "Alice"
+let age = 30
+emit([str(f"Hello, {name}! You are {age} years old.")])
+
+let pi_val = 3.14159
+emit([str(f"pi ≈ {pi_val}")])
+
+let items = [1, 2, 3]
+emit([str(f"list: {items}")])
+
+# r-string (raw — backslashes kept as-is)
+let raw = r"\n is not a newline in raw strings"
+emit([str(raw)])
+
+let win_path = r"C:\Users\Alice\Documents"
+emit([str(win_path)])
+
+# m"..." math string (LaTeX-style Unicode conversion)
+emit([str(m"Pythagorean theorem: a^2 + b^2 = c^2")])
+emit([str(m"Euler's identity: e^{i\pi} + 1 = 0")])
+emit([str(m"Subscript example: x_0, x_1, x_2")])
+emit([str(m"Greek letters: \alpha, \beta, \gamma, \delta, \pi, \omega")])
+emit([str(m"Operators: a \times b, a \div b, a \pm b, a \neq b, a \leq b")])
+emit([str(m"Calculus: \int f(x) dx, \sum_{i=0}^{n} x_i, \partial f / \partial x")])
+
+# $...$ math string (compact notation)
+emit([str($x^2 + y^2 = z^2$)])
+emit([str($E = mc^2$)])
+emit([str($F = G \cdot m_1 m_2 / r^2$)])
+
+# % format operator
+let pi = 3.14159265
+emit([str("pi = %.4f" % pi)])
+emit([str("int: %d, hex: %x, oct: %o" % (255, 255, 255))])
+emit([str("name: %s, age: %d" % ("Bob", 25))])
+emit([str("scientific: %e" % 0.000123)])
+emit([str("padded: '%10s'" % "hi")])
+emit([str("left-aligned: '%-10s|'" % "hi")])
+emit([str("zero-padded: '%05d'" % 42)])
+
+# str.format()
+emit([str("Hello, {}! You are {} years old.".format("Carol", 22))])
+emit([str("{0} + {1} = {2}".format(1, 2, 3))])
+emit([str("pi = {:.3f}".format(3.14159))])
+emit([str("{name} scored {score:05d}".format(name="Dave", score=99))])
+emit([str("{:>10}".format("right"))])
+emit([str("{:<10}|".format("left"))])
+emit([str("{:^10}".format("center"))])
+
+# String methods
+let s = "  Hello, World!  "
+emit([str(s.strip())])
+emit([str(s.lstrip())])
+emit([str(s.rstrip())])
+emit([str("hello world".upper())])
+emit([str("HELLO WORLD".lower())])
+emit([str("hello world".title())])
+emit([str("Hello World".swapcase())])
+emit([str("hello".capitalize())])
+
+let csv = "one,two,three,four"
+let parts = csv.split(",")
+emit([str(parts)])
+emit([str(",".join(["a", "b", "c"]))])
+emit([str("hello world python".split(" ", 1))])
+emit([str("a::b::c".rsplit("::", 1))])
+
+emit([str("Hello, World!".find("World"))])
+emit([str("Hello, World!".rfind("l"))])
+emit([str("banana".count("an"))])
+emit([str("Hello".startswith("He"))])
+emit([str("Hello".endswith("lo"))])
+emit([str("hello world".replace("world", "Python"))])
+emit([str("hello world".replace("l", "L", 1))])
+
+emit([str("Hello, World!".removeprefix("Hello, "))])
+emit([str("Hello, World!".removesuffix(", World!"))])
+
+let part = "one:two:three".partition(":")
+emit([str(part)])
+
+emit([str("123".isdigit())])
+emit([str("abc".isalpha())])
+emit([str("abc123".isalnum())])
+emit([str("   ".isspace())])
+emit([str("HELLO".isupper())])
+emit([str("hello".islower())])
+
+emit([str("42".zfill(6))])
+emit([str("hi".ljust(10, "*"))])
+emit([str("hi".rjust(10, "*"))])
+emit([str("hi".center(10, "-"))])
+# ⚠⚠ #65 で見つけた実バグ 2 件の回帰検知。どちらも「同じ処理を 3 回書いた」ことが原因で、
+#    上の 3 行（空白なし ASCII）では**発火しなかった**。
+#  ① 埋め文字つき ljust が**元の文字列内の空白まで**置換していた（CPython: "a b***"）
+emit([str("a b".ljust(6, "*"))])
+#  ② rjust / center が**バイト長**で幅を判定していたため、マルチバイト文字列が全く詰められなかった
+#     （旧: "あい" のまま。CPython: "***あい" / "--あい--"）
+emit([str("あい".ljust(5, "*"))])
+emit([str("あい".rjust(5, "*"))])
+emit([str("あい".center(6, "-"))])
+
+let multiline = "line1\nline2\nline3"
+emit([str(multiline.splitlines())])
+
+emit([str("a\tb\tc".expandtabs(4))])
+
+let str_bytes = "Hi".encode()
+emit([str(str_bytes)])
+
+# * repetition operator
+emit([str("ha" * 3)])
+emit([str(3 * "na" + " Batman!")])
+
+# Regex methods
+let text = "Hello, my phone is 090-1234-5678 and email is alice@example.com"
+
+let phone = text.search(r"\d{3}-\d{4}-\d{4}")
+emit([str(phone)])
+
+let digits = "abc 123 def 456 ghi 789".findall(r"\d+")
+emit([str(digits)])
+
+let cleaned = "foo123bar456".sub(r"\d+", "NUM")
+emit([str(cleaned)])
+
+let re_words = "one two  three   four".regex_split(r"\s+")
+emit([str(re_words)])
+
+let matched = "hello world".match(r"hello")
+emit([str(matched)])
+
+let no_match = "hello world".match(r"world")
+emit([str(no_match)])
+
+let ci = "Hello World".findall(r"hello", "i")
+emit([str(ci)])
+
+# ord() — character to code point
+emit([str("A".ord())])
+emit([str("α".ord())])
+
+# ── 出力を照らす ──
+check_output([
+    "id(42) = 42",
+    "id(a) == id(b): True",
+    "id(a) == id(c): False",
+    "id(x) == id(y) (int 0): True",
+    "id(uint(100)) type is uint: True",
+    "pointer.value of id(a) is set: True",
+    "0 apple",
+    "1 banana",
+    "2 cherry",
+    "---",
+    "1 apple",
+    "2 banana",
+    "3 cherry",
+    "---",
+    "0 10",
+    "1 20",
+    "2 30",
+    "---",
+    "Alice 95",
+    "Bob 82",
+    "Carol 78",
+    "---",
+    "1 10",
+    "2 20",
+    "---",
+    "12",
+    "15",
+    "18",
+    "---",
+    "0 10 40",
+    "1 20 50",
+    "2 30 60",
+    "built_in.ar",
+    "2",
+    "0",
+    "1",
+    "1",
+    "Hello, world!",
+    "Second line.",
+    "No newline at end",
+    "Hello, world!",
+    "",
+    "Second line.",
+    "",
+    "No newline at end",
+    "H",
+    "e",
+    "l",
+    "Hello there, world!",
+    "",
+    "No newline at end",
+    "Created fresh!",
+    "b'Hello'",
+    "Hello, Alice! You are 30 years old.",
+    "pi ≈ 3.14159",
+    "list: [1, 2, 3]",
+    "\\n is not a newline in raw strings",
+    "C:\\Users\\Alice\\Documents",
+    "Pythagorean theorem: a² + b² = c²",
+    "Euler's identity: eⁱπ + 1 = 0",
+    "Subscript example: x₀, x₁, x₂",
+    "Greek letters: α, β, γ, δ, π, ω",
+    "Operators: a × b, a ÷ b, a ± b, a ≠ b, a ≤ b",
+    "Calculus: ∫ f(x) dx, ∑ᵢ₌₀ⁿ xᵢ, ∂ f / ∂ x",
+    "x² + y² = z²",
+    "E = mc²",
+    "F = G · m₁ m₂ / r²",
+    "pi = 3.1416",
+    "int: 255, hex: ff, oct: 377",
+    "name: Bob, age: 25",
+    "scientific: 1.230000e-04",
+    "padded: '        hi'",
+    "left-aligned: 'hi        |'",
+    "zero-padded: '00042'",
+    "Hello, Carol! You are 22 years old.",
+    "1 + 2 = 3",
+    "pi = 3.142",
+    "Dave scored 00099",
+    "     right",
+    "left      |",
+    "  center  ",
+    "Hello, World!",
+    "Hello, World!  ",
+    "  Hello, World!",
+    "HELLO WORLD",
+    "hello world",
+    "Hello World",
+    "hELLO wORLD",
+    "Hello",
+    "['one', 'two', 'three', 'four']",
+    "a,b,c",
+    "['hello', 'world python']",
+    "['a::b', 'c']",
+    "7",
+    "10",
+    "2",
+    "True",
+    "True",
+    "hello Python",
+    "heLlo world",
+    "World!",
+    "Hello",
+    "('one', ':', 'two:three')",
+    "True",
+    "True",
+    "True",
+    "True",
+    "True",
+    "True",
+    "000042",
+    "hi********",
+    "********hi",
+    "----hi----",
+    "a b***",
+    "あい***",
+    "***あい",
+    "--あい--",
+    "['line1', 'line2', 'line3']",
+    "a   b   c",
+    "b'Hi'",
+    "hahaha",
+    "nanana Batman!",
+    "090-1234-5678",
+    "['123', '456', '789']",
+    "fooNUMbarNUM",
+    "['one', 'two', 'three', 'four']",
+    "hello",
+    "None",
+    "['Hello']",
+    "65",
+    "945",
+    "",
+], "built_in")

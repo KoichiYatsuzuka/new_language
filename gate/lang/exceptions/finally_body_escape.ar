@@ -1,0 +1,141 @@
+# finally_body_escape.ar — finally 本体そのものからの脱出（#40）
+#
+# `finally` の**中**の `break` / `continue` / `return` / `block_return` は、
+# **保留中の動作を破棄する**（Python と同じ）:
+#   - 保留中の `return` は捨てられる
+#   - 伝播中の例外は捨てられる（＝握り潰される）
+# 外側にさらに `finally` があれば、それは**依然として走る**。
+#
+# ⚠ VM はこの形を長らく丸ごと bail していた（#40）。finally は正常路・例外路・各脱出路に
+#    複製され、**複製ごとにスタックの形が違う**（例外路は例外値が、return 路は戻り値が載る）。
+#    跳ぶ前にその分を捨てないと壊れる。この例題が唯一の網。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/exceptions/finally_body_escape.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 1. break in finally exits the loop ===")])
+mut r = -1
+for i in range(4):
+    try:
+        r = i
+    finally:
+        if i == 2:
+            break
+emit([str(r)])                          # 2
+
+emit([str("=== 2. break in finally discards a pending return ===")])
+fn over_ret() -> int:
+    for i in range(3):
+        try:
+            return 100
+        finally:
+            break
+    return -1
+emit([str(over_ret())])                 # -1
+
+emit([str("=== 3. return in finally replaces a pending return ===")])
+fn over_ret2() -> int:
+    try:
+        return 1
+    finally:
+        return 2
+emit([str(over_ret2())])                # 2
+
+emit([str("=== 4. return in finally discards a propagating exception ===")])
+fn over_exc() -> int:
+    try:
+        raise ValueError("x")
+    finally:
+        return 7
+emit([str(over_exc())])                 # 7
+
+emit([str("=== 5. break in finally discards a propagating exception ===")])
+mut log = []
+for i in range(3):
+    try:
+        raise ValueError("x")
+    finally:
+        log.append(i)
+        break
+emit([str(log)])                        # [0]
+emit([str("survived")])
+
+emit([str("=== 6. continue in finally skips the rest of the body ===")])
+mut s = 0
+for i in range(4):
+    try:
+        s = s + 10
+    finally:
+        if i < 2:
+            continue
+    s = s + 1
+emit([str(s)])                          # 42
+
+emit([str("=== 7. block_return in finally replaces the block value ===")])
+let b = block ->int:
+    try:
+        block_return 1
+    finally:
+        block_return 2
+emit([str(b)])                          # 2
+
+emit([str("=== 8. block_return in finally on the exception path ===")])
+let b2 = block ->int:
+    try:
+        raise ValueError("boom")
+    finally:
+        block_return 3
+emit([str(b2)])                         # 3
+
+emit([str("=== 9. an outer finally still runs when an inner one breaks ===")])
+mut log2 = []
+for i in range(3):
+    try:
+        try:
+            log2.append(i)
+        finally:
+            if i == 1:
+                break
+    finally:
+        log2.append(100 + i)
+emit([str(log2)])                       # [0, 100, 1, 101]
+
+emit([str("=== 10. every level breaks (each outer finally still runs once) ===")])
+mut log3 = []
+for i in range(3):
+    try:
+        try:
+            log3.append(i)
+        finally:
+            log3.append(10)
+            break
+    finally:
+        log3.append(20)
+        break
+emit([str(log3)])                       # [0, 10, 20]
+
+# ── 出力を照らす ──
+check_output([
+    "=== 1. break in finally exits the loop ===",
+    "2",
+    "=== 2. break in finally discards a pending return ===",
+    "-1",
+    "=== 3. return in finally replaces a pending return ===",
+    "2",
+    "=== 4. return in finally discards a propagating exception ===",
+    "7",
+    "=== 5. break in finally discards a propagating exception ===",
+    "[0]",
+    "survived",
+    "=== 6. continue in finally skips the rest of the body ===",
+    "42",
+    "=== 7. block_return in finally replaces the block value ===",
+    "2",
+    "=== 8. block_return in finally on the exception path ===",
+    "3",
+    "=== 9. an outer finally still runs when an inner one breaks ===",
+    "[0, 100, 1, 101]",
+    "=== 10. every level breaks (each outer finally still runs once) ===",
+    "[0, 10, 20]",
+    "",
+], "finally_body_escape")

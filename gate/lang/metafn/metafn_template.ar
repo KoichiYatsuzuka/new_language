@@ -1,0 +1,56 @@
+# metafn_template.ar — 展開時の単相化とテンプレートのメタ情報（設計書 D35 / 参考P・タスク 2-8）。
+#
+# テンプレートの具体化（`Box[int](..)`）に出会うと、展開器がその場で**普通の宣言**
+# `Box[int]` を作り、使う文の直前に置く（インライン単相化）。
+#
+#   - 同じ型引数の具体化は 1 回だけ（`(テンプレート, 型引数)` でメモ化）。
+#   - 実行時は具体化を作らない（D36・タスク 2-16）。展開器が置いた宣言を使う。
+#   - `^Box[int]` で具体化のメタ情報を引ける。型変数は置換済み（`list[T]` の中の `T` も）。
+#     フィールドの型などは型の値（D23・タスク 4-2）。
+#
+# ⚠ クラス変数の初期化は**クラスの定義の時点**で 1 回だけ走る（以前は最初の具体化の時点）。
+# ⚠ 宣言より前に書いた具体化は、テンプレートの宣言の直後に置く（タスク 2-14）。
+# ⚠ 具体化した本体も型検査にかける（タスク 2-13）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/metafn_template.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+class Pair[K, V]:
+    mut key: K
+    mut value: V
+
+emit([str("=== 具体化のメタ情報 ===")])
+
+# `^Pair[str, int]` のフィールドの型は置換済み（`K` → `str`、`V` → `int`）。
+exprconst !fn default_of(m) -> None:
+    let t = m.fields[1].type
+    let n = m.fields[1].name + "_default"
+    quote code:
+        let <! n !>: <! t !> = 0
+
+default_of(^Pair[str, int])
+emit([str(value_default)])                # 0（`int` として宣言されている）
+
+emit([str("=== 具体化は 1 回だけ ===")])
+
+fn note() -> int:
+    emit([str("  Counter の初期化")])
+    return 0
+
+class Counter[T]:
+    mut v: T
+    const K: int = note()
+
+let a = Counter[int](1)
+let b = Counter[int](2)
+emit([str(a.v + b.v)])                    # 3（初期化は 1 回だけ）
+
+# ── 出力を照らす ──
+check_output([
+    "=== 具体化のメタ情報 ===",
+    "0",
+    "=== 具体化は 1 回だけ ===",
+    "  Counter の初期化",
+    "3",
+    "",
+], "metafn_template")

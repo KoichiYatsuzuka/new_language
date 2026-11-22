@@ -1,0 +1,50 @@
+# Undefined -- external library interop example
+#
+# Undefined is a special literal type used when interfacing with external
+# libraries (Python, JS, etc.) where a member may be absent or undefined.
+# It cannot be assigned to a variable, but can be used in:
+#   - conditional checks (x is Undefined / x is not Undefined)
+#   - type annotations   (Union[int, Undefined])
+#   - function arguments
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/undefined.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+fn get_value(key: str) -> Union[int, Undefined]:
+    if key == "count":
+        return 42
+    return Undefined
+
+fn show(val: Union[int, Undefined]) -> None:
+    if val is Undefined:
+        emit([str("not present")])
+        return
+    if val is not Undefined:
+        emit([str("present")])
+
+let v1 = get_value("count")
+let v2 = get_value("missing")
+
+show(v1)
+show(v2)
+
+# Pass Undefined as argument directly
+show(Undefined)
+
+# is Undefined in conditional
+if v2 is Undefined:
+    emit([str("v2 is Undefined: expected")])
+
+# is not Undefined to assert presence
+if v1 is not Undefined:
+    emit([str("v1 is not Undefined: expected")])
+
+# ── 出力を照らす ──
+check_output([
+    "present",
+    "not present",
+    "not present",
+    "v2 is Undefined: expected",
+    "v1 is not Undefined: expected",
+    "",
+], "undefined")

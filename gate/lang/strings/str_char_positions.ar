@@ -1,0 +1,44 @@
+# str_char_positions.ar — 文字列の長さと位置は文字の単位（python_builtins_plan.md のタスク 1-17）
+#
+# `len` / `find` / `rfind` / `index` / `rindex` / `count` / `startswith` / `endswith` の位置と範囲は、添字（`s[i]`）・
+# 切り出し（`s[i:j]`）・`for c in s` と同じ**文字の番号**（CPython と同じ。負は後ろから・`None` は省略と同じ）。
+# `zfill` / `expandtabs` / `%5s` / `%.3s` の幅も文字の数。出力は CPython と同じ。
+# 対になる誤りの例: str_char_positions_error.ar（`index` で見つからない）
+#
+# ⚠ 以前はバイトの単位で、`len("γάμμα")` が 10、`"γάμμα".find("μ")` が 4、文字の途中の位置を渡すと
+#   Rust のパニックで落ちた。`startswith(p, start)` は `start` を黙って捨てていた。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/str_char_positions.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+let s = "γάμμα-μ"
+emit([str(len(s)), str(len("")), str(len("abc")), str(s[len(s) - 1])])
+emit([str(s.find("μ")), str(s.rfind("μ")), str(s.index("μ")), str(s.rindex("μ")), str(s.count("μ"))])
+emit([str(s.find("μ", 3)), str(s.find("μ", -2)), str(s.find("μ", 0, 3)), str(s.find("μ", None, 3)), str(s.find("μ", 9))])
+emit([str(s.find("")), str(s.find("", 7)), str(s.find("", 8)), str(s.count("")), str(s.count("", 2, 4)), str(s.count("μ", -3))])
+emit([str(s.startswith("μ", 2)), str(s.startswith(("x", "γ"))), str(s.endswith("μ", 0, 4)), str(s.endswith(("α", "-"), None, 6))])
+emit([str(s.startswith("", 7)), str(s.startswith("", 8)), str(s.endswith("μ", -1))])
+
+# 位置で切り出すと探した文字に当たる
+let i = s.find("-")
+emit([str(s[:i]), str(s[i + 1:])])
+
+# 幅
+emit([str("-42".zfill(6)), str("+7".zfill(4)), str("γά".zfill(5)), str("abc".zfill(2))])
+emit([str(repr("ab\tc\td".expandtabs(4))), str(repr("é\tx\nab\tc".expandtabs())), str(repr("a\tb".expandtabs(0)))])
+emit([str("[%5s][%-5s][%.2s]" % ("γά", "γά", "γάμμα"))])
+
+# ── 出力を照らす ──
+check_output([
+    "7 0 3 μ",
+    "2 6 2 6 3",
+    "3 6 2 2 -1",
+    "0 7 -1 8 3 1",
+    "True True True True",
+    "True False True",
+    "γάμμα μ",
+    "-00042 +007 000γά abc",
+    "'ab  c   d' 'é       x\\nab      c' 'ab'",
+    "[   γά][γά   ][γά]",
+    "",
+], "str_char_positions")

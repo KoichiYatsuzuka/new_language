@@ -1,0 +1,120 @@
+# block_scope.ar — 制御構文の本体の束縛はブロックスコープ（関数の中でも同じ・name_scope_plan.md の R-1）
+#
+# `if` / `while` / `for` / `match` / `block:` / `try` / `except` の本体で宣言した名前は、
+# そのブロックを抜けると見えない。宣言より前からも見えない（docs/grammar/02_variables.md）。
+# 外から読むと静的エラー（name_scope_plan.md の 1-4）。
+# ⚠ 以前は**関数の中でだけ漏れていた**（ブロックの後で中の値が読めた・一度も実行されなかった `let` が
+#   `None`・ループで宣言より前の読みが前の周回の値）。誤りの形は
+#   → [block_scope_error.ar](block_scope_error.ar)
+#
+# ここは「正しいコードは今までどおり動く」ことの確かめ（どれも関数の中）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/block_scope.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 1. ブロックの中では読める ===")])
+fn inside() -> int:
+    mut s = 0
+    if True:
+        let y = 5
+        s = y * 2
+    return s
+emit([str(inside())])                   # 10
+
+emit([str("=== 2. 兄弟のブロックで同じ名前を使い回せる ===")])
+fn siblings(let c: bool) -> str:
+    mut out = ""
+    if c:
+        let msg = "then"
+        out = msg
+    else:
+        let msg = "else"
+        out = msg
+    return out
+emit([str(siblings(True))])             # then
+emit([str(siblings(False))])            # else
+
+emit([str("=== 3. ループの本体は周回ごとに新しいブロック ===")])
+fn per_iteration() -> int:
+    mut total = 0
+    for i in range(3):
+        let sq = i * i
+        total += sq
+    mut n = 0
+    while n < 2:
+        let step = n + 10
+        total += step
+        n += 1
+    return total
+emit([str(per_iteration())])            # 26
+
+emit([str("=== 4. 外側のブロックの名前は内側から読める ===")])
+fn nested() -> int:
+    let base = 100
+    mut r = 0
+    if True:
+        let mid = base + 1
+        if True:
+            let leaf = mid + 1
+            r = leaf
+    return r
+emit([str(nested())])                   # 102
+
+emit([str("=== 5. match の腕・block: 文・ブロック式 ===")])
+fn arms(let k: int) -> int:
+    mut r = 0
+    match k:
+        case 1:
+            let one = 11
+            r = one
+        case _:
+            let other = 99
+            r = other
+    block:
+        let tmp = r + 1
+        r = tmp
+    let v = block ->int:
+        let inner = r * 2
+        block_return inner
+    return v
+emit([str(arms(1))])                    # 24
+emit([str(arms(7))])                    # 200
+
+emit([str("=== 6. except の別名はハンドラの中で読める ===")])
+fn handled() -> str:
+    mut msg = ""
+    try:
+        raise ValueError("boom")
+    except ValueError as e:
+        msg = str(e)
+    return msg
+emit([str(handled())])                  # boom
+
+emit([str("=== 7. 入れ子の関数は定義より前に束縛した名前を捕まえられる ===")])
+fn outer() -> int:
+    let x = 7
+    fn inner() -> int:
+        return x + 1
+    return inner()
+emit([str(outer())])                    # 8
+
+# ── 出力を照らす ──
+check_output([
+    "=== 1. ブロックの中では読める ===",
+    "10",
+    "=== 2. 兄弟のブロックで同じ名前を使い回せる ===",
+    "then",
+    "else",
+    "=== 3. ループの本体は周回ごとに新しいブロック ===",
+    "26",
+    "=== 4. 外側のブロックの名前は内側から読める ===",
+    "102",
+    "=== 5. match の腕・block: 文・ブロック式 ===",
+    "24",
+    "200",
+    "=== 6. except の別名はハンドラの中で読める ===",
+    "boom",
+    "=== 7. 入れ子の関数は定義より前に束縛した名前を捕まえられる ===",
+    "8",
+    "",
+], "block_scope")

@@ -1,0 +1,63 @@
+# gen_method.ar — クラス本体の `gen` メソッド。
+#
+# ⚠⚠ **これは以前 `'Bag' has no member 'each'` で落ちていた**（既存のドリフト）。
+#   型検査のクラスメンバ収集（`registry/builder.rs` の `collect_class_methods` /
+#   `collect_class_members`）が `Stmt::FnDef` しか見ておらず、**`Stmt::GenDef` を
+#   取りこぼして**いた。`gen` メソッドはパーサも実行時も通るのに、静的検査だけが
+#   「そんなメンバは無い」と言う形だった。
+#
+# ⚠ **`import[py]` 固有ではない**。純 Arrow のこのファイルで再現する。
+# ⚠ 呼び出しの戻り値は**産出型ではなくジェネレータ**なので、シグネチャの戻り型は
+#   `generator`（実行時の型名 `Value::Generator(_) => "generator"` に揃えてある）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/collections/gen_method.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+class Bag:
+    mut xs: list[int]
+
+    fn __init__(mut self, mut xs: list[int]) -> None:
+        self.xs = xs
+
+    gen each(mut self) -> int:
+        for x in self.xs:
+            yield x
+
+    gen doubled(mut self) -> int:
+        for x in self.xs:
+            yield x * 2
+
+    fn size(mut self) -> int:
+        return len(self.xs)
+
+mut b = Bag([1, 2, 3])
+
+# ── ① gen メソッドを for で回す ─────────────────────────────────────────
+for v in b.each():
+    emit([str(v)])
+# 1
+# 2
+# 3
+
+# ── ② 2 本目の gen メソッド ─────────────────────────────────────────────
+for v in b.doubled():
+    emit([str(v)])
+# 2
+# 4
+# 6
+
+# ── ③ 通常メソッドと同居できる ──────────────────────────────────────────
+emit([str(b.size())])
+# 3
+
+# ── 出力を照らす ──
+check_output([
+    "1",
+    "2",
+    "3",
+    "2",
+    "4",
+    "6",
+    "3",
+    "",
+], "gen_method")

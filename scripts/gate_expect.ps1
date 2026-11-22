@@ -4,8 +4,9 @@
 # 期待の書き方は gate/README.md の 3 節。照らす規則（gate_judge.ps1 の Test-GateResult）:
 #   - 出た誤り（警告を含む・AR_DIAG_OUT）の集まりと期待の集まりが一致すれば合格。足りない＝禁止が通った、余分＝別の理由で
 #     落ちた。どちらも不合格（EXPECT-MISMATCH）。期待があるのに exit 0 も不合格。
+#   - 警告だけを期待するテスト（`_warning`）は exit 0 で最後まで走ること（警告は実行を止めない）。
 #   - 期待が無いテストは exit 0 で診断 0 件なら合格。GateCheckFailed で止まれば CHECK-FAILED（確かめ落ち）、ほかは FAILED。
-#   - `_error` の名前と期待の有無が食い違う・読めない期待・.arc の陳腐化の警告も不合格。
+#   - `_error` / `_warning` の名前と期待が食い違う・読めない期待・.arc の陳腐化の警告も不合格。
 #
 # 使い方:
 #   ./scripts/gate_expect.ps1                 # gate/ の全部

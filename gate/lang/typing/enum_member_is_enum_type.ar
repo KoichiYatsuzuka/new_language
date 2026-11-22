@@ -1,0 +1,122 @@
+# enum_member_is_enum_type.ar — enum のメンバーの型は enum 型そのもの（`Color.BLUE` の型は `Color`）
+#
+# 弾かれる例は enum_member_is_enum_type_error.ar
+# 計画: implementation_plans/enum_member_type_plan.md
+#
+# ## 何が壊れていたか
+#
+# メンバー（`Color.BLUE`）の型が、型検査でも実行時でも別の内部の型 `enum_item_Color` だった。
+# そのため **`Color` 型の値が 1 つも存在せず**、次がすべて失敗していた:
+#
+#   fn label(let c: Color) -> str:
+#       if c == Color.BLUE:          # StaticTypeError: '==' between 'Color' and
+#           ...                      #   'enum_item_Color' can never be true
+#   Color.BLUE is Color              # False
+#   Color.BLUE mustbe Color          # 実行時エラー（expected `Color`, got `enum_item_Color`）
+#   Pen(Color.BLUE)                  # `mut color: Color` のフィールドに入らない（実行時エラー）
+#
+# 発端は外部プロジェクトの `if c == ProofColor.BLUE:`（`c: ProofColor`）。
+#
+# ⚠ 注釈なしの `let k = Color.BLUE` 同士の比較だけは以前から通っていた（両辺が同じ
+#   `enum_item_Color` だった）。既存の例題はこの形しか書いておらず、ゲートが見逃していた。
+# ⚠ `enum_item_Color` はソースから廃止した（書くと静的エラー・エラー例題を参照）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/enum_member_is_enum_type.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+enum Color:
+    PLANE
+    BLUE
+    RED
+
+emit([str("=== enum 型の引数とメンバーを比べる ===")])
+
+fn label(let c: Color) -> str:
+    if c == Color.BLUE:
+        return "blue"
+    elif c != Color.RED:
+        return "plane"
+    return "red"
+
+emit([str(label(Color.BLUE))])                # blue
+emit([str(label(Color.PLANE))])               # plane
+emit([str(label(Color.RED))])                 # red
+
+emit([str("=== 注釈つきの let・逆向き・in ===")])
+
+let m: Color = Color.BLUE
+emit([str(m == Color.BLUE)])                  # True
+emit([str(Color.RED == m)])                   # False
+emit([str(m in [Color.PLANE, Color.BLUE])])   # True
+let k = Color.BLUE                      # 注釈なしでも型は Color
+emit([str(k == m)])                           # True
+
+emit([str("=== 型テスト: is / is の腕 / mustbe ===")])
+
+emit([str(m is Color)])                       # True
+
+fn kind(let c: Color) -> str:
+    match (c):
+        is Color:
+            return "color"
+    return "?"
+
+emit([str(kind(Color.PLANE))])                # color
+let n = m mustbe Color
+emit([str(n.value)])                          # 1
+
+emit([str("=== Color 型のフィールド・list[Color] ===")])
+
+class Pen:
+    mut color: Color
+
+mut p = Pen(Color.BLUE)
+emit([str(p.color.value)])                    # 1
+p.color = Color.RED
+emit([str(p.color == Color.RED)])             # True
+let cs: list[Color] = [Color.RED, Color.PLANE]
+emit([str(cs[0].value)])                      # 2
+
+emit([str("=== メンバーは値: 変数の付け替えはできる ===")])
+
+# ⚠ メンバーそのもの（`Color.BLUE = ..`）や中身（`.value = ..`）は書き換えられない
+#   （enum_member_is_enum_type_error.ar）。変数が指すメンバーを替えるのは値の書き換えではない。
+mut cur = Color.BLUE
+cur = Color.RED
+emit([str(cur == Color.RED), str(Color.BLUE.value)])   # True 1
+
+emit([str("=== 組み込みの enum ===")])
+
+let mode: FileOpenMode = FileOpenMode.read
+emit([str(mode == FileOpenMode.read)])        # True
+emit([str(mode is FileOpenMode)])             # True
+
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== enum 型の引数とメンバーを比べる ===",
+    "blue",
+    "plane",
+    "red",
+    "=== 注釈つきの let・逆向き・in ===",
+    "True",
+    "False",
+    "True",
+    "True",
+    "=== 型テスト: is / is の腕 / mustbe ===",
+    "True",
+    "color",
+    "1",
+    "=== Color 型のフィールド・list[Color] ===",
+    "1",
+    "True",
+    "2",
+    "=== メンバーは値: 変数の付け替えはできる ===",
+    "True 1",
+    "=== 組み込みの enum ===",
+    "True",
+    "True",
+    "done",
+    "",
+], "enum_member_is_enum_type")

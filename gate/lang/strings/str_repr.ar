@@ -1,0 +1,62 @@
+# 文字列の repr（python_builtins_plan.md のタスク 1-13）
+#
+# `repr(s)`・コンテナの中の文字列の表示・`KeyError` の文言・`ascii(s)` は CPython 3.12 の `repr` と同じ形:
+#   - 引用符は ' 。ただし ' を含み " を含まなければ "
+#   - \ と使った引用符には \ を付ける。タブ・改行・復帰は \t / \n / \r
+#   - 表示できない文字（制御文字・書式文字・区切り・未割り当て）は \xhh / \uhhhh / \Uhhhhhhhh
+# 以前は ' で囲むだけで、"it's" が 'it's' と出ていた。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/str_repr.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str(repr("plain"))])
+emit([str(repr("it's"))])
+emit([str(repr("say \"hi\""))])
+emit([str(repr("both ' and \""))])
+emit([str(repr("tab\tnewline\nreturn\r"))])
+emit([str(repr("back\\slash"))])
+emit([str(repr("nul\0 del" + chr(0x7f)))])
+emit([str(repr("é 日本 😀"))])
+emit([str(repr("nbsp" + chr(0xa0) + "zwsp" + chr(0x200b) + "ls" + chr(0x2028)))])
+emit([str(repr(chr(0xe0000)))])
+
+# コンテナの中の文字列
+emit([str(["it's", "x", "a\nb"])])
+emit([str({"k'": "v\"", "t": "\t"})])
+emit([str(("it's",))])
+
+# KeyError の文言（str(e)）もキーの repr
+let d: dict[str, int] = {"a": 1}
+try:
+    let v = d["it's"]
+except KeyError as e:
+    emit([str(e)])
+
+# ascii は repr の非 ASCII をさらに変える
+emit([str(ascii("é'"))])
+emit([str(ascii("😀"))])
+
+# isprintable も同じ判定
+emit([str("abc".isprintable()), str("".isprintable()), str(("a" + chr(0xa0)).isprintable()), str("a\n".isprintable()), str("日本".isprintable())])
+
+# ── 出力を照らす ──
+check_output([
+    "'plain'",
+    "\"it's\"",
+    "'say \"hi\"'",
+    "'both \\' and \"'",
+    "'tab\\tnewline\\nreturn\\r'",
+    "'back\\\\slash'",
+    "'nul\\x00 del\\x7f'",
+    "'é 日本 😀'",
+    "'nbsp\\xa0zwsp\\u200bls\\u2028'",
+    "'\\U000e0000'",
+    "[\"it's\", 'x', 'a\\nb']",
+    "{\"k'\": 'v\"', 't': '\\t'}",
+    "(\"it's\",)",
+    "\"it's\"",
+    "\"\\xe9'\"",
+    "'\\U0001f600'",
+    "True True False False True",
+    "",
+], "str_repr")

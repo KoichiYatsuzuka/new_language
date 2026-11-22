@@ -1,0 +1,146 @@
+# trait_conformance.ar — 基底 trait の要求をクラスが満たすこと（0-8）
+#
+# ## protocol との役割分担
+#
+# protocol は**構造的適合**（基底に書かない）ので「その型が要求を満たすか」を
+# **使用箇所**で見る（protocol_sites.ar）。trait は基底に書く名目的な継承なので、
+# 見るべきは**クラス宣言そのもの**。
+#
+# 「実装し忘れ」は以前からパーサが検出していた
+# （`class C must override virtual method m from trait T`）。
+# ⚠⚠ 一方で **同名で宣言はあるが中身が食い違う**場合は静的にも実行時にも素通りしていた。
+#   `mut hp: int` の trait に対しクラスが `mut hp: str` と書けたし、
+#   `fn speak(self, n: int) -> str` を `-> int` で実装できた。
+#
+# 誤った実装は trait_conformance_error.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/classes/trait_conformance.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 素直な適合 ===")])
+
+trait Creature:
+    mut hp: int
+    mut name: str
+
+    fn speak(self, let volume: int) -> str:
+        ...
+
+class Wolf(Creature):
+    mut pack: int
+
+    fn speak(self, let volume: int) -> str:
+        return "howl"
+
+mut w = Wolf(40, "Grey", 5)
+emit([str(w.hp), str(w.name), str(w.pack)])     # 40 Grey 5
+emit([str(w.speak(3))])               # howl
+
+emit([str("=== 再宣言しないフィールドは継承する（検査対象外） ===")])
+
+# Wolf は hp / name を再宣言していない。trait のものをそのまま使う。
+w.hp = 30
+emit([str(w.hp)])                     # 30
+
+# ⚠⚠ **trait フィールドの再宣言は禁止**（0-9）。trait のメンバーは `obj::Trait.field` で
+#   修飾アクセスできるので同名をクラス側に置く必要がなく、**オーバーライドはメソッド専用**。
+#   ⇒ `class Bear(Creature): mut hp: int` のような再宣言は ParseError。
+#     → trait_field_redeclare_error.ar
+
+emit([str("=== 複数 trait ===")])
+
+trait Describable:
+    fn describe(self) -> str:
+        ...
+
+trait Measurable:
+    fn measure(self) -> int:
+        ...
+
+class Box(Describable, Measurable):
+    let width: int
+    let height: int
+
+    fn describe(self) -> str:
+        return "Box"
+
+    fn measure(self) -> int:
+        return self.width * self.height
+
+let b = Box(4, 6)
+emit([str(b.describe()), str(b.measure())])    # Box 24
+
+emit([str("=== テンプレート trait ===")])
+
+# ⚠ `trait Holder[T]` の `-> T` を `class IntBox(Holder[int])` が `-> int` で実装するのは
+#   正しい。
+# ⚠⚠ **タスク 9.9 で具体型引数まで見るようになった。** 以前は `Holder[int]` の `int` が
+#   基底名 `Holder` からは判らず、型変数を含む要求は照合を見送っていた。
+#   いまは `base_args` として型引数がクラス側に載っているので `T` → `int` に置換される。
+trait Holder[T]:
+    mut item: T
+
+    fn get(self) -> T:
+        ...
+
+class IntBox(Holder[int]):
+    fn get(self) -> int:
+        return self.item
+
+emit([str(IntBox(5).get())])          # 5
+
+emit([str("=== 仮想メソッドとデフォルト実装 ===")])
+
+# trait のメソッドは 2 種類:
+#   本体が `...`   → **仮想メソッド**。クラスは必ず override しなければならない
+#                     （しないと ParseError: must override virtual method）
+#   本体を書いたもの → **デフォルト実装**。override しなければそのまま継承される
+# ⚠ どちらも引数・戻り値の型注釈は必須（仮想でもシグネチャは確定していなければならない）。
+
+trait Greeter:
+    fn name(self) -> str:
+        ...                         # 仮想メソッド: 実装を強制する
+
+    fn greet(self) -> str:
+        return "hello"              # デフォルト実装: 継承される
+
+class Quiet(Greeter):
+    mut n: int
+
+    fn name(self) -> str:
+        return "quiet"
+
+class Loud(Greeter):
+    mut n: int
+
+    fn name(self) -> str:
+        return "loud"
+
+    fn greet(self) -> str:
+        return "HELLO"             # デフォルト実装を上書き
+
+emit([str(Quiet(1).name()), str(Quiet(1).greet())])   # quiet hello
+emit([str(Loud(2).name()), str(Loud(2).greet())])     # loud HELLO
+
+# ⚠ 仮想メソッドは **trait 専用**。クラス本体に `...` を書くとエラー
+#   → class_virtual_method_error.ar
+
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== 素直な適合 ===",
+    "40 Grey 5",
+    "howl",
+    "=== 再宣言しないフィールドは継承する（検査対象外） ===",
+    "30",
+    "=== 複数 trait ===",
+    "Box 24",
+    "=== テンプレート trait ===",
+    "5",
+    "=== 仮想メソッドとデフォルト実装 ===",
+    "quiet hello",
+    "loud HELLO",
+    "done",
+    "",
+], "trait_conformance")

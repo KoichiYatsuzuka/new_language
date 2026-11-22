@@ -1,0 +1,70 @@
+# dict_items.ar — `dict.items()`（`(キー, 値)` タプルのリスト）。
+#
+# 多ターゲット `for` と組み合わせる形が主目的:
+#   for k, v in d.items():
+#
+# ⚠ 既存の `keys()` / `values()` と揃えて**リストを返す**（CPython のビューではない）。
+#   ＝ **スナップショット**なので、走査中に元の辞書を変更してもこの列は変わらない
+#   （CPython は走査中の変更を `RuntimeError` にする）。
+# ⚠ 別名は無い。`keys()` には `key()`、`values()` には `item()` という別名があるが、
+#   `items()` は `item()` が既に `values()` の別名として埋まっているため 1 つだけ。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/collections/dict_items.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+mut d = {"a": 1, "b": 2, "c": 3}
+
+# ── ① そのまま表示 ──────────────────────────────────────────────────────
+emit([str(d.items())])
+# [('a', 1), ('b', 2), ('c', 3)]
+
+# ── ② 多ターゲット for で分解する（主目的の形） ─────────────────────────
+mut total = 0
+for k, v in d.items():
+    emit([str(k + "=" + str(v))])
+    total = total + v
+emit([str(total)])
+# a=1
+# b=2
+# c=3
+# 6
+
+# ── ③ 挿入順が保たれる ──────────────────────────────────────────────────
+mut order = {"z": 1, "a": 2}
+emit([str(order.items())])
+# [('z', 1), ('a', 2)]
+
+# ── ④ 空の辞書 ──────────────────────────────────────────────────────────
+mut empty: dict[str, int] = {}
+emit([str(empty.items())])
+# []
+
+# ── ⑤ keys() / values() と同じ並び ──────────────────────────────────────
+emit([str(d.keys())])
+emit([str(d.values())])
+# ['a', 'b', 'c']
+# [1, 2, 3]
+
+# ── ⑥ スナップショットである（走査前に取った列は変更に影響されない） ────
+mut snap = d.items()
+d["d"] = 4
+emit([str(len(snap))])
+emit([str(len(d.items()))])
+# 3
+# 4
+
+# ── 出力を照らす ──
+check_output([
+    "[('a', 1), ('b', 2), ('c', 3)]",
+    "a=1",
+    "b=2",
+    "c=3",
+    "6",
+    "[('z', 1), ('a', 2)]",
+    "[]",
+    "['a', 'b', 'c']",
+    "[1, 2, 3]",
+    "3",
+    "4",
+    "",
+], "dict_items")

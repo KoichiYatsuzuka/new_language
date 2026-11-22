@@ -1,0 +1,81 @@
+# py_conversions.ar — 変換・遅延の組み込み（python_builtins_plan.md のタスク 3-3）
+#
+# 対になる誤りの例: py_conversions_error.ar
+#
+# map / filter / iter / hash / ord / chr / hex / oct / bin / ascii。どれも CPython 3.12 と同じ結果:
+#   - map / filter は**遅延**（取り出すたびに関数を呼ぶ）。無限のジェネレータにも使える
+#   - iter(x) は for と同じイテレータ、iter(f, sentinel) は f() が sentinel になるまで
+#   - hex / oct / bin は接頭辞つき（負数は -0b101）、ascii は非 ASCII を \x.. にする
+# ⚠ 以前はどれも NameError（pandas で計 98 箇所）。
+# ⚠ あわせて、遅延のジェネレータ（gen 関数）を zip / enumerate / set に渡すと黙って空・TypeError だった穴も直した。
+# ⚠ format は対象外（書式指定の小言語・python_builtins_plan.md の 4.3）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/py_conversions.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== map / filter ===")])
+let xs: list[int] = [1, 2, 3, 4]
+fn sq(x: int) -> int:
+    return x * x
+fn odd(x: int) -> bool:
+    return x % 2 == 1
+fn add(a: int, b: int) -> int:
+    return a + b
+emit([str(list(map(repr, xs))), str(list(map(sq, xs)))])               # ['1', '2', '3', '4'] [1, 4, 9, 16]
+emit([str(list(filter(odd, xs))), str(list(filter(None, [0, 1, 2, 0])))])   # [1, 3] [1, 2]
+emit([str(list(map(add, xs, [10, 20])))])                         # [11, 22]（短い方で止まる）
+
+emit([str("=== lazy ===")])
+gen naturals() -> int:
+    mut i = 0
+    while True:
+        yield i
+        i += 1
+mut squares = map(sq, naturals())
+emit([str(squares.next()), str(squares.next()), str(squares.next())])       # 0 1 4（無限の列でも必要な分だけ）
+
+emit([str("=== iter ===")])
+mut it = iter(xs)
+emit([str(it.next()), str(it.next())])                                 # 1 2
+mut k = 0
+fn counter() -> int:
+    k += 1
+    return k
+emit([str(list(iter(counter, 4)))])                               # [1, 2, 3]
+
+emit([str("=== hash / ord / chr / hex / oct / bin / ascii ===")])
+emit([str(hash(1) == hash(1)), str(ord("a")), str(chr(97))])                # True 97 a
+emit([str(hex(255)), str(oct(8)), str(bin(-5))])                            # 0xff 0o10 -0b101
+emit([str(ascii("hello")), str(ascii(1.5))])                           # 'hello' 1.5
+
+emit([str("=== lazy generators into zip / enumerate / set ===")])
+gen two() -> int:
+    yield 1
+    yield 2
+emit([str(list(zip(two(), [10, 20])))])                           # [(1, 10), (2, 20)]
+for i, v in enumerate(two()):
+    emit([str(i), str(v)])                                             # 0 1 / 1 2
+emit([str(len(set(two())))])                                      # 2
+
+# ── 出力を照らす ──
+check_output([
+    "=== map / filter ===",
+    "['1', '2', '3', '4'] [1, 4, 9, 16]",
+    "[1, 3] [1, 2]",
+    "[11, 22]",
+    "=== lazy ===",
+    "0 1 4",
+    "=== iter ===",
+    "1 2",
+    "[1, 2, 3]",
+    "=== hash / ord / chr / hex / oct / bin / ascii ===",
+    "True 97 a",
+    "0xff 0o10 -0b101",
+    "'hello' 1.5",
+    "=== lazy generators into zip / enumerate / set ===",
+    "[(1, 10), (2, 20)]",
+    "0 1",
+    "1 2",
+    "2",
+    "",
+], "py_conversions")

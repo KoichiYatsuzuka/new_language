@@ -1,0 +1,377 @@
+# other_typing.tl — Union, Option, Any, type guards (is / is not), enum, and cast (=>)
+
+# ============================================================
+# 1. Any: accepts any value, no static narrowing
+# ============================================================
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/other_typing.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== Any ===")])
+
+fn identity(x: Any) -> Any:
+    return x
+
+emit([str(identity(42))])       # 42
+emit([str(identity("hello"))])  # hello
+emit([str(identity(True))])     # True
+
+# ============================================================
+# 2. Union: variable holds one of several concrete types
+# ============================================================
+emit([str("=== Union ===")])
+
+fn describe_union(x: Union[int, str, bool]) -> str:
+    if x is int:
+        return "int"
+    if x is str:
+        return "str"
+    if x is bool:
+        return "bool"
+    return "other"
+
+emit([str(describe_union(10))])      # int
+emit([str(describe_union("hi"))])    # str
+emit([str(describe_union(True))])    # bool
+
+# ============================================================
+# 3. Option[T]: shorthand for Union[T, None]
+# ============================================================
+emit([str("=== Option ===")])
+
+fn maybe_value(flag: bool) -> Option[int]:
+    if flag:
+        return 99
+    return None
+
+let v1 = maybe_value(True)
+let v2 = maybe_value(False)
+
+if v1 is not None:
+    emit([str("v1 has a value")])   # v1 has a value
+if v2 is None:
+    emit([str("v2 is None")])       # v2 is None
+
+# ============================================================
+# 4. is: runtime type check against primitives and classes
+# ============================================================
+emit([str("=== is ===")])
+
+fn type_of(x: Any) -> str:
+    if x is int:
+        return "int"
+    if x is float:
+        return "float"
+    if x is str:
+        return "str"
+    if x is bool:
+        return "bool"
+    return "unknown"
+
+emit([str(type_of(1))])      # int
+emit([str(type_of(1.5))])    # float
+emit([str(type_of("a"))])    # str
+emit([str(type_of(False))])  # bool
+
+emit([str("=== is with classes ===")])
+
+class Cat:
+    let name: str
+
+class Dog:
+    let name: str
+    let breed: str
+
+fn pet_sound(p: Any) -> str:
+    if p is Cat:
+        return "Meow"
+    if p is Dog:
+        return "Woof"
+    return "..."
+
+let cat = Cat("Whiskers")
+let dog = Dog("Rex", "Labrador")
+emit([str(pet_sound(cat))])  # Meow
+emit([str(pet_sound(dog))])  # Woof
+
+emit([str("=== is with traits ===")])
+
+trait Flyable:
+    fn fly(self) -> str:
+        ...
+
+class Bird(Flyable):
+    let name: str
+    fn fly(self) -> str:
+        return "flap flap"
+
+class Fish:
+    let name: str
+
+fn can_fly(x: Any) -> bool:
+    return x is Flyable
+
+let bird = Bird("Sparrow")
+let fish = Fish("Nemo")
+emit([str(can_fly(bird))])  # True
+emit([str(can_fly(fish))])  # False
+
+emit([str("=== is function ===")])
+
+fn square(let n: int) -> int:
+    return n * n
+
+emit([str(square is function)])    # True
+emit([str(42 is function)])        # False
+
+# ============================================================
+# 5. is not: narrowing on Union / Option
+# ============================================================
+emit([str("=== is not narrowing ===")])
+
+fn print_if_present(x: Option[str]) -> None:
+    if x is not None:
+        emit([str("value:"), str(x)])   # x narrowed to str here
+    else:
+        emit([str("no value")])
+
+print_if_present("hello")  # value: hello
+print_if_present(None)     # no value
+
+emit([str("=== elif narrowing on Union ===")])
+
+fn classify(x: Union[int, str, float]) -> str:
+    if x is int:
+        return "integer"
+    elif x is str:
+        return "string"
+    elif x is float:
+        return "float"
+    return "other"
+
+emit([str(classify(7))])      # integer
+emit([str(classify("yo"))])   # string
+emit([str(classify(2.5))])    # float
+
+# ============================================================
+# 6. enum
+# ============================================================
+emit([str("=== enum: basic ===")])
+
+enum Color:
+    Red
+    Green
+    Blue
+
+let c = Color.Green
+emit([str(c.value)])  # 1
+
+# Explicit values; auto-numbering continues after the explicit value
+enum MyEnum:
+    a
+    b = 5
+    c
+
+emit([str(MyEnum.a.value)])  # 0
+emit([str(MyEnum.b.value)])  # 5
+emit([str(MyEnum.c.value)])  # 6
+
+emit([str("=== enum: is check and equality ===")])
+
+let x = Color.Red
+emit([str(x is Color)])  # True（メンバーの型は enum 型そのもの）
+
+let r1 = Color.Red
+let r2 = Color.Red
+emit([str(r1 == r2)])          # True
+emit([str(r1 == Color.Blue)])  # False
+
+emit([str("=== enum: match ===")])
+
+mut result = ""
+match (c):
+    case Color.Red:
+        result = "red"
+    case Color.Green:
+        result = "green"
+    case Color.Blue:
+        result = "blue"
+emit([str(result)])  # green
+
+emit([str("=== enum: iteration ===")])
+
+for item in [Color.Red, Color.Green, Color.Blue]:
+    emit([str(item.value)])  # 0, 1, 2
+
+# ============================================================
+# 7. Cast operator (=>)  and  __cast__ special method
+# ============================================================
+emit([str("=== cast: basic ===")])
+
+class Celsius:
+    let value: float
+
+    fn __init__(mut self, value: float)->None:
+        self.value = value
+
+    fn __cast__[float](let self)->float:
+        return self.value
+
+    fn __cast__[int](let self)->int:
+        return int(self.value)
+
+    fn __repr__(let self)->str:
+        return "Celsius(" + repr(self.value) + ")"
+
+let temp = Celsius(36.6)
+let cast_f: float = temp=>float
+let cast_i: int   = temp=>int
+emit([str(cast_f)])   # 36.6
+emit([str(cast_i)])   # 36
+
+emit([str("=== cast: chaining ===")])
+
+class JsonLike:
+    let data: dict[str, int]
+
+    fn __init__(mut self, data: dict[str, int])->None:
+        self.data = data
+
+    fn __cast__[dict[str, int]](let self)->dict[str, int]:
+        return self.data
+
+let jl = JsonLike(dict[str, int]({"a": 1, "b": 2}))
+let jl_keys = jl=>dict[str, int].keys()
+emit([str(jl_keys)])  # ["a", "b"]
+
+emit([str("=== cast: new_type ===")])
+
+new_type Meters: float
+new_type Celsius2: float
+new_type Count: int
+new_type Kg: float
+
+let m = 5.0=>Meters
+let c2_val = 100.0=>Celsius2
+emit([str(repr(m))])      # Meters(5.0)
+emit([str(repr(c2_val))]) # Celsius2(100.0)
+
+let cnt = 42=>Count
+emit([str(repr(cnt))])    # Count(42)
+
+let raw_f = m=>float
+let raw_i = cnt=>int
+emit([str(raw_f)])        # 5.0
+emit([str(raw_i)])        # 42
+
+let kg = m=>Kg
+emit([str(repr(kg))])     # Kg(5.0)
+
+emit([str("=== cast: auto-cast for let parameters ===")])
+
+class Wrapper:
+    let val: int
+
+    fn __init__(mut self, val: int)->None:
+        self.val = val
+
+    fn __cast__[int](let self)->int:
+        return self.val
+
+fn double(let x: int)->int:
+    return x * 2
+
+let w = Wrapper(21)
+emit([str(double(w))])    # 42
+
+emit([str("=== cast: multiple targets ===")])
+
+class CastPoint:
+    let x: int
+    let y: int
+
+    fn __init__(mut self, x: int, y: int)->None:
+        self.x = x
+        self.y = y
+
+    fn __cast__[str](let self)->str:
+        return "(" + repr(self.x) + ", " + repr(self.y) + ")"
+
+    # ⚠ タスク 8.1（案 A）で素の `list` 注釈は書けなくなったので戻り値は `list[int]`。
+    #   キャスト先の名前（`__cast__[list]` と `cp=>list`）は**注釈位置ではない**ので
+    #   従来どおり素の容器名で書ける。
+    fn __cast__[list](let self)->list[int]:
+        return [self.x, self.y]
+
+let cp = CastPoint(3, 4)
+emit([str(cp=>str)])   # (3, 4)
+emit([str(cp=>list)])  # [3, 4]
+
+# ── 出力を照らす ──
+check_output([
+    "=== Any ===",
+    "42",
+    "hello",
+    "True",
+    "=== Union ===",
+    "int",
+    "str",
+    "bool",
+    "=== Option ===",
+    "v1 has a value",
+    "v2 is None",
+    "=== is ===",
+    "int",
+    "float",
+    "str",
+    "bool",
+    "=== is with classes ===",
+    "Meow",
+    "Woof",
+    "=== is with traits ===",
+    "True",
+    "False",
+    "=== is function ===",
+    "True",
+    "False",
+    "=== is not narrowing ===",
+    "value: hello",
+    "no value",
+    "=== elif narrowing on Union ===",
+    "integer",
+    "string",
+    "float",
+    "=== enum: basic ===",
+    "1",
+    "0",
+    "5",
+    "6",
+    "=== enum: is check and equality ===",
+    "True",
+    "True",
+    "False",
+    "=== enum: match ===",
+    "green",
+    "=== enum: iteration ===",
+    "0",
+    "1",
+    "2",
+    "=== cast: basic ===",
+    "36.6",
+    "36",
+    "=== cast: chaining ===",
+    "['a', 'b']",
+    "=== cast: new_type ===",
+    "Meters(5.0)",
+    "Celsius2(100.0)",
+    "Count(42)",
+    "5.0",
+    "42",
+    "Kg(5.0)",
+    "=== cast: auto-cast for let parameters ===",
+    "42",
+    "=== cast: multiple targets ===",
+    "(3, 4)",
+    "[3, 4]",
+    "",
+], "other_typing")

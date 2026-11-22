@@ -1,0 +1,62 @@
+# toplevel_global_shadow.ar — 最上位グローバルが入れ子束縛に覆われるケース（#21-b）
+#
+# リゾルバをモジュール最上位まで広げ、最上位で宣言された名前への参照に
+# `Resolution::Global` を付けるようにした（名前引き → 索引アクセス）。
+#
+# その際 **push されたスコープの束縛は `scopes[0]` に居ない**ので、
+# それらに覆われる名前を `Global` にしてはいけない。取り違えると
+# 「グローバルを読むべきでない位置でグローバルを読む」バグになる
+# （関数側では `collection.ar` の set を for ターゲットが覆って実際に落ちた実例がある）。
+#
+# 期待: for / if / while / block のどこでも、内側の束縛と外側のグローバルを
+#       取り違えないこと。
+#
+# ⚠⚠ **覆う形そのものが書けなくなった**（規則 1・B4）。`let` の再宣言が
+#    元からエラーだったのに **for ターゲットだけが素通り**していたのを閉じた。
+#    つまりこのファイルが罰していた危険な形は**構成不能**になった
+#        → [for_target_shadow_error.ar](for_target_shadow_error.ar)
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/toplevel_global_shadow.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+let items = [10, 20, 30]
+
+# (1) for ターゲットは**ブロック内の新しい束縛**（規則 1 で別名必須）
+let x = 999                   # グローバル
+for xi in items:              # x を覆わない別名
+    emit([str("in-for xi ="), str(xi)])  # 10, 20, 30
+emit([str("after   x ="), str(x)])       # 999（ループに触られていない）
+
+# (2) if ブロック内から外側グローバルを読む
+let y = 1
+if True:
+    let y2 = y + 1
+    emit([str("in-if  y2 ="), str(y2)])
+emit([str("after   y ="), str(y)])
+
+# (3) while 内で最上位 mut を更新する（書き込みは Stmt::Assign の SlotCache 経路）
+mut c = 0
+while c < 3:
+    c = c + 1
+emit([str("c ="), str(c)])
+
+# (4) ブロック式の中から外側グローバルを読む
+#     （型検査が同名再宣言を禁じるので内側は別名にしてある）
+let z = 5
+let w = block -> int:
+    let inner = z * 20
+    block_return inner
+emit([str("w ="), str(w), str(" z ="), str(z)])
+
+# ── 出力を照らす ──
+check_output([
+    "in-for xi = 10",
+    "in-for xi = 20",
+    "in-for xi = 30",
+    "after   x = 999",
+    "in-if  y2 = 2",
+    "after   y = 1",
+    "c = 3",
+    "w = 100  z = 5",
+    "",
+], "toplevel_global_shadow")

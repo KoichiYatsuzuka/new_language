@@ -1,0 +1,47 @@
+# operator_overload_operand.ar — 演算子オーバーロードの右辺はメソッドの仮引数の型で検査される（フェーズ10 10-13）
+#
+# 対になる誤りの例: operator_overload_operand_error.ar
+#
+# ⚠ 以前は左辺がクラスだと演算を素通しにしていたので、`Money(100) + 5` が静的に通り、
+#   `__add__` の中の `other.cents` で実行時の AttributeError になっていた。
+# 実行時は**左辺の**演算子メソッド（`__add__` / `__lt__` …）を呼ぶので、右辺はその第 2 仮引数の型に
+# 合わなければならない。多重定義はどれか 1 つが受ければよい。
+# ⚠ `==` / `!=` は検査しない（異型でも「偽」を返すのが仕様）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/classes/operator_overload_operand.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+class Money:
+    mut cents: int
+
+    fn __add__(self, let other: Money) -> Money:
+        return Money(self.cents + other.cents)
+
+    fn __mul__(self, let k: int) -> Money:
+        return Money(self.cents * k)
+
+    fn __mul__(self, let k: float) -> Money:
+        return Money(int(float(self.cents) * k))
+
+    fn __lt__(self, let other: Money) -> bool:
+        return self.cents < other.cents
+
+let a = Money(100) + Money(50)
+emit([str(a.cents)])                    # 150
+emit([str((a * 2).cents)])              # 300（__mul__(int)）
+emit([str((a * 0.5).cents)])            # 75（__mul__(float)）
+emit([str(Money(1) < Money(2))])        # True
+
+mut total = Money(0)
+total += Money(10)                # 複合代入も同じ規則
+emit([str(total.cents)])                # 10
+
+# ── 出力を照らす ──
+check_output([
+    "150",
+    "300",
+    "75",
+    "True",
+    "10",
+    "",
+], "operator_overload_operand")

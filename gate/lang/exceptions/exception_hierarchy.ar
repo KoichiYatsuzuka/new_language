@@ -1,0 +1,115 @@
+# exception_hierarchy.ar — 組み込みの例外の階層（python_builtins_plan.md のタスク 4-1）
+#
+# 対になる誤りの例: exception_hierarchy_error.ar
+#
+# 組み込みの例外は CPython 3.12 と同じ階層を持つ。親で捕まえると子も捕まる:
+#   - LookupError → KeyError / IndexError、ArithmeticError → ZeroDivisionError / OverflowError
+#   - RuntimeError → NotImplementedError / RecursionError
+#   - OSError → FileNotFoundError / PermissionError / TimeoutError / ConnectionError …
+#   - Warning → UserWarning / DeprecationWarning / FutureWarning …（クラスとして足しただけ。warnings.warn は無い）
+#   - BaseException → Exception と GeneratorExit
+# ⚠ open の失敗は OS のエラーの種類で FileNotFoundError / PermissionError などへ振り分ける（以前はどれも IOError）。
+# ⚠ IOError / EnvironmentError / WindowsError は OSError と互いに捕まえ合う（CPython では同じクラス）。
+#   ただしクラスは別のままで、raise IOError("x") の表示は IOError: x（CPython は OSError: x）。
+# ⚠ 以前は階層が無く、except ArithmeticError が ZeroDivisionError を捕まえなかった。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/exceptions/exception_hierarchy.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== LookupError / ArithmeticError ===")])
+let d: dict[str, int] = {"a": 1}
+try:
+    emit([str(d["zz"])])
+except LookupError:
+    emit([str("LookupError caught a KeyError")])
+let xs: list[int] = [1]
+try:
+    emit([str(xs[5])])
+except LookupError:
+    emit([str("LookupError caught an IndexError")])
+try:
+    let z = 1 // 0
+except ArithmeticError:
+    emit([str("ArithmeticError caught a ZeroDivisionError")])
+
+emit([str("=== RuntimeError ===")])
+try:
+    raise NotImplementedError("todo")
+except RuntimeError as e:
+    emit([str("RuntimeError caught"), str(e.message)])
+
+emit([str("=== OSError ===")])
+let missing = "examples/exceptions/_no_such_file_for_hierarchy.txt"
+try:
+    let f = open(missing, FileOpenMode.read)
+except FileNotFoundError:
+    emit([str("FileNotFoundError")])
+try:
+    let f = open(missing, FileOpenMode.read)
+except OSError:
+    emit([str("OSError caught a FileNotFoundError")])
+try:
+    let f = open(missing, FileOpenMode.read)
+except IOError:
+    emit([str("IOError caught a FileNotFoundError")])
+try:
+    raise OSError("os")
+except IOError as e:
+    emit([str("IOError caught an OSError:"), str(e.message)])
+try:
+    raise TimeoutError("slow")
+except OSError as e:
+    emit([str("OSError caught a TimeoutError:"), str(e.message)])
+
+emit([str("=== Warning ===")])
+try:
+    raise FutureWarning("will change")
+except Warning as w:
+    emit([str("Warning caught a FutureWarning:"), str(w.message)])
+
+emit([str("=== BaseException ===")])
+try:
+    raise ValueError("v")
+except BaseException:
+    emit([str("BaseException catches every exception")])
+try:
+    try:
+        raise GeneratorExit("stop")
+    except Exception:
+        emit([str("not reached: GeneratorExit is not an Exception")])
+except BaseException as e:
+    emit([str("GeneratorExit passed through except Exception")])
+
+emit([str("=== is / isinstance / issubclass ===")])
+let k: LookupError = KeyError("k")
+emit([str(k is KeyError), str(k is LookupError), str(k is ValueError)])          # True True False
+emit([str(isinstance(ZeroDivisionError("z"), ArithmeticError))])      # True
+emit([str(issubclass(FileNotFoundError, OSError)), str(issubclass(UserWarning, Exception))])   # True True
+emit([str(issubclass(GeneratorExit, Exception)), str(issubclass(GeneratorExit, BaseException))])   # False True
+
+# ── 出力を照らす ──
+check_output([
+    "=== LookupError / ArithmeticError ===",
+    "LookupError caught a KeyError",
+    "LookupError caught an IndexError",
+    "ArithmeticError caught a ZeroDivisionError",
+    "=== RuntimeError ===",
+    "RuntimeError caught todo",
+    "=== OSError ===",
+    "FileNotFoundError",
+    "OSError caught a FileNotFoundError",
+    "IOError caught a FileNotFoundError",
+    "IOError caught an OSError: os",
+    "OSError caught a TimeoutError: slow",
+    "=== Warning ===",
+    "Warning caught a FutureWarning: will change",
+    "=== BaseException ===",
+    "BaseException catches every exception",
+    "GeneratorExit passed through except Exception",
+    "=== is / isinstance / issubclass ===",
+    "True True False",
+    "True",
+    "True True",
+    "False True",
+    "",
+], "exception_hierarchy")

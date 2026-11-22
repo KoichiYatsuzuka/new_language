@@ -1,0 +1,90 @@
+# list_concat_repeat.ar — `list` / `tuple` の連結（`+`）と繰り返し（`*`）（bug_fix.md B5）。
+#
+# ⚠ 以前は `operators.rs` の `Add` / `Mul` に `Int` / `Float` / `Str` / `UInt` / `Complex` の
+#   腕しか無く、`[1,2] + [3]` も `[1] * 2` も `TypeError` だった。
+#   ⇒ **リストの連結手段が `append` のループしかなかった**。
+#   明示エラーなので気付けるが、Python コードを読むときの当たり所が非常に多い。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/collections/list_concat_repeat.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 連結 ===")])
+emit([str([1, 2] + [3])])            # [1, 2, 3]
+emit([str([] + [])])                 # []
+emit([str([1, "a"] + [True, [2]])])  # [1, 'a', True, [2]]   要素の型は混在してよい
+emit([str((1, 2) + (3,))])           # (1, 2, 3)
+
+emit([str("=== 繰り返し（左右どちらでもよい）===")])
+emit([str([1] * 3)])                 # [1, 1, 1]
+emit([str(3 * [1, 2])])              # [1, 2, 1, 2, 1, 2]
+emit([str((1,) * 3)])                # (1, 1, 1)
+emit([str(2 * (1,))])                # (1, 1)
+
+emit([str("=== 繰り返し回数の 0 と負数は空 ===")])
+# ⚠ `str` の繰り返し（`.max(0)`）と同じ規則。Python も同じ。
+emit([str([1] * 0)])                 # []
+emit([str([1] * -2)])                # []
+emit([str((1,) * 0)])                # ()
+
+emit([str("=== 左辺を壊さない ===")])
+# ⚠⚠ **必ず新しいコレクションを作る。** `xs += ys` は複合代入で `xs = xs + ys` に
+#    落ちるので、破壊的に実装すると `xs` を共有している別名にまで波及する。
+mut a = [1]
+mut b = [2]
+let c = a + b
+emit([str(a), str(b), str(c)])                 # [1] [2] [1, 2]
+
+mut xs = [1]
+xs += [2, 3]
+emit([str(xs)])                      # [1, 2, 3]
+
+emit([str("=== 繰り返しの要素は独立している（Python の落とし穴が無い）===")])
+# ⚠⚠ **Python の `[[]] * 2` の罠は Arrow には無い。**
+#   `*` 自体は要素の参照を並べるだけだが、**束縛の時点でディープコピーされる**ので
+#   （「共有するのは `let → let` のときだけ」の規則・B8/B9/B11 系統の L2/L4）、
+#   結果の要素は互いに独立し、元の変数とも切り離される。
+#   ⇒ 二次元配列を `[[0] * w] * h` の形で作っても壊れない。
+mut inner = [1]
+let r = [inner] * 2
+inner.append(9)
+emit([str(r)])                       # [[1], [1]]   元を変えても影響しない
+
+mut inner2 = [1]
+mut r2 = [inner2] * 2
+r2[0].append(7)
+emit([str(r2)])                      # [[1, 7], [1]]   要素どうしも独立している
+
+emit([str("=== 対応していない組み合わせは従来どおりエラー ===")])
+# ⚠ `str` の既存挙動に合わせてある（実測で一致を確認済み）:
+#   [1] * 2.0      → TypeError: unsupported operand types for `Mul`: list and float
+#   [1] * uint(2)  → TypeError: unsupported operand types for `Mul`: list and uint
+#   [1] + (2,)     → TypeError: unsupported operand types for `Add`: list and tuple
+#   [1] + 2        → TypeError: unsupported operand types for `Add`: list and int
+emit([str("ab" * 2)])                # abab   （元から動いていた対照）
+
+# ── 出力を照らす ──
+check_output([
+    "=== 連結 ===",
+    "[1, 2, 3]",
+    "[]",
+    "[1, 'a', True, [2]]",
+    "(1, 2, 3)",
+    "=== 繰り返し（左右どちらでもよい）===",
+    "[1, 1, 1]",
+    "[1, 2, 1, 2, 1, 2]",
+    "(1, 1, 1)",
+    "(1, 1)",
+    "=== 繰り返し回数の 0 と負数は空 ===",
+    "[]",
+    "[]",
+    "()",
+    "=== 左辺を壊さない ===",
+    "[1] [2] [1, 2]",
+    "[1, 2, 3]",
+    "=== 繰り返しの要素は独立している（Python の落とし穴が無い）===",
+    "[[1], [1]]",
+    "[[1, 7], [1]]",
+    "=== 対応していない組み合わせは従来どおりエラー ===",
+    "abab",
+    "",
+], "list_concat_repeat")

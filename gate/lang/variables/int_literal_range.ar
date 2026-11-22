@@ -1,0 +1,30 @@
+# int_literal_range.ar — 整数リテラルは `int`（64 ビット）の範囲（known_bugs.md の #16）
+#
+# 範囲の両端は書ける。`-9223372036854775808` は `-` の後の整数だけなら範囲の外だが、全体は範囲の中。
+# 範囲の外のリテラルは構文解析の誤り（`int_literal_range_error.ar`）。⚠ 以前は黙って `0` になっていた。
+#
+# 期待される出力:
+#   -9223372036854775808 9223372036854775807
+#   9223372036854775807 -9223372036854775808
+#   True
+#   -4
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/int_literal_range.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+let low = -9223372036854775808
+let high = 9223372036854775807
+emit([str(low), str(high)])
+emit([str(0x7FFF_FFFF_FFFF_FFFF), str(-0x8000_0000_0000_0000 + 0)])
+emit([str(low == -high - 1)])
+# `-x ** 2` は `-(x ** 2)`
+emit([str(-2 ** 2)])
+
+# ── 出力を照らす ──
+check_output([
+    "-9223372036854775808 9223372036854775807",
+    "9223372036854775807 -9223372036854775808",
+    "True",
+    "-4",
+    "",
+], "int_literal_range")

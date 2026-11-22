@@ -1,0 +1,45 @@
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/result.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+fn divide(a: int, b: int) -> Result[int, str]:
+    if b == 0:
+        return Err("division by zero")
+    return Ok(a / b)
+
+let r1: Result[int, str] = divide(10, 2)
+let r2: Result[int, str] = divide(10, 0)
+
+if r1.is_OK():
+    emit([str("r1 OK:"), str(r1)])
+
+if r2.is_ERR():
+    emit([str("r2 ERR:"), str(r2)])
+
+fn parse_int(s: str) -> Result[int, str]:
+    if s == "":
+        return Err("empty string")
+    return Ok(int(s))
+
+let r3: Result[int, str] = parse_int("42")
+let r4: Result[int, str] = parse_int("")
+
+if r3.is_OK():
+    emit([str("parsed:"), str(r3)])
+
+if r4.is_ERR():
+    emit([str("error:"), str(r4)])
+
+emit([str("is_OK method:"), str(r1.is_OK())])
+emit([str("is_ERR method:"), str(r2.is_ERR())])
+
+# ── 出力を照らす ──
+check_output([
+    "r1 OK: Ok(5.0)",
+    "r2 ERR: Err(division by zero)",
+    "parsed: Ok(42)",
+    "error: Err(empty string)",
+    "is_OK method: True",
+    "is_ERR method: True",
+    "",
+], "result")

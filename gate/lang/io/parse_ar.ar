@@ -1,0 +1,55 @@
+# parse_ar.ar — 組み込み `parse_ar()`：Arrow ソースを解析して AST を「値」として受け取る（§2.1）。
+#
+# 戻り値は**文のリスト**で、各要素は `__type__` を持つ名前空間。
+# `std_tools/convert_to_python/converter.ar` がこの形に依存する。
+#
+# ⚠ この例題は #56 で新設した。**それまで parse_ar を使う例題が 1 本も無く**、
+# #33 でフォールバックが消えて以来 `parse_ar` が `VmForceError` で完全に死んでいたのに、
+# どのゲートにも映らなかった（#55 で検出）。負の対照は parse_ar_error.ar。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/parse_ar.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 単一の let 文 ===")])
+let stmts = parse_ar("let x: int = 1 + 2")
+emit([str(len(stmts))])
+let s0 = stmts[0]
+emit([str(s0.__type__)])
+emit([str(s0.name)])
+
+emit([str("=== 複数文・関数定義 ===")])
+let src: str = "fn add(let a: int, let b: int) -> int:\n    return a + b\n\nlet y = add(1, 2)"
+let prog = parse_ar(src)
+emit([str(len(prog))])
+emit([str(prog[0].__type__)])
+emit([str(prog[0].name)])
+emit([str(prog[1].__type__)])
+
+emit([str("=== 第 2 引数（path）も渡せる ===")])
+let withpath = parse_ar("let z = 1", "sample.ar")
+emit([str(withpath[0].__type__)])
+
+emit([str("=== 関数の中からでも呼べる（VM 経路） ===")])
+fn count_stmts(let source: str) -> int:
+    let parsed = parse_ar(source)
+    return len(parsed)
+
+emit([str(count_stmts("let a = 1\nlet b = 2\nlet c = 3"))])
+
+# ── 出力を照らす ──
+check_output([
+    "=== 単一の let 文 ===",
+    "1",
+    "StmtLet",
+    "x",
+    "=== 複数文・関数定義 ===",
+    "2",
+    "StmtFnDef",
+    "add",
+    "StmtLet",
+    "=== 第 2 引数（path）も渡せる ===",
+    "StmtLet",
+    "=== 関数の中からでも呼べる（VM 経路） ===",
+    "3",
+    "",
+], "parse_ar")

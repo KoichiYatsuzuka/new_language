@@ -1,0 +1,134 @@
+# variable.tl — let, const, mut, freeze, static mut
+
+# --- let: immutable variable ---
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/variable.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== let ===")])
+let name = "Alice"
+let age  = 30
+let pi   = 3.14159
+let flag = True
+emit([str(name), str(age), str(pi), str(flag)])
+
+# --- const: named constant (signals compile-time constant) ---
+emit([str("=== const ===")])
+const MAX_ITEMS = 100
+const LANG_NAME = "Arrow"
+emit([str(MAX_ITEMS), str(LANG_NAME)])
+
+# --- mut: mutable variable ---
+emit([str("=== mut ===")])
+mut score = 50
+score = 85
+emit([str("score:"), str(score)])
+
+# Compound assignment operators
+mut n = 10
+n += 5    # 15
+n -= 2    # 13
+n *= 3    # 39
+n //= 4   # 9
+n %= 5    # 4
+emit([str("n after compound ops:"), str(n)])  # 4
+
+mut bits = 0b0011
+bits |= 0b1100   # 0b1111 = 15
+bits &= 0b1010   # 0b1010 = 10
+bits ^= 0b0110   # 0b1100 = 12
+emit([str("bits after bitwise ops:"), str(bits)])  # 12
+
+# --- freeze: demote a mut binding to let (task 9.2) ---
+emit([str("=== freeze ===")])
+mut temp = 42
+emit([str("before freeze:"), str(temp)])
+freeze temp
+emit([str("after freeze:"), str(temp)])
+# temp = 0  # would be StaticTypeError after freeze
+
+# Class with __freeze__ hook
+class Config:
+    mut debug: bool
+    mut max_conn: int
+
+    fn __freeze__(mut self) -> None:
+        emit([str("Config locked: debug ="), str(self.debug), str("max_conn ="), str(self.max_conn)])
+
+mut cfg = Config(True, 10)
+cfg.debug = False
+freeze cfg
+emit([str("cfg.debug after freeze:"), str(cfg.debug)])   # False   読みは通る
+# ⚠⚠ タスク 9.2 で `freeze` は **`mut` を `let` に降格する**仕様に確定した。
+#   以前はここで `cfg.debug = True` を実行時 TypeError として捕まえていたが、
+#   いまは **静的エラー**になるので書けない（`let` 束縛と同じ扱い）:
+#     cfg.debug = True   # StaticTypeError: cannot assign to immutable variable 'cfg'
+#   ⚠ 実行時の検査は残っている（FFI 経由など静的検査を通らない値の最後の砦）。
+
+# --- static mut: single shared cell across all closure calls ---
+emit([str("=== static mut ===")])
+fn make_id_generator() -> function[]->int:
+    static mut next_id = 0
+    fn next() -> int:
+        next_id += 1
+        return next_id
+    return next
+
+let gen_a = make_id_generator()
+let gen_b = make_id_generator()  # shares the same static cell
+emit([str(gen_a())])  # 1
+emit([str(gen_a())])  # 2
+emit([str(gen_b())])  # 3  (shared with gen_a)
+
+# --- Numeric literal formats ---
+emit([str("=== numeric literals ===")])
+let decimal  = 1_000_000
+let hex_val  = 0xFF
+let oct_val  = 0o77
+let bin_val  = 0b1010_1010
+emit([str(decimal)])   # 1000000
+emit([str(hex_val)])   # 255
+emit([str(oct_val)])   # 63
+emit([str(bin_val)])   # 170
+
+# --- String literal forms ---
+emit([str("=== strings ===")])
+let s1 = "double quoted"
+let s2 = 'single quoted'
+let s3 = """triple
+quoted"""
+emit([str(s1)])
+emit([str(s2)])
+emit([str(s3)])
+
+# ── 出力を照らす ──
+check_output([
+    "=== let ===",
+    "Alice 30 3.14159 True",
+    "=== const ===",
+    "100 Arrow",
+    "=== mut ===",
+    "score: 85",
+    "n after compound ops: 4",
+    "bits after bitwise ops: 12",
+    "=== freeze ===",
+    "before freeze: 42",
+    "after freeze: 42",
+    "Config locked: debug = False max_conn = 10",
+    "cfg.debug after freeze: False",
+    "=== static mut ===",
+    "1",
+    "2",
+    "3",
+    "=== numeric literals ===",
+    "1000000",
+    "255",
+    "63",
+    "170",
+    "=== strings ===",
+    "double quoted",
+    "single quoted",
+    "triple",
+    "quoted",
+    "",
+], "variable")

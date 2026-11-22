@@ -1,0 +1,324 @@
+# metafn.ar — コンパイル時メタ関数（設計書 implementation_logs/comptime_metafn_design.md）。
+#
+# メタ関数は**実行前に展開されて AST から消える**。残るのは置かれたコードだけ。
+#
+#   exprconst fn  名前(...) -> Code:   純粋メタ関数。`return` で `Code` を返す。
+#   exprconst !fn 名前(...) -> None:   配置メタ関数。`quote` で呼び出し位置へ置く。
+#   code:                              `Code` を作るブロック（**中身はパースされない**）。
+#   <! 式 !>                           展開時の値をトークンへ変換して差し込む。
+#   !装飾子名                          宣言に適用する。対象が第一引数として渡る。
+#
+# ⚠ 展開は**ファイル先頭から逐次**（設計書 §1.7）。メタ関数は**自分より前に宣言された
+#   ものだけ**を見られる。繰り返し（不動点）はしない。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/metafn.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 配置メタ関数 ===")])
+
+# `quote` は関数を抜ける（§1.3）。置かれるのは `code:` の中身。
+exprconst !fn greet() -> None:
+    quote code:
+        emit([str("hello from a metafunction")])
+
+greet()
+
+emit([str("=== 純粋メタ関数と組み立て ===")])
+
+fn loud() -> str:
+    return "built by a pure metafunction"
+
+# ⚠ `code:` の中身はパースされない。⇒ 未完の断片でも作れる。
+#   組み立て終わったものを `quote` が一度だけパースする。
+# ⚠ スプライスした `str` は**識別子**になる（§1.4）。ここでは呼ぶ関数の名前を差し込む。
+exprconst fn call_of(fn_name: str) -> Code:
+    let frag = code:
+        emit([str(<! fn_name !>())])
+    return frag
+
+# 配置メタ関数は純粋メタ関数の結果をそのまま置ける。
+exprconst !fn say_via(fn_name: str) -> None:
+    quote call_of(fn_name)
+
+say_via("loud")
+
+emit([str("=== スプライス <! !> ===")])
+
+# ⚠ `str` は**識別子**になる（文字列リテラルではない）。名前を組み立てて差し込むのが主用途。
+exprconst !fn bind(name: str, value: int) -> None:
+    quote code:
+        let <! name !> = <! value !>
+
+bind("answer", 42)
+emit([str(answer)])                       # 42
+
+emit([str("=== 展開時の分岐（const）===")])
+
+# ⚠ `const` は**展開時にも値が確定している**（設計書 §1.7）ので読める。
+#   実行時の `let` / `mut` は読めない。失敗例は `metafn_runtime_value_error.ar`。
+const VERBOSE = True
+
+exprconst !fn log_if_verbose() -> None:
+    if VERBOSE:
+        quote code:
+            emit([str("verbose build")])
+    quote code:
+        emit([str("quiet build")])
+
+log_if_verbose()
+
+emit([str("=== 同じメタ関数を 2 回呼ぶ（gensym）===")])
+
+# ⚠⚠ 置いたコードの**局所名は呼ぶたびにぶつかる**。
+#   `let tmp = 1` をそのまま置くと 2 回目で「既に宣言されている」になる。
+# ⇒ `gensym("tmp")` が `tmp__1` / `tmp__2` … を返す。
+# ⚠ `gensym` は**展開時だけの道具**。実行時に呼んでも未定義。
+exprconst !fn make_slot(value: int) -> None:
+    quote code:
+        let <! gensym("slot") !> = <! value !>
+
+make_slot(1)
+make_slot(2)
+emit([str("two slots placed without a name clash")])
+
+emit([str("=== 空の Code は何も置かない ===")])
+
+# `code:` の直後にインデントが無ければ空。何も出さずに抜けるときに使う（§1.2 の B-2）。
+exprconst !fn place_nothing() -> None:
+    let empty = code:
+    quote empty
+
+place_nothing()
+emit([str("nothing was placed above")])
+
+emit([str("=== 装飾子 ===")])
+
+# ⚠ 対象が**第一引数**として渡る。ここでは対象を捨てて別の宣言に差し替えている。
+# ⚠ `@` は実行時クロージャ装飾子として据え置き。別物なので混ぜない。
+exprconst !fn replace_with_greeting(target) -> None:
+    quote code:
+        fn decorated() -> str:
+            return "produced by a decorator"
+
+!replace_with_greeting
+fn original() -> str:
+    return "this declaration is replaced"
+
+emit([str(decorated())])                  # produced by a decorator
+
+emit([str("=== クラス本体への配置 ===")])
+
+# ⚠ 置き先がクラス本体だと `mut x: int` は**フィールド宣言**として読まれる。
+#   同じ `Code` でも置き先で読み方が変わる。
+# ⚠ 自動 `__init__` の生成は**展開後**に走る（タスク 2-4）。⇒ 装飾子が足した
+#   フィールドがちゃんと引数に入る。パース時に生成していた頃は入らなかった。
+exprconst !fn add_counter(target) -> None:
+    quote code:
+        mut hits: int
+
+class Page:
+    mut title: str
+    !add_counter
+    mut placeholder: int
+
+mut page = Page("top", 0)
+emit([str(page.title)])                   # top
+emit([str(page.hits)])                    # 0
+
+emit([str("=== メタ情報演算子 ^ ===")])
+
+# ⚠ `^対象` は対象のメタ情報を返す（設計書 §1.5）。
+#   返る型は対象によって変わる――クラスなら `meta_class`、関数なら `meta_function`。
+# ⚠ **前方のみ参照**（§1.7）。自分より後ろの宣言には `^` を当てられない。
+# ⚠ 装飾子の第一引数も同じメタ情報。
+class Marker:
+    mut id: int
+
+# ⚠ スプライスは**トークン単位**。`<! x !>_kind` は連結されず 2 トークンになる。
+#   ⇒ 名前は**メタ関数の中で組み立ててから**差し込む。
+exprconst !fn bind_named(m) -> None:
+    let slot = m.name + "_kind"
+    quote code:
+        let <! slot !> = 1
+
+bind_named(^Marker)
+emit([str(Marker_kind)])                  # 1
+
+# ⚠ 射影（`.fields` / `.methods` / `.params` …）は宣言そのものから引く。
+#   分岐用に `has_field` / `has_method` / `implements` もある。
+# ⚠ 種別と噛み合わない射影は**エラー**。空のリストを返すと
+#   「0 個」と読めて取り違えが通ってしまう。
+class Tagged:
+    mut id: int
+    mut label: str
+
+exprconst !fn bind_first_field(m) -> None:
+    if m.has_field("label"):
+        let first = m.fields[0].name + "_seen"
+        quote code:
+            let <! first !> = 1
+    quote code:
+
+bind_first_field(^Tagged)
+emit([str(id_seen)])                      # 1
+
+# ⚠ **注釈の無い変数でも `.type` が答えを持つ**（展開時型推論・タスク 4-4）。
+#   型検査器を「ここまでの文」にかけて、束縛に付いた型を読む。
+# ⚠ 推論できなければエラー（`unknown` のような文字列を型名として返さない）。
+let seed = 7
+
+exprconst !fn twin_of(m) -> None:
+    let t = m.type
+    quote code:
+        let twin: <! t !> = 0
+
+twin_of(^seed)
+emit([str(twin)])                         # 0（`int` として宣言されている）
+
+emit([str("=== 元のコード .code() / .declared_at ===")])
+
+# ⚠ `.code()` は宣言の**元のコードを本体ごと**返す（設計書 §1.5）。
+#   装飾子が「元の関数を保ったまま置き直す」のに使う。
+# ⚠ 合成された宣言（自動 `__init__` など）には元のコードが無いのでエラー。
+exprconst !fn keep_as_is(m) -> None:
+    quote m.code()
+
+!keep_as_is
+fn triple(x: int) -> int:
+    let y = x * 3
+    return y
+
+emit([str(triple(4))])                    # 12（本体が残っている）
+
+emit([str("=== 関数を包む装飾子（Code の演算）===")])
+
+# ⚠⚠ **Python のデコレータで一番よくある形**：元の関数を別名で残し、
+#   同名のラッパーを置く。Arrow では展開時にコードを組み立てて実現する。
+# ⚠ `Code` の演算（設計書 §1.2）: `+`（連結）/ `.indent()` / `.dedent()` / 1 行ずつの反復。
+#   `.indent()` はメソッド形なので `+` より強く結合する。
+# ⚠ 0 未満になる行が生じる `.dedent()` はエラー。
+exprconst !fn logged(m) -> None:
+    let impl_name = m.name + "_impl"
+    # 元の本体（1 行目の `fn ...:` 以外）を取り出す
+    mut first = True
+    mut rest = code:
+    for line in m.code():
+        if first:
+            first = False
+        else:
+            rest = rest + line
+    let head = code:
+        fn <! impl_name !>(x: int) -> int:
+    let wrapper = code:
+        fn <! m.name !>(x: int) -> int:
+            emit([str("calling the wrapped function")])
+            return <! impl_name !>(x)
+    quote head + rest + wrapper
+
+!logged
+fn double(x: int) -> int:
+    let y = x * 2
+    return y
+
+emit([str(double(21))])                   # calling the wrapped function / 42
+
+emit([str("=== 引数を取る装飾子（装飾子ファクトリ）===")])
+
+# ⚠ `!repeat(3)` は `repeat(3)` を展開時に評価し、返ってきたクロージャを対象に適用する
+#   （Python の `@repeat(3)` と同じ形・設計書 §1.6「装飾子にはクロージャも書ける」）。
+# ⚠ クロージャの中の `quote` はそのクロージャを抜ける。ファクトリは既に返っているので、
+#   それ以外の意味は取りようがない。
+# ⚠ メタ関数を `const` に束縛して装飾子に使うこともできる（その `const` は展開後に消える）。
+exprconst fn repeat(times: int):
+    fn deco(m) -> None:
+        let impl_name = m.name + "_once"
+        mut first = True
+        mut rest = code:
+        for line in m.code():
+            if first:
+                first = False
+            else:
+                rest = rest + line
+        let head = code:
+            fn <! impl_name !>() -> None:
+        let wrapper = code:
+            fn <! m.name !>() -> None:
+                for i in range(<! times !>):
+                    <! impl_name !>()
+        quote head + rest + wrapper
+    return deco
+
+!repeat(3)
+fn cheer() -> None:
+    emit([str("hooray")])
+
+cheer()                             # hooray × 3
+
+emit([str("=== 入れ子関数の quote ===")])
+
+# ⚠ `quote` は**最も内側の関数を抜ける**（設計書 §1.3・2026-09-25 確定）。
+#   メタ関数の中の入れ子関数で `quote` すると、その入れ子関数が `Code` を返すだけ。
+#   外側のメタ関数は受け取った `Code` を組み合わせて、自分で `quote` する。
+exprconst !fn two_lines() -> None:
+    fn line_of(n: int) -> Code:
+        quote code:
+            emit([str(<! n !>)])
+    let first = line_of(1)
+    quote first + line_of(2)
+
+two_lines()                         # 1 / 2
+
+emit([str("=== 展開されないもの ===")])
+
+# 呼ばれなかったメタ関数は**登録されるだけで AST から消える**。
+#   本体は一度も走らない（下の `^Marker` も評価されない）。
+# ⚠ 入れ子関数の中にも `code:` と `^` を書ける（`syntax_cov` の NESTED-GAP を塞ぐために置いてある）。
+exprconst fn describe() -> Code:
+    fn inner() -> Code:
+        let kind = ^Marker
+        let frag = code:
+            emit([str("inner")])
+        return frag
+    return inner()
+
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== 配置メタ関数 ===",
+    "hello from a metafunction",
+    "=== 純粋メタ関数と組み立て ===",
+    "built by a pure metafunction",
+    "=== スプライス <! !> ===",
+    "42",
+    "=== 展開時の分岐（const）===",
+    "verbose build",
+    "=== 同じメタ関数を 2 回呼ぶ（gensym）===",
+    "two slots placed without a name clash",
+    "=== 空の Code は何も置かない ===",
+    "nothing was placed above",
+    "=== 装飾子 ===",
+    "produced by a decorator",
+    "=== クラス本体への配置 ===",
+    "top",
+    "0",
+    "=== メタ情報演算子 ^ ===",
+    "1",
+    "1",
+    "0",
+    "=== 元のコード .code() / .declared_at ===",
+    "12",
+    "=== 関数を包む装飾子（Code の演算）===",
+    "calling the wrapped function",
+    "42",
+    "=== 引数を取る装飾子（装飾子ファクトリ）===",
+    "hooray",
+    "hooray",
+    "hooray",
+    "=== 入れ子関数の quote ===",
+    "1",
+    "2",
+    "=== 展開されないもの ===",
+    "done",
+    "",
+], "metafn")

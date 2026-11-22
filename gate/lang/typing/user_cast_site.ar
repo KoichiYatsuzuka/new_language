@@ -1,0 +1,119 @@
+# user_cast_site.ar — ユーザー定義キャスト `__cast__` が受理される**地点**（タスク 4.3）
+#
+# ## 何が壊れていたか
+#
+# 適合判定 `type_matches_exact` は「`__cast__[T]` を持つクラス」を **T として受理**して
+# いた。しかしこの述語は**どの地点の検査なのかを知らない**ので、
+# **変換を挿入していない地点でも**通ってしまっていた:
+#
+#     let x: int = Conv(5)
+#     print(x)        # <Conv object at 0x...>   ← int 変数に Conv が居座る
+#     print(x + 1)    # TypeError: unsupported operand types for `Add`
+#
+# 容器経由でも漏れていた（`list[int]` の中に `Conv` が入った）。
+# 「**受理したなら変換地点がある**」（決定 D-7 の原則）を破る唯一の箇所だった。
+#
+# ## 実行時がどこで変換しているかを実測した
+#
+# | 地点 | 実行時の挙動 |
+# |---|---|
+# | `let` 仮引数 | **変換する**（`double(w)` が `42` を返す） |
+# | 変数束縛 | 変換しない（`<W object at …>` がそのまま入る） |
+# | フィールド代入 | A-3 の実行時検査が弾く |
+# | 戻り値 | 変換しない |
+# | `mut` 仮引数 | 変換しない（実行時エラー） |
+#
+# 実装（`interpreter/functions/execution.rs`）のコメントも
+# 「`mut` パラメータは自動キャストしない」と明記している。
+#
+# ⇒ 受理を **`let` 仮引数への束縛だけ**に絞った（`type_utils::Site`）。
+#   他の地点では明示キャスト `v => T` を書く。そちらは `eval_cast_evaled` が
+#   `__cast__` へディスパッチして**実際に変換する**。
+#
+# 弾かれる例は user_cast_site_error.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/user_cast_site.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+class Wrapper:
+    let val: int
+
+    fn __init__(mut self, val: int)->None:
+        self.val = val
+
+    fn __cast__[int](let self)->int:
+        return self.val
+
+emit([str("=== `let` 仮引数では自動キャストされる ===")])
+
+fn double(let x: int)->int:
+    return x * 2
+
+let w = Wrapper(21)
+emit([str(double(w))])                # 42   ← 実行時が __cast__[int] を挿入した
+
+emit([str("=== 他の地点では明示キャスト `=>` を書く ===")])
+
+let as_int: int = w=>int        # 変数束縛は自動キャストされないので明示する
+emit([str(as_int)])                   # 21
+
+let xs: list[int] = [w=>int]    # 容器の要素も同じ
+emit([str(xs)])                       # [21]
+
+fn unwrap(let v: Wrapper)->int:
+    return v=>int               # 戻り値も明示
+emit([str(unwrap(w))])                # 21
+
+emit([str("=== 明示キャストは何度でも書ける ===")])
+
+class Celsius:
+    let value: float
+
+    fn __init__(mut self, value: float)->None:
+        self.value = value
+
+    fn __cast__[float](let self)->float:
+        return self.value
+
+    fn __cast__[int](let self)->int:
+        return int(self.value)
+
+let temp = Celsius(36.6)
+emit([str(temp=>float)])              # 36.6
+emit([str(temp=>int)])                # 36
+
+emit([str("=== trait への適合は地点に関係なく受理される（キャストではない） ===")])
+
+# ⚠ `__cast__` は**値を作り替える**ので変換地点が要るが、trait の適合は
+#   同じ値を別の面から見るだけなので、どの地点でも受理してよい。
+trait Speaks:
+    fn speak(let self)->str:
+        ...
+
+class Dog(Speaks):
+    mut name: str
+
+    fn speak(let self)->str:
+        return self.name + " says woof"
+
+let d: Speaks = Dog("rex")
+emit([str(d.speak())])                # rex says woof
+
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== `let` 仮引数では自動キャストされる ===",
+    "42",
+    "=== 他の地点では明示キャスト `=>` を書く ===",
+    "21",
+    "[21]",
+    "21",
+    "=== 明示キャストは何度でも書ける ===",
+    "36.6",
+    "36",
+    "=== trait への適合は地点に関係なく受理される（キャストではない） ===",
+    "rex says woof",
+    "done",
+    "",
+], "user_cast_site")

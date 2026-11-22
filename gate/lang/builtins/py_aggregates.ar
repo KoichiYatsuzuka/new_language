@@ -1,0 +1,89 @@
+# py_aggregates.ar — 集計の組み込み（python_builtins_plan.md のタスク 3-2）
+#
+# 対になる誤りの例: py_aggregates_error.ar
+#
+# all / any / min / max / sum / sorted（と list.sort）/ reversed / abs / round / divmod / pow。
+# どれも CPython 3.12 と同じ結果（下のコメントは CPython の出力）:
+#   - all / any は決まったところで止まる
+#   - min / max は key= / default=、同じ大きさなら最初のもの
+#   - sum は float を Neumaier の補償つきで足す（0.1 を 10 回足すと 1.0）
+#   - sorted / list.sort は安定（key= / reverse=）。比較は `<` だけ（組も比べられる・1-3）
+#   - round は偶数への丸めで、float は正確な 10 進の値で丸める（2.675 は 2.67）
+#   - divmod は `//` / `%` と同じ規則、pow の 3 引数は冪剰余（負の指数は逆元）
+# ⚠ 以前はどれも NameError（pandas で計 401 箇所）。list.sort() も無かった。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/py_aggregates.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== all / any ===")])
+emit([str(all([1, 2, 3])), str(all([1, 0])), str(all([]))])            # True False True
+emit([str(any([0, 0, 2])), str(any([]))])                         # True False
+
+emit([str("=== min / max ===")])
+let ws: list[str] = ["pear", "fig", "banana"]
+emit([str(min(ws)), str(max(ws))])                                # banana pear
+emit([str(max(ws, key=len)), str(min(ws, key=len))])              # banana fig
+emit([str(max(3, 7, 5)), str(min([], default=0))])                # 7 0
+emit([str(max([(2024, 3), (2025, 1), (2025, 2)]))])          # (2025, 2)
+
+emit([str("=== sum ===")])
+emit([str(sum([1, 2, 3])), str(sum([1, 2], 10))])                 # 6 13
+let tenth: list[float] = [0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+emit([str(sum(tenth))])                                      # 1.0（補償つき。素朴に足すと 0.9999999999999999）
+emit([str(sum([1, 2.5]))])                                   # 3.5
+
+emit([str("=== sorted / list.sort ===")])
+let pairs: list[tuple[str, int]] = [("b", 2), ("a", 2), ("c", 1)]
+fn second(p: tuple[str, int]) -> int:
+    return p[1]
+emit([str(sorted(pairs, key=second))])                       # [('c', 1), ('b', 2), ('a', 2)]（安定）
+emit([str(sorted(pairs, key=second, reverse=True))])         # [('b', 2), ('a', 2), ('c', 1)]（逆でも安定）
+emit([str(sorted("hello"))])                                 # ['e', 'h', 'l', 'l', 'o']
+mut nums: list[int] = [3, 1, 2]
+nums.sort(reverse=True)
+emit([str(nums)])                                            # [3, 2, 1]
+
+emit([str("=== reversed ===")])
+emit([str(list(reversed([1, 2, 3]))), str(list(reversed("ab"))), str(list(reversed(range(3))))])   # [3, 2, 1] ['b', 'a'] [2, 1, 0]
+
+emit([str("=== abs / round ===")])
+emit([str(abs(-3)), str(abs(-2.5)), str(abs(3 + 4j))])                 # 3 2.5 5.0
+emit([str(round(2.5)), str(round(3.5)), str(round(-0.5))])             # 2 4 0
+emit([str(round(2.675, 2)), str(round(0.125, 2)), str(round(1234.5678, -2))])   # 2.67 0.12 1200.0
+emit([str(round(1250, -2)), str(round(1350, -2))])                # 1200 1400
+
+emit([str("=== divmod / pow ===")])
+emit([str(divmod(7, -2)), str(divmod(-7.5, 2.0))])                # (-4, -1) (-4.0, 0.5)
+emit([str(pow(2, 10)), str(pow(3, 4, 5)), str(pow(3, -1, 7)), str(pow(3, 2, -5))])   # 1024 1 5 -1
+
+# ── 出力を照らす ──
+check_output([
+    "=== all / any ===",
+    "True False True",
+    "True False",
+    "=== min / max ===",
+    "banana pear",
+    "banana fig",
+    "7 0",
+    "(2025, 2)",
+    "=== sum ===",
+    "6 13",
+    "1.0",
+    "3.5",
+    "=== sorted / list.sort ===",
+    "[('c', 1), ('b', 2), ('a', 2)]",
+    "[('b', 2), ('a', 2), ('c', 1)]",
+    "['e', 'h', 'l', 'l', 'o']",
+    "[3, 2, 1]",
+    "=== reversed ===",
+    "[3, 2, 1] ['b', 'a'] [2, 1, 0]",
+    "=== abs / round ===",
+    "3 2.5 5.0",
+    "2 4 0",
+    "2.67 0.12 1200.0",
+    "1200 1400",
+    "=== divmod / pow ===",
+    "(-4, -1) (-4.0, 0.5)",
+    "1024 1 5 -1",
+    "",
+], "py_aggregates")

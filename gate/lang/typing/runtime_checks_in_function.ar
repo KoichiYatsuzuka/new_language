@@ -1,0 +1,76 @@
+# runtime_checks_in_function.ar — 関数内での `mustbe` / `is` / `=>` の動作確認（#16 段階(b)(ii)）
+#
+# `mustbe.ar` はこれらをモジュール top-level で使うが、この例題は**関数の中**で使う。
+# バイトコード VM は関数本体だけをコンパイルするため、こちらが VM 側の経路を通る。
+#
+# 以前は `mustbe` / `is` / `=>` を含む関数は VM コンパイラが対応しておらず
+# **関数まるごとツリーウォークへフォールバック**していた。現在は型検査が付けた
+# `CheckBefore` 指示を消費して検査 op（MUSTBE / IS_TYPE / CAST）を出す。
+#
+# 検証:
+#   .\compare_vm_modes.ps1 -Filter runtime_checks_in_function
+#   （--vm=off と --vm=auto の出力が完全一致すること）
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/runtime_checks_in_function.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+class Vec2:
+    mut x: float
+    mut y: float
+
+    fn __init__(mut self, let x: float, let y: float) -> None:
+        self.x = x
+        self.y = y
+
+# --- mustbe: 成功パス ---
+fn unwrap_int(let raw: Any) -> int:
+    let n = raw mustbe int
+    return n + 1
+
+# --- mustbe: 失敗パス（TypeError を捕捉して継続） ---
+fn unwrap_or_report(let raw: Any) -> None:
+    try:
+        let n = raw mustbe int
+        emit([str("unwrapped:"), str(n)])
+    except TypeError as e:
+        emit([str("caught mustbe failure")])
+
+# --- is / is not による型判定 ---
+fn describe(let v: Any) -> None:
+    emit([str(v is int), str(v is not int)])
+
+# --- キャスト演算子 `=>`（list <-> fixed_list） ---
+fn roundtrip(let lst: list[Vec2]) -> None:
+    let fl = lst => fixed_list[Vec2]
+    emit([str("fixed_list len:"), str(len(fl))])
+    let back = fl => list[Vec2]
+    emit([str("list len:"), str(len(back))])
+
+emit([str("=== mustbe ===")])
+emit([str(unwrap_int(41))])
+unwrap_or_report(10)
+unwrap_or_report("hello")
+
+emit([str("=== is ===")])
+describe(5)
+describe("s")
+describe(1.5)
+
+emit([str("=== cast ===")])
+roundtrip([Vec2(1.0, 2.0), Vec2(3.0, 4.0)])
+
+# ── 出力を照らす ──
+check_output([
+    "=== mustbe ===",
+    "42",
+    "unwrapped: 10",
+    "caught mustbe failure",
+    "=== is ===",
+    "True False",
+    "False True",
+    "False True",
+    "=== cast ===",
+    "fixed_list len: 2",
+    "list len: 2",
+    "",
+], "runtime_checks_in_function")

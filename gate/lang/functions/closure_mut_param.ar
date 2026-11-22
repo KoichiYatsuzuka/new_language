@@ -1,0 +1,122 @@
+# closure_mut_param.ar — `mut` パラメータを入れ子 `fn` が捕捉する（bug_fix.md B3）。
+#
+# ⚠⚠ **修正前は捕捉した引数が `None` になっていた。**
+#   `fn make_adder(mut n: int)` の閉包が `n` を `None` として見るため、
+#   `TypeError: unsupported operand types for `Add`: int and NoneType` で落ちていた。
+#   `let` パラメータと `mut` **ローカル**は動いていたので、壊れていたのは
+#   「`mut` **パラメータ**を入れ子 `fn` が捕捉する」形だけ。
+#
+# 原因:
+#   入れ子 `fn` に可変キャプチャされるローカルは slot からセル（`Rc<RefCell<Value>>`）へ
+#   昇格される。ところが**パラメータにはセルへ値を書く文が無い**。引数は `bind_args` が
+#   **slot** に置き、昇格後の slot は穴なので、セルは生成時の `None` のまま残っていた。
+#   （`mut` ローカルは `mut x = e` の実行がセルへ書くので埋まっていた。）
+#   ⇒ 関数の入口で slot → cell を写すようにした。
+#
+# ⚠ 見つけたのは Python のコードを Arrow へ変換して動かしていた頃（全パラメータを `mut` にしていた）で、
+#   「クロージャで包むデコレータ」という Python で最も普通の形が丸ごと動かなかった。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/closure_mut_param.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 起票された再現ケース ===")])
+
+fn make_adder(mut n: int) -> function:
+    fn add(mut x: int) -> int:
+        return x + n
+    return add
+
+mut k = 5
+let a = make_adder(k)
+mut z = 3
+emit([str(a(z))])                     # 8
+
+emit([str("=== 引数がちゃんと閉包へ届く ===")])
+fn mk(mut n: int) -> function:
+    fn add(let x: int) -> int:
+        return x + n
+    return add
+emit([str(mk(99)(3))])                # 102
+
+emit([str("=== 捕捉したセルは共有される（書き換えが見える）===")])
+fn make_counter(mut n: int) -> function:
+    fn bump() -> int:
+        n = n + 1
+        return n
+    return bump
+let c = make_counter(10)
+emit([str(c()), str(c()), str(c())])            # 11 12 13
+
+emit([str("=== 2 つの閉包が同じセルを共有する ===")])
+fn make_pair(mut n: int) -> list[function[]->int]:
+    fn inc() -> int:
+        n = n + 1
+        return n
+    fn get() -> int:
+        return n
+    return [inc, get]
+let p = make_pair(100)
+let inc = p[0]
+let get = p[1]
+inc()
+inc()
+emit([str(get())])                    # 102
+
+emit([str("=== 対照: let パラメータ / mut ローカル（元から動いていた）===")])
+fn mk_let(let n: int) -> function:
+    fn add(let x: int) -> int:
+        return x + n
+    return add
+emit([str(mk_let(5)(3))])             # 8
+
+fn mk_local() -> function:
+    mut n = 5
+    fn add(let x: int) -> int:
+        return x + n
+    return add
+emit([str(mk_local()(3))])            # 8
+
+emit([str("=== 入れ子の深さ・複数キャプチャ ===")])
+fn deep(mut n: int) -> function:
+    fn b() -> function:
+        fn c() -> int:
+            return n
+        return c
+    return b()
+emit([str(deep(7)())])                # 7
+
+fn two(mut x: int, mut y: int) -> function:
+    fn s() -> int:
+        return x + y
+    return s
+emit([str(two(3, 4)())])              # 7
+
+emit([str("=== mut 引数の書き戻しは壊れていない ===")])
+# ⚠ セルへ写すときは `StoreCell`（複製しない）。複製するかどうかは引数束縛が既に
+#   決めているので、ここで複製を足すと呼び出し元への書き戻しが消える。
+fn g(mut v: list[int]) -> None:
+    v.append(99)
+mut q = [1]
+g(q)
+emit([str(q)])                        # [1, 99]
+
+# ── 出力を照らす ──
+check_output([
+    "=== 起票された再現ケース ===",
+    "8",
+    "=== 引数がちゃんと閉包へ届く ===",
+    "102",
+    "=== 捕捉したセルは共有される（書き換えが見える）===",
+    "11 12 13",
+    "=== 2 つの閉包が同じセルを共有する ===",
+    "102",
+    "=== 対照: let パラメータ / mut ローカル（元から動いていた）===",
+    "8",
+    "8",
+    "=== 入れ子の深さ・複数キャプチャ ===",
+    "7",
+    "7",
+    "=== mut 引数の書き戻しは壊れていない ===",
+    "[1, 99]",
+    "",
+], "closure_mut_param")

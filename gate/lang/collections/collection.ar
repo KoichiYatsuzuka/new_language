@@ -1,0 +1,555 @@
+# collection.tl — list, dict, tuple, and set
+
+# ============================================================
+# 1. List
+# ============================================================
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/collections/collection.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== list ===")])
+
+let nums = [10, 20, 30, 40, 50]
+emit([str(nums)])
+emit([str("len:"), str(len(nums))])
+
+# Iteration
+mut sum = 0
+for n in nums:
+    sum += n
+emit([str("sum:"), str(sum)])   # 150
+
+# Manual iterator
+let it = nums.__iter__()
+emit([str(it.next())])   # 10
+emit([str(it.next())])   # 20
+
+# List of strings
+let fruits = ["apple", "banana", "cherry"]
+for f in fruits:
+    emit([str("-"), str(f)])
+
+# Mutable list
+mut scores = [5, 3, 8, 1]
+emit([str("scores:"), str(scores)])
+
+# ============================================================
+# 2. Dict
+# ============================================================
+emit([str("=== dict ===")])
+
+# Literal dict
+let capitals = {"Japan": "Tokyo", "France": "Paris", "USA": "Washington"}
+emit([str(capitals["Japan"])])    # Tokyo
+emit([str(capitals["France"])])   # Paris
+
+# Mutable dict — add and update entries
+mut stock = {"apple": 10, "banana": 5}
+stock["cherry"] = 3
+stock["apple"] = 12
+emit([str(stock["apple"])])   # 12
+emit([str(stock["cherry"])])  # 3
+
+# Typed empty dict
+mut counts = dict[str, int]()
+counts["a"] = 1
+counts["b"] = 2
+counts["a"] += 10
+emit([str(counts["a"])])   # 11
+emit([str(counts["b"])])   # 2
+
+# Nested dict
+let nested = {"outer": {"inner": 42}}
+emit([str(nested["outer"]["inner"])])   # 42
+
+# ============================================================
+# 3. Tuple
+# ============================================================
+emit([str("=== tuple ===")])
+
+# Empty tuple
+let empty = ()
+emit([str(empty)])
+
+# Single-element tuple (trailing comma required)
+let single = (99,)
+emit([str(single)])
+
+# Multi-element tuple
+let triple = (1, "hello", True)
+emit([str(triple)])
+
+let pair = (10, 20)
+emit([str(pair)])
+
+# Tuple equality
+let u = (1, 2, 3)
+let v = (1, 2, 3)
+let w = (1, 2, 4)
+emit([str(u == v)])   # True
+emit([str(u == w)])   # False
+
+# Tuple truthiness (non-empty = truthy, empty = falsy)
+emit([str(not ())])        # True  (empty tuple is falsy)
+emit([str(not (1, 2))])    # False (non-empty is truthy)
+
+# Tuples as return values
+fn minmax(a: int, b: int) -> Any:
+    if a < b:
+        return (a, b)
+    return (b, a)
+
+let mm = minmax(7, 3)
+emit([str(mm)])   # (3, 7)
+
+# Nested tuples
+let nested_t = ((1, 2), (3, 4))
+emit([str(nested_t)])   # ((1, 2), (3, 4))
+
+# Tuple unpacking — let/mut qualifier required for each variable
+let tup1 = (1, 2)
+let tx, mut ty = tup1
+emit([str(tx)])    # 1
+emit([str(ty)])    # 2
+
+# Both qualifiers can be let
+let tp, let tq = (10, 20)
+emit([str(tp)])    # 10
+emit([str(tq)])    # 20
+
+# Mutable variable can be reassigned after unpacking
+ty = 99
+emit([str(ty)])    # 99
+
+# First qualifier may also be mut
+mut tm, let tn = (3, 4)
+emit([str(tm)])    # 3
+emit([str(tn)])    # 4
+tm = 100
+emit([str(tm)])    # 100
+
+# _ discards all remaining elements (must be last)
+let tup2 = (10, 20, 30, 40)
+let tr, mut ts, _ = tup2
+emit([str(tr)])    # 10
+emit([str(ts)])    # 20
+
+# _ absorbs a single trailing element
+let tup3 = (5, 6)
+let only, _ = tup3
+emit([str(only)])  # 5
+
+# Unpack directly from a literal tuple
+let ti, mut tj = (7, 8)
+emit([str(ti)])    # 7
+emit([str(tj)])    # 8
+
+# ============================================================
+# 4. Set
+# ============================================================
+emit([str("=== set ===")])
+
+# Set literal — automatically deduplicated
+let s = {1, 2, 2, 3, 1}
+emit([str(s)])           # {1, 2, 3}
+emit([str(len(s))])      # 3
+
+# Empty set via constructor (not {}, which is an empty dict)
+let e = set()
+emit([str(e)])           # set()
+emit([str(bool(e))])     # False
+
+# set() from list / string
+let from_list = set([4, 5, 4, 6])
+emit([str(from_list)])   # {4, 5, 6}
+let chars = set("hello")
+emit([str(len(chars))])  # 4  (h, e, l, o)
+
+# add / discard / remove
+# ⚠ 中身を書き換えるので `mut` で束縛する。`let` だと
+#   `StaticTypeError: cannot call 'add' on 'a' — it is immutable` になる（bug_fix.md B8）。
+mut a = {10, 20, 30}
+a.add(40)
+emit([str(a)])          # {10, 20, 30, 40}
+a.discard(20)
+emit([str(a)])          # {10, 30, 40}
+a.discard(99)     # no error when element is absent
+a.remove(30)
+emit([str(a)])          # {10, 40}
+
+# pop / clear
+# ⚠ `pop` / `clear` も中身を書き換えるので `mut` が要る。
+mut b = {7, 8, 9}
+let popped = b.pop()
+emit([str(len(b))])     # 2
+mut c = {1, 2, 3}
+c.clear()
+emit([str(c)])          # set()
+
+# in / not in
+emit([str(2 in {1, 2, 3})])        # True
+emit([str(99 not in {1, 2, 3})])   # True
+
+# Set operators: | & - ^
+let x = {1, 2, 3}
+let y = {2, 3, 4}
+emit([str(x | y)])   # {1, 2, 3, 4}  union
+emit([str(x & y)])   # {2, 3}        intersection
+emit([str(x - y)])   # {1}           difference
+emit([str(x ^ y)])   # {1, 4}        symmetric difference
+
+# Method equivalents
+emit([str(x.union(y))])                 # {1, 2, 3, 4}
+emit([str(x.intersection(y))])         # {2, 3}
+emit([str(x.difference(y))])           # {1}
+emit([str(x.symmetric_difference(y))]) # {1, 4}
+
+# Equality
+emit([str({1, 2, 3} == {3, 2, 1})])   # True
+emit([str({1, 2} == {1, 2, 3})])      # False
+
+# issubset / issuperset
+let small = {1, 2}
+let big   = {1, 2, 3}
+emit([str(small.issubset(big))])    # True
+emit([str(big.issuperset(small))])  # True
+emit([str(big.issubset(small))])    # False
+
+# copy
+let orig = {1, 2, 3}
+# ⚠ 書き換えるので `mut`。`set.copy()` に型が付いた（`set[int]`・タスク 3-1）ので、`let cp` に `add` すると
+#   不変の束縛の書き換えとして静的に止まる（以前は型が無く素通りしていた）。
+mut cp = orig.copy()
+cp.add(4)
+emit([str(orig)])   # {1, 2, 3}  (unaffected)
+emit([str(cp)])     # {1, 2, 3, 4}
+
+# Iteration
+mut total = 0
+for n in {1, 2, 3, 4, 5}:
+    total = total + n
+emit([str(total)])   # 15
+
+# ============================================================
+# 5. Mixed usage
+# ============================================================
+emit([str("=== mixed ===")])
+
+# List of tuples (list is iterable; tuples printed as-is)
+let points = [(0, 0), (1, 2), (3, 4)]
+for p in points:
+    emit([str(p)])
+
+# Dict with counted values
+mut groups = dict[str, int]()
+groups["evens"] = 0
+groups["odds"]  = 0
+for i in range(10):
+    if i % 2 == 0:
+        groups["evens"] += 1
+    else:
+        groups["odds"] += 1
+emit([str("evens:"), str(groups["evens"])])   # 5
+emit([str("odds:"), str(groups["odds"])])    # 5
+
+# ============================================================
+# 6. Subscript / Indexing
+# ============================================================
+emit([str("=== subscript ===")])
+
+# list
+mut xs = [10, 20, 30, 40, 50]
+emit([str(xs[0])])       # 10
+emit([str(xs[-1])])      # 50
+xs[2] = 99
+emit([str(xs[2])])       # 99
+
+# str
+let greet = "hello"
+emit([str(greet[0])])    # h
+emit([str(greet[-1])])   # o
+
+# dict
+mut idx_d = {"a": 1, "b": 2}
+emit([str(idx_d["a"])])  # 1
+idx_d["c"] = 3
+emit([str(idx_d["c"])])  # 3
+
+# tuple
+let idx_t = (100, 200, 300)
+emit([str(idx_t[1])])    # 200
+emit([str(idx_t[-1])])   # 300
+
+# user-defined __getitem__ / __setitem__
+class Stack:
+    mut items: list[int]
+
+    fn __init__(mut self) -> None:
+        self.items = [0, 0, 0, 0, 0]
+
+    fn __getitem__(self, let idx: int) -> int:
+        return self.items[idx]
+
+    fn __setitem__(mut self, let idx: int, let val: int) -> None:
+        self.items[idx] = val
+
+mut stack = Stack()
+stack[0] = 42
+stack[1] = 7
+emit([str(stack[0])])    # 42
+emit([str(stack[1])])    # 7
+
+# ============================================================
+# 7. Slice
+# ============================================================
+emit([str("=== slice ===")])
+
+# list slicing — basic bounds
+mut lst = [10, 20, 30, 40, 50]
+emit([str(lst[Index(1):Index(4)])])    # [20, 30, 40]
+emit([str(lst[:Index(3)])])            # [10, 20, 30]
+emit([str(lst[Index(2):])])            # [30, 40, 50]
+emit([str(lst[:])])                    # [10, 20, 30, 40, 50]
+
+# step
+emit([str(lst[::2])])                  # [10, 30, 50]
+emit([str(lst[Index(1):Index(4):2])])  # [20, 40]
+emit([str(lst[::-1])])                 # [50, 40, 30, 20, 10]
+
+# string slicing
+let word = "hello"
+emit([str(word[Index(1):Index(4)])])   # ell
+emit([str(word[::-1])])                # olleh
+
+# tuple slicing
+let sl_t = (1, 2, 3, 4, 5)
+emit([str(sl_t[Index(1):Index(3)])])   # (2, 3)
+emit([str(sl_t[::-1])])                # (5, 4, 3, 2, 1)
+
+# slice() constructor
+let slc = slice(Index(1), Index(4))
+emit([str(str(slc).startswith("slice(<Index object at "))])   # slice(<Index object at 0x…>, <Index object at 0x…>, None)
+emit([str(lst[slc])])                  # [20, 30, 40]
+let slc2 = slice(Index(0), Index(5), 2)
+emit([str(lst[slc2])])                 # [10, 30, 50]
+emit([str(slc.step)])                  # None
+
+# list slice assignment (step = 1)
+mut sl_a = [1, 2, 3, 4, 5]
+sl_a[Index(1):Index(3)] = [20, 30]
+emit([str(sl_a)])                      # [1, 20, 30, 4, 5]
+sl_a[Index(1):Index(3)] = [99]
+emit([str(sl_a)])                      # [1, 99, 4, 5]
+sl_a[Index(1):Index(2)] = [10, 20, 30]
+emit([str(sl_a)])                      # [1, 10, 20, 30, 4, 5]
+sl_a[Index(1):Index(4)] = []
+emit([str(sl_a)])                      # [1, 4, 5]
+sl_a[:Index(0)] = [0]
+emit([str(sl_a)])                      # [0, 1, 4, 5]
+sl_a[Index(4):] = [6, 7]
+emit([str(sl_a)])                      # [0, 1, 4, 5, 6, 7]
+
+# list slice assignment (step ≠ 1)
+mut sl_b = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+sl_b[::2] = [10, 30, 50, 70, 90]
+emit([str(sl_b)])                      # [10, 1, 30, 3, 50, 5, 70, 7, 90, 9]
+sl_b[::-1] = [9, 8, 7, 6, 5, 4, 3, 2, 1, 0]
+emit([str(sl_b)])                      # [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+
+# assign from tuple / string
+mut sl_c = [1, 2, 3, 4, 5]
+sl_c[Index(1):Index(3)] = (20, 30)
+emit([str(sl_c)])                      # [1, 20, 30, 4, 5]
+sl_c[Index(0):Index(3)] = "abc"
+emit([str(sl_c)])                      # ['a', 'b', 'c', 4, 5]
+
+# ============================================================
+# 8. Typed collection generics — list[T], dict[K,V], set[T]
+# ============================================================
+emit([str("=== typed generics ===")])
+
+fn sum_ints(items: list[int]) -> int:
+    mut acc = 0
+    for n in items:
+        acc += n
+    return acc
+
+let typed_nums: list[int] = [1, 2, 3, 4, 5]
+emit([str("sum:"), str(sum_ints(typed_nums))])   # 15
+
+fn join_strs(items: list[str]) -> str:
+    mut result = ""
+    for item in items:
+        result = result + item + " "
+    return result
+
+let words: list[str] = ["hello", "world"]
+emit([str("joined:"), str(join_strs(words))])   # hello world
+
+fn lookup(d: dict[str,int], key: str) -> int:
+    return d[key]
+
+let score_dict: dict[str,int] = {"alice": 90, "bob": 85}
+emit([str("alice:"), str(lookup(score_dict, "alice"))])   # 90
+emit([str("bob:"), str(lookup(score_dict, "bob"))])       # 85
+
+fn count_unique(items: set[int]) -> int:
+    return len(items)
+
+let unique: set[int] = {1, 2, 3, 2, 1}
+emit([str("unique count:"), str(count_unique(unique))])   # 3
+
+fn first_row(matrix: list[list[int]]) -> list[int]:
+    for row in matrix:
+        return row
+    return []
+
+let matrix: list[list[int]] = [[1, 2], [3, 4]]
+emit([str("first row:"), str(first_row(matrix))])   # [1, 2]
+
+class Stats:
+    mut values: list[int]
+
+    fn max_val(self) -> int:
+        mut m = 0
+        for val in self.values:
+            if val > m:
+                m = val
+        return m
+
+    fn count(self) -> int:
+        return len(self.values)
+
+let stats = Stats(values=[3, 1, 4, 1, 5, 9, 2, 6])
+emit([str("count:"), str(stats.count())])   # 8
+emit([str("max:"), str(stats.max_val())])   # 9
+
+# ── 出力を照らす ──
+check_output([
+    "=== list ===",
+    "[10, 20, 30, 40, 50]",
+    "len: 5",
+    "sum: 150",
+    "10",
+    "20",
+    "- apple",
+    "- banana",
+    "- cherry",
+    "scores: [5, 3, 8, 1]",
+    "=== dict ===",
+    "Tokyo",
+    "Paris",
+    "12",
+    "3",
+    "11",
+    "2",
+    "42",
+    "=== tuple ===",
+    "()",
+    "(99,)",
+    "(1, 'hello', True)",
+    "(10, 20)",
+    "True",
+    "False",
+    "True",
+    "False",
+    "(3, 7)",
+    "((1, 2), (3, 4))",
+    "1",
+    "2",
+    "10",
+    "20",
+    "99",
+    "3",
+    "4",
+    "100",
+    "10",
+    "20",
+    "5",
+    "7",
+    "8",
+    "=== set ===",
+    "{1, 2, 3}",
+    "3",
+    "set()",
+    "False",
+    "{4, 5, 6}",
+    "4",
+    "{10, 20, 30, 40}",
+    "{10, 30, 40}",
+    "{10, 40}",
+    "2",
+    "set()",
+    "True",
+    "True",
+    "{1, 2, 3, 4}",
+    "{2, 3}",
+    "{1}",
+    "{1, 4}",
+    "{1, 2, 3, 4}",
+    "{2, 3}",
+    "{1}",
+    "{1, 4}",
+    "True",
+    "False",
+    "True",
+    "True",
+    "False",
+    "{1, 2, 3}",
+    "{1, 2, 3, 4}",
+    "15",
+    "=== mixed ===",
+    "(0, 0)",
+    "(1, 2)",
+    "(3, 4)",
+    "evens: 5",
+    "odds: 5",
+    "=== subscript ===",
+    "10",
+    "50",
+    "99",
+    "h",
+    "o",
+    "1",
+    "3",
+    "200",
+    "300",
+    "42",
+    "7",
+    "=== slice ===",
+    "[20, 30, 40]",
+    "[10, 20, 30]",
+    "[30, 40, 50]",
+    "[10, 20, 30, 40, 50]",
+    "[10, 30, 50]",
+    "[20, 40]",
+    "[50, 40, 30, 20, 10]",
+    "ell",
+    "olleh",
+    "(2, 3)",
+    "(5, 4, 3, 2, 1)",
+    "True",
+    "[20, 30, 40]",
+    "[10, 30, 50]",
+    "None",
+    "[1, 20, 30, 4, 5]",
+    "[1, 99, 4, 5]",
+    "[1, 10, 20, 30, 4, 5]",
+    "[1, 4, 5]",
+    "[0, 1, 4, 5]",
+    "[0, 1, 4, 5, 6, 7]",
+    "[10, 1, 30, 3, 50, 5, 70, 7, 90, 9]",
+    "[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]",
+    "[1, 20, 30, 4, 5]",
+    "['a', 'b', 'c', 4, 5]",
+    "=== typed generics ===",
+    "sum: 15",
+    "joined: hello world ",
+    "alice: 90",
+    "bob: 85",
+    "unique count: 3",
+    "first row: [1, 2]",
+    "count: 8",
+    "max: 9",
+    "",
+], "collection")

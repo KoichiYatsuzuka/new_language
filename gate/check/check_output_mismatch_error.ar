@@ -1,0 +1,5 @@
+# check_output_mismatch_error.ar — 合わない出力の check_output は捕まえなければ GateCheckFailed で止まる（禁止の形）。
+from ..lib.check import emit, check_output
+
+emit([str(1 + 1)])
+check_output(["3", ""], "deliberate mismatch")   # expect: runtime GateCheckFailed "deliberate mismatch: output line 1: expected '3', got '2'"

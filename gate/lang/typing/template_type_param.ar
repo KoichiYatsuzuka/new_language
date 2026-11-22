@@ -1,0 +1,117 @@
+# template_type_param.ar — 型変数を具象型と取り違えないこと ＋ 実体化クラスのメモ化
+#
+# ⚠⚠ **型変数はクラス名と字面が区別できない。**
+#   `InferredType::from_ann` は大文字始まりの未知の識別子を `NamedInstance` にするので、
+#   `T` と実在のクラス名が型の上では同じ形になる。Phase 0 で入れた検査（フィールド代入・
+#   `return`・`let` の注釈）をそのまま掛けると、
+#     class Box[T]: mut v: T   の  self.v = 0
+#     fn conv[T](let n: int) -> T:  の  return n
+#   が「`T` に `int` を入れた」という**偽のエラー**になる（実際にそうなった）。
+#   ⇒ テンプレートの本体（型変数のまま）では、型変数を含む注釈は照合しない。
+#
+# ⚠⚠ **具体化した本体は具体型で検査する**（2026-09-26・メタ関数の設計書 2-8 段階 2）。
+#   展開器が `Box[str]` を普通のクラスとして置き、型検査はそれを普通のクラスとして検査する。
+#   ⇒ `Box[str]` の `self.v = 0` や `conv[float]` の `return n`（int）は**静的エラー**になる
+#     （以前は「`T` とは突き合わせない」として通していたが、それは誤りだった）。
+#   その形は template_type_param_error.ar で確認する。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/template_type_param.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== テンプレートクラスの型変数 ===")])
+
+class Box[T]:
+    mut v: T
+
+    fn get(self) -> T:
+        return self.v
+
+    fn set(mut self, let x: T) -> None:
+        self.v = x          # 型変数への代入（具体化した本体では具体型どうし）
+
+mut bi = Box[int](1)
+bi.set(5)
+emit([str(bi.get())])             # 5
+
+let bs = Box[str]("x")
+emit([str(bs.get())])             # x
+
+emit([str("=== テンプレート関数の型変数 ===")])
+
+fn ident[T](let a: T) -> T:
+    return a
+
+emit([str(ident[int](7))])        # 7
+emit([str(ident[str]("s"))])      # s
+emit([str(ident[float](float(4)))])      # 4.0
+
+emit([str("=== 同じ型引数の実体化は同じクラス ===")])
+
+fn note() -> int:
+    emit([str("  <class-level init>")])
+    return 0
+
+class Tagged[T]:
+    mut v: T
+    const K: int = note()
+
+# クラスは (テンプレート, 型引数) でメモ化されるので、クラスレベルの初期化子は
+# **型引数の組ごとに 1 回**しか走らない（通常のクラス定義と同じ回数）。
+emit([str("Tagged[int] x2:")])
+let t1 = Tagged[int](1)
+let t2 = Tagged[int](2)
+emit([str("Tagged[str] x1:")])
+let t3 = Tagged[str]("a")
+emit([str(t1.v), str(t2.v), str(t3.v)])     # 1 2 a
+
+emit([str("=== 実体化呼び出しの引数は型引数で置換して検査される（0-6） ===")])
+
+class Pair[K, V]:
+    mut k: K
+    mut v: V
+
+class Mixed[T]:
+    mut v: T
+    mut tag: str
+
+fn pick[T](let xs: list[T], let i: int) -> T:
+    return xs[i]
+
+let pr = Pair[int, str](1, "a")
+emit([str(pr.k), str(pr.v)])           # 1 a
+
+let mx = Mixed[int](3, "tag")
+emit([str(mx.v), str(mx.tag)])         # 3 tag
+
+emit([str(Box[float](float(2)).get())])  # 2.0 — 置換後の float へ int を拡大
+emit([str(pick[int]([10, 20], 1))])   # 20 — list[T] も置換される
+emit([str(pick[str](["x", "y"], 0))]) # x
+
+# 誤った実引数は template_instantiate_error.ar
+
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== テンプレートクラスの型変数 ===",
+    "5",
+    "x",
+    "=== テンプレート関数の型変数 ===",
+    "7",
+    "s",
+    "4.0",
+    "=== 同じ型引数の実体化は同じクラス ===",
+    "Tagged[int] x2:",
+    "  <class-level init>",
+    "Tagged[str] x1:",
+    "  <class-level init>",
+    "1 2 a",
+    "=== 実体化呼び出しの引数は型引数で置換して検査される（0-6） ===",
+    "1 a",
+    "3 tag",
+    "2.0",
+    "20",
+    "x",
+    "done",
+    "",
+], "template_type_param")

@@ -1,0 +1,46 @@
+# Test variadic arguments
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/variadic.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+fn sum_all(let ...: int) -> int:
+    mut result = 0
+    if local::args is not None:
+        for x in local::args:
+            result += x
+    return result
+
+fn greet(let prefix: str, let ...: str) -> str:
+    mut msg = prefix
+    if local::args is not None:
+        for name in local::args:
+            msg = msg + " " + name
+    return msg
+
+fn no_variadic_call(let x: int, let y: int) -> int:
+    return x + y
+
+# Basic variadic call
+let total = sum_all(... = 1, 2, 3, 4, 5)
+emit([str(total)])  # 15
+
+# Mixed: normal + variadic
+let greeting = greet("Hello", ... = "Alice", "Bob", "Charlie")
+emit([str(greeting)])  # Hello Alice Bob Charlie
+
+# Call with no variadic args
+let t2 = sum_all()
+emit([str(t2)])  # 0
+
+# Single variadic arg
+let t3 = sum_all(... = 42)
+emit([str(t3)])  # 42
+
+# ── 出力を照らす ──
+check_output([
+    "15",
+    "Hello Alice Bob Charlie",
+    "0",
+    "42",
+    "",
+], "variadic")

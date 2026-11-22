@@ -1,0 +1,99 @@
+# int_float_widening.ar — `int` → `float` は**明示変換**で行う（決定 D-5・タスク 4.2）
+#
+# ⚠⚠ **この例題は仕様変更で中身が入れ替わった。** 以前は「`int` → `float` の暗黙拡大」を
+# 実演していたが、タスク 4.2 で**暗黙キャストを廃止**したので、今は
+# 「**明示変換 `float(n)` を使う**」ことを実演する例題になっている。
+#
+# ## なぜ廃止したか（実測で比較した）
+#
+# | | 廃止 | 維持 |
+# |---|---|---|
+# | 移行コスト | **既存例題 1 件の 1 行** | — |
+# | 維持コスト | **0** | 変換地点 **33 箇所** × 適合判定の独立実装 **4 本**を整合させ続ける |
+# | 許す関係を増やすたび | — | 上の積が増える |
+# | `mut` 引数（書き戻し）の例外 | 不要になる | 永久に残る |
+#
+# ⇒ 廃止により「**受理したなら変換地点がある**」（D-7 の原則）が自明に保たれる。
+#
+# ⚠⚠ **廃止して初めて分かったこと**: `examples/interop/cpp_default_arg_native_call.ar` の
+# `fn touch(let _unused: float = norm(v345, m))` は**注釈が誤っていた**。C 側の宣言は
+# `int v3_norm(const V3* v, double* out_len)` で戻り値は `int`（長さは書き戻し）。
+# 暗黙拡大がそれを隠していた。
+#
+# 弾かれる例は int_float_widening_error.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/int_float_widening.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 明示変換で float にする ===")])
+
+let a: float = float(3)
+emit([str(a)])                            # 3.0
+
+mut b: float = float(4)
+emit([str(b)])                            # 4.0
+b = float(5)
+emit([str(b)])                            # 5.0
+
+emit([str("=== 仮引数 ===")])
+
+fn take_float(let v: float) -> float:
+    return v
+
+emit([str(take_float(float(7)))])         # 7.0
+emit([str(take_float(7.0))])              # 7.0   ← float リテラルはそのまま渡せる
+
+emit([str("=== 戻り値 ===")])
+
+fn as_float(let n: int) -> float:
+    return float(n)
+
+emit([str(as_float(3))])                  # 3.0
+
+emit([str("=== フィールド ===")])
+
+class Physics:
+    mut mass: float
+    mut label: str
+
+mut p = Physics(float(1), "p")
+p.mass = float(2)
+emit([str(p.mass)])                       # 2.0
+
+emit([str("=== テンプレートの型引数 ===")])
+
+class Box[T]:
+    mut v: T
+
+mut bf = Box[float](float(1))
+bf.v = float(7)
+emit([str(bf.v)])                         # 7.0
+
+emit([str("=== float 同士はそのまま ===")])
+
+let c: float = 1.5
+let d: float = c
+emit([str(d)])                            # 1.5
+
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== 明示変換で float にする ===",
+    "3.0",
+    "4.0",
+    "5.0",
+    "=== 仮引数 ===",
+    "7.0",
+    "7.0",
+    "=== 戻り値 ===",
+    "3.0",
+    "=== フィールド ===",
+    "2.0",
+    "=== テンプレートの型引数 ===",
+    "7.0",
+    "=== float 同士はそのまま ===",
+    "1.5",
+    "done",
+    "",
+], "int_float_widening")

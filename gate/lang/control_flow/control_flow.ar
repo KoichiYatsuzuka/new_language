@@ -1,0 +1,541 @@
+# control_flow.tl — if/elif/else, while, for, break, continue, pass, match, block expressions, block scoping
+
+# ============================================================
+# 1. if / elif / else
+# ============================================================
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/control_flow.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== if / elif / else ===")])
+
+fn grade(score: int) -> str:
+    if score >= 90:
+        return "A"
+    elif score >= 80:
+        return "B"
+    elif score >= 70:
+        return "C"
+    elif score >= 60:
+        return "D"
+    else:
+        return "F"
+
+emit([str(grade(95))])   # A
+emit([str(grade(83))])   # B
+emit([str(grade(71))])   # C
+emit([str(grade(62))])   # D
+emit([str(grade(40))])   # F
+
+# Nested if
+let x = 15
+if x > 0:
+    if x % 2 == 0:
+        emit([str("positive even")])
+    else:
+        emit([str("positive odd")])   # positive odd
+else:
+    emit([str("non-positive")])
+
+# Logical operators in condition
+let a = 5
+let b = 10
+if a > 0 and b > 0:
+    emit([str("both positive")])   # both positive
+
+if a > 100 or b > 5:
+    emit([str("at least one big")])   # at least one big
+
+if not (a == b):
+    emit([str("a and b are different")])   # a and b are different
+
+# ============================================================
+# 2. while loop
+# ============================================================
+emit([str("=== while ===")])
+
+# Basic accumulation
+# ⚠ ループ変数と同名にしないこと（規則 1・B4）。`while` の制御変数は
+#   普通の変数なので、後続の `for w in ...` がこれを覆うと再束縛になる。
+mut w = 1
+mut sum_odds = 0
+while w <= 9:
+    if w % 2 != 0:
+        sum_odds += w
+    w += 1
+emit([str("sum of odd 1-9:"), str(sum_odds)])   # 25
+
+# while True with break
+mut countdown = 5
+while True:
+    if countdown == 0:
+        break
+    emit([str("T-"), str(countdown)])
+    countdown -= 1
+emit([str("liftoff!")])
+
+# continue to skip iterations
+mut evens_only = 0
+mut j = 0
+while j < 10:
+    j += 1
+    if j % 2 != 0:
+        continue
+    evens_only += j
+emit([str("sum of even 2-10:"), str(evens_only)])   # 30
+
+# ============================================================
+# 3. for loop
+# ============================================================
+emit([str("=== for ===")])
+
+# range with start/stop
+mut total = 0
+for n in range(1, 6):
+    total += n
+emit([str("sum 1-5:"), str(total)])   # 15
+
+# range with step
+emit([str("even 0-8:")])
+for n in range(0, 10, 2):
+    emit([str(" "), str(n)])
+
+# Iterate list literals
+for fruit in ["apple", "banana", "cherry"]:
+    emit([str("-"), str(fruit)])
+
+# break inside for
+mut found = -1
+for n in range(10):
+    if n * n > 30:
+        found = n
+        break
+emit([str("first n where n*n > 30:"), str(found)])   # 6  (6*6=36)
+
+# continue inside for
+mut skip_sum = 0
+for n in range(1, 11):
+    if n % 3 == 0:
+        continue
+    skip_sum += n
+emit([str("sum 1-10 skipping multiples of 3:"), str(skip_sum)])   # 1+2+4+5+7+8+10 = 37
+
+# ============================================================
+# 4. Nested loops
+# ============================================================
+emit([str("=== nested loops ===")])
+
+# Multiplication table (3x3)
+for row in range(1, 4):
+    for col in range(1, 4):
+        emit([str(row * col), str(" ")])
+
+# break only exits the inner loop
+mut outer_ran = 0
+for outer in range(3):
+    outer_ran += 1
+    for inner in range(10):
+        if inner == 2:
+            break
+emit([str("outer ran:"), str(outer_ran)])   # 3
+
+# ============================================================
+# 5. pass (no-op placeholder)
+# ============================================================
+emit([str("=== pass ===")])
+
+for _ in range(5):
+    pass   # deliberate no-op
+
+fn placeholder() -> None:
+    pass
+
+placeholder()
+emit([str("pass examples done")])
+
+# ============================================================
+# 6. for over string and custom iterator
+# ============================================================
+emit([str("=== for over string ===")])
+
+mut char_count = 0
+for ch in "hello":
+    char_count += 1
+emit([str("len of 'hello':"), str(char_count)])   # 5
+
+# Custom class with gen __iter__
+class Countdown:
+    mut start: int
+
+    gen __iter__(self) -> int:
+        mut n = self.start
+        while n >= 0:
+            yield n
+            n -= 1
+
+for v in Countdown(3):
+    emit([str(v)])   # 3 2 1 0
+
+# ============================================================
+# 7. match statement
+# ============================================================
+emit([str("=== match: value comparison ===")])
+
+let score = 85
+let block_grade = block:
+    match (score // 10):
+        case 10:
+            block_return "A+"
+        case 9:
+            block_return "A"
+        case 8:
+            block_return "B"
+        case 7:
+            block_return "C"
+        case _:
+            block_return "F"
+    block_return "F"
+emit([str(block_grade)])   # B
+
+let s = "hello"
+match (s):
+    case "world":
+        emit([str("world")])
+    case "hello":
+        emit([str("hello")])   # hello
+    case _:
+        emit([str("unknown")])
+
+# wildcard only
+let n = 999
+match (n):
+    case _:
+        emit([str("caught by wildcard")])   # caught by wildcard
+
+# no arm matches — does nothing
+let y = 7
+match (y):
+    case 1:
+        emit([str("one")])
+    case 2:
+        emit([str("two")])
+
+# block_return inside match exits the enclosing block: early
+mut result = 0
+block:
+    match (1):
+        case 1:
+            result = 42
+            block_return 0
+    result = 999
+emit([str(result)])   # 42
+
+emit([str("=== match: type-pattern arms ===")])
+
+let v = 42
+match (v):
+    is int:
+        emit([str("int")])   # int
+    is str:
+        emit([str("str")])
+    is float:
+        emit([str("float")])
+
+class Dog:
+    fn bark(self) -> str:
+        return "woof"
+
+class Cat:
+    fn meow(self) -> str:
+        return "meow"
+
+mut animal = Dog()
+match (animal):
+    is Dog:
+        emit([str("it's a dog")])   # it's a dog
+    is Cat:
+        emit([str("it's a cat")])
+
+# ============================================================
+# 8. Control flow as expressions (block_return / loop_yield)
+# ============================================================
+emit([str("=== if expression ===")])
+
+mut cf_flag = True
+let if_expr_x = if cf_flag == True ->str:
+    block_return "true"
+else:
+    block_return "false"
+emit([str(if_expr_x)])   # true
+
+cf_flag = False
+let if_expr_y = if cf_flag == True ->str:
+    block_return "true"
+else:
+    block_return "false"
+emit([str(if_expr_y)])   # false
+
+# if without else returns None when no branch matches
+let nothing = if False ->str:
+    block_return "unreachable"
+emit([str(nothing)])   # None
+
+emit([str("=== for expression ===")])
+
+let evens = for i in range(10) ->list[int]:
+    if i % 2 == 0:
+        loop_yield i
+emit([str(evens)])   # [0, 2, 4, 6, 8]
+
+let squares = for i in range(1, 6) ->list[int]:
+    loop_yield i * i
+emit([str(squares)])   # [1, 4, 9, 16, 25]
+
+# break exits the loop and returns the accumulated list
+let partial = for i in range(10) ->list[int]:
+    if i == 3:
+        break
+    loop_yield i
+emit([str(partial)])   # [0, 1, 2]
+
+emit([str("=== while expression ===")])
+
+mut cf_count = 0
+let while_result = while cf_count < 5 ->list[int]:
+    loop_yield cf_count
+    cf_count += 1
+emit([str(while_result)])   # [0, 1, 2, 3, 4]
+
+emit([str("=== match expression ===")])
+
+let match_score = 85
+let match_grade = match (match_score // 10) ->str:
+    case 10:
+        block_return "A+"
+    case 9:
+        block_return "A"
+    case 8:
+        block_return "B"
+    case 7:
+        block_return "C"
+    case _:
+        block_return "F"
+emit([str(match_grade)])   # B
+
+# break in regular for loop
+mut found_val = -1
+for i in range(10):
+    if i == 5:
+        found_val = i
+        break
+    found_val = i
+emit([str(found_val)])   # 5
+
+emit([str("=== block: expression ===")])
+
+let computed = block ->int:
+    let ba = 6
+    let bb = 7
+    block_return ba * bb
+emit([str(computed)])   # 42
+
+# loop_yield with no elements → None
+let empty = for i in range(0) ->list[int]:
+    loop_yield i
+emit([str(empty)])   # None
+
+emit([str("=== ->Type annotation ===")])
+
+# Option[T]: None is accepted alongside the concrete type
+let opt = block ->Option[int]:
+    block_return None
+emit([str(opt)])   # None
+
+let opt2 = block ->Option[int]:
+    block_return 7
+emit([str(opt2)])   # 7
+
+let maybe = if False ->Option[str]:
+    block_return "value"
+else:
+    block_return None
+emit([str(maybe)])   # None
+
+# no annotation: no type check applied
+let raw_block = block:
+    block_return 99
+emit([str(raw_block)])   # 99
+
+# ============================================================
+# 9. Block scoping
+# ============================================================
+emit([str("=== block scope ===")])
+
+mut outer = 10
+
+block:
+    mut inner = 99
+    outer = 42
+    emit([str("inside block: outer ="), str(outer)])   # 42
+    emit([str("inside block: inner ="), str(inner)])   # 99
+
+emit([str("after block: outer ="), str(outer)])        # 42
+
+emit([str("=== if scope ===")])
+
+mut scope_result = 0
+
+if True:
+    mut local_var = 5
+    scope_result = local_var * 2
+    emit([str("inside if: local_var ="), str(local_var)])  # 5
+
+emit([str("result after if:"), str(scope_result)])  # 10
+
+emit([str("=== for scope ===")])
+
+mut scope_sum = 0
+
+for si in range(5):
+    mut step = si * 2
+    scope_sum += step
+
+emit([str("sum:"), str(scope_sum)])   # 20
+
+emit([str("=== while scope ===")])
+
+mut scope_total = 0
+mut scope_idx = 0
+
+while scope_idx < 4:
+    mut contribution = scope_idx * scope_idx
+    scope_total += contribution
+    scope_idx += 1
+
+emit([str("total:"), str(scope_total)])   # 14
+
+emit([str("=== nested blocks ===")])
+
+mut val = 1
+
+block:
+    mut val2 = 100
+    block:
+        mut val3 = val2 + val
+        emit([str("inner-inner val3:"), str(val3)])   # 101
+    emit([str("inner val2:"), str(val2)])             # 100
+
+emit([str("outer val:"), str(val)])    # 1
+
+emit([str("=== block as computation scope ===")])
+
+mut answer = 0
+
+block:
+    let ba2 = 7
+    let bb2 = 6
+    answer = ba2 * bb2
+
+emit([str("answer:"), str(answer)])   # 42
+
+# ── 出力を照らす ──
+check_output([
+    "=== if / elif / else ===",
+    "A",
+    "B",
+    "C",
+    "D",
+    "F",
+    "positive odd",
+    "both positive",
+    "at least one big",
+    "a and b are different",
+    "=== while ===",
+    "sum of odd 1-9: 25",
+    "T- 5",
+    "T- 4",
+    "T- 3",
+    "T- 2",
+    "T- 1",
+    "liftoff!",
+    "sum of even 2-10: 30",
+    "=== for ===",
+    "sum 1-5: 15",
+    "even 0-8:",
+    "  0",
+    "  2",
+    "  4",
+    "  6",
+    "  8",
+    "- apple",
+    "- banana",
+    "- cherry",
+    "first n where n*n > 30: 6",
+    "sum 1-10 skipping multiples of 3: 37",
+    "=== nested loops ===",
+    "1  ",
+    "2  ",
+    "3  ",
+    "2  ",
+    "4  ",
+    "6  ",
+    "3  ",
+    "6  ",
+    "9  ",
+    "outer ran: 3",
+    "=== pass ===",
+    "pass examples done",
+    "=== for over string ===",
+    "len of 'hello': 5",
+    "3",
+    "2",
+    "1",
+    "0",
+    "=== match: value comparison ===",
+    "B",
+    "hello",
+    "caught by wildcard",
+    "42",
+    "=== match: type-pattern arms ===",
+    "int",
+    "it's a dog",
+    "=== if expression ===",
+    "true",
+    "false",
+    "None",
+    "=== for expression ===",
+    "[0, 2, 4, 6, 8]",
+    "[1, 4, 9, 16, 25]",
+    "[0, 1, 2]",
+    "=== while expression ===",
+    "[0, 1, 2, 3, 4]",
+    "=== match expression ===",
+    "B",
+    "5",
+    "=== block: expression ===",
+    "42",
+    "None",
+    "=== ->Type annotation ===",
+    "None",
+    "7",
+    "None",
+    "99",
+    "=== block scope ===",
+    "inside block: outer = 42",
+    "inside block: inner = 99",
+    "after block: outer = 42",
+    "=== if scope ===",
+    "inside if: local_var = 5",
+    "result after if: 10",
+    "=== for scope ===",
+    "sum: 20",
+    "=== while scope ===",
+    "total: 14",
+    "=== nested blocks ===",
+    "inner-inner val3: 101",
+    "inner val2: 100",
+    "outer val: 1",
+    "=== block as computation scope ===",
+    "answer: 42",
+    "",
+], "control_flow")

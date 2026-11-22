@@ -1,0 +1,65 @@
+# for_range_typing.ar — `range()` の戻り値型とループ変数の型付け（#16 段階 D）
+#
+# 型検査は `range(n)` を `list[int]` として扱うため、`for i in range(n)` の
+# ループ変数 `i` に `int` が付く。これが無いと `i` は `Unresolved` になり、
+# 本体の演算に VM の型特化 op が一切出なかった（最頻出のループ形なのに）。
+#
+# `for` **式**（`for i in range(n) -> list[int]:`）のループ変数も同じく型が付く
+# （以前は文の for だけ対応していて、式の for は変数を宣言していなかった）。
+#
+# 検証: .\compare_vm_modes.ps1 -Filter for_range_typing
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/for_range_typing.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+fn basic(let n: int) -> int:
+    mut s = 0
+    for i in range(n):
+        s += i
+    return s
+
+fn nested(let n: int) -> int:
+    mut s = 0
+    for i in range(n):
+        for j in range(i):
+            s += i * j
+    return s
+
+fn for_expr(let n: int) -> int:
+    let xs = for i in range(n) -> list[int]:
+        loop_yield i * 3
+    mut s = 0
+    for v in xs:
+        s += v
+    return s
+
+fn uses_len(let xs: list[int]) -> int:
+    return len(xs) * 2
+
+# 外側変数とループ変数は**別名でなければならない**（規則 1・B4）
+# ⚠⚠ 以前は `mut i = 100` を `for i in range(n)` が黙って覆い、
+#    ループ後の `return s + i` は**外側の 100** を読んでいた。
+#    同じ式内の `i` が 2 つの別のものを指すので読み違えやすい
+#        → [for_target_shadow_error.ar](for_target_shadow_error.ar)
+fn outer_var_kept(let n: int) -> int:
+    mut base = 100
+    mut s = 0
+    for i in range(n):
+        s += i
+    return s + base
+
+emit([str(basic(5))])
+emit([str(nested(5))])
+emit([str(for_expr(4))])
+emit([str(uses_len([1, 2, 3]))])
+emit([str(outer_var_kept(4))])
+
+# ── 出力を照らす ──
+check_output([
+    "10",
+    "35",
+    "18",
+    "6",
+    "106",
+    "",
+], "for_range_typing")

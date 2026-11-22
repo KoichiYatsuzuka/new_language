@@ -1,0 +1,104 @@
+# return_type.ar — `return` の値が宣言した戻り値型と照合されること（0-3）
+#
+# 誤った戻り値は return_type_error.ar
+#
+# ⚠ `/` は int 同士でも **float** を返す（`6 / 3` → `2.0`）。int を返したいなら `//`。
+#   この検査を入れたとき、既存例題 3 本が `-> int` と宣言して `a / b` を返していた
+#   （実際の誤りだったので例題側を直した）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/return_type.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 基本 ===")])
+
+fn add(let a: int, let b: int) -> int:
+    return a + b
+
+fn label(let n: int) -> str:
+    return "n=" + str(n)
+
+emit([str(add(2, 3))])        # 5
+emit([str(label(7))])         # n=7
+
+emit([str("=== int → float の拡大は許される ===")])
+
+fn as_float(let n: int) -> float:
+    return float(n)            # int を float 戻り値へ
+
+fn take_float(let x: float) -> str:
+    return str(x)       # 仮引数も昇格済み
+
+emit([str(as_float(3))])      # 3.0 — 戻り値も昇格する（0-B2）
+emit([str(take_float(float(4)))])    # 4.0 — 仮引数も昇格する（0-B2）
+
+emit([str("=== 除算の戻り値型 ===")])
+
+fn true_div(let a: int, let b: int) -> float:
+    return a / b        # `/` は float
+
+fn floor_div(let a: int, let b: int) -> int:
+    return a // b       # `//` は int
+
+emit([str(true_div(6, 3))])   # 2.0
+emit([str(floor_div(6, 3))])  # 2
+
+emit([str("=== Self 型（メソッド連鎖） ===")])
+
+class Builder:
+    mut value: int
+
+    fn set(self, let v: int) -> Self:
+        return Self(v)
+
+    fn doubled(self) -> Self:
+        return Self(self.value * 2)
+
+    fn get(self) -> int:
+        return self.value
+
+emit([str(Builder(1).set(5).doubled().get())])   # 10
+
+emit([str("=== 値なし return（早期脱出）は照合しない ===")])
+
+fn early(mut acc: list[int], let n: int) -> None:
+    if n < 0:
+        return
+    acc.append(n)
+
+mut xs = [0]
+early(xs, -1)
+early(xs, 9)
+emit([str(xs)])               # [0, 9]
+
+emit([str("=== コレクション・None ===")])
+
+fn make() -> list[int]:
+    return [1, 2]
+
+fn nothing() -> None:
+    return None
+
+emit([str(make()), str(nothing())])   # [1, 2] None
+
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== 基本 ===",
+    "5",
+    "n=7",
+    "=== int → float の拡大は許される ===",
+    "3.0",
+    "4.0",
+    "=== 除算の戻り値型 ===",
+    "2.0",
+    "2",
+    "=== Self 型（メソッド連鎖） ===",
+    "10",
+    "=== 値なし return（早期脱出）は照合しない ===",
+    "[0, 9]",
+    "=== コレクション・None ===",
+    "[1, 2] None",
+    "done",
+    "",
+], "return_type")

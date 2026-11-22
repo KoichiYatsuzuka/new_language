@@ -1,0 +1,33 @@
+# template_protocol.ar — テンプレートの具体化も protocol に構造的に適合する（タスク 2-14）
+#
+# ⚠⚠ 以前は、適合しているテンプレートの具体化（`Box[int]`）を protocol 型の変数に入れると
+#   「クラスのインスタンスではない」と**誤って弾いていた**（型検査がテンプレートの具体化を
+#   普通のクラスとして扱えなかったため）。単相化した具体クラスで適合を見るようにした。
+# ⚠ 適合していない具体化は、足りないメンバー・型の違いを理由に弾かれる
+#   （template_constrained_error.ar の Section 3）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/template_protocol.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+protocol Sized:
+    fn size(self) -> int:
+        ...
+
+class Box[T]:
+    mut items: list[T]
+
+    fn size(self) -> int:
+        return len(self.items)
+
+let s: Sized = Box[int]([1, 2, 3])
+emit([str(s.size())])             # 3
+
+let t: Sized = Box[str](["a"])
+emit([str(t.size())])             # 1
+
+# ── 出力を照らす ──
+check_output([
+    "3",
+    "1",
+    "",
+], "template_protocol")

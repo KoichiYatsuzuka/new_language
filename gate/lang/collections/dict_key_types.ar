@@ -1,0 +1,93 @@
+# dict_key_types.ar — 辞書のキーとして使える型（B1-c で**ほぼすべての型**に広がった）。
+#
+# 経緯:
+#   - B1-a まで … `DictKey` が int / str / bool の 3 種しか持たず、他の型は
+#                  **黙って捨てられていた**（サイレントなデータ消失）。
+#   - B1-a      … 捨てるのをやめて `TypeError` にした。
+#   - B1-c      … コンテナを `IndexMap<HKey, Value>` に差し替え、ハッシュを自分で計算して
+#                  等値判定をクロージャで渡す方式にした。⇒ 型の制限が無くなった。
+#
+# ⚠ 禁止が残っているものは [dict_key_types_error.ar](dict_key_types_error.ar) を参照。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/collections/dict_key_types.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+class P:
+    let x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+
+fn f() -> int:
+    return 1
+
+emit([str("=== あらゆる型がキーになる ===")])
+mut d = {}
+d[(1, 2)]  = "tuple"
+d[[3, 4]]  = "list"
+d[{5, 6}]  = "set"
+d[P(7)]    = "instance"
+d[f]       = "function"
+d[P]       = "class"
+d[int]     = "type"
+d[uint(8)] = "uint"
+d[3.5]     = "float"
+d[1+2j]    = "complex"
+d["s"]     = "str"
+d[9]       = "int"
+d[True]    = "bool"
+emit([str(len(d))])                # 13
+
+emit([str("=== 構造が同じなら引ける（値の同一性で照合する）===")])
+emit([str(d[(1, 2)])])             # tuple
+emit([str(d[[3, 4]])])             # list
+emit([str(d[P(7)])])               # instance   別オブジェクトでも全フィールドが等しい
+let same = (1, 2)
+emit([str(d[same])])               # tuple
+
+emit([str("=== キーの照合は型厳密（B2-b）===")])
+# ⚠ 式としての `3 == 3.0` は True（数値の昇格ラティス）だが、**キーの同一性は型厳密**。
+#   辞書はハッシュで束ねるので、ここが厳密でないとハッシュと規則が食い違う。
+mut e = {}
+e[3]   = "int key"
+e[3.0] = "float key"
+emit([str(len(e)), str(e[3]), str(e[3.0])])  # 2 int key float key
+
+mut g = {}
+g[1]    = "int"
+g[True] = "bool"
+emit([str(len(g))])                # 2   bool は数値の昇格ラティスに入っていない
+
+emit([str("=== キーは挿入時に複製される ===")])
+# ⚠ 参照を共有したままだと、あとで中身を書き換えられてハッシュと食い違い、
+#   「入れたのに引けない」辞書になる。⇒ 属性の境界で複製する規則の一適用。
+mut k = [1]
+mut h = {}
+h[k] = "v"
+k.append(2)                  # 元の変数を変えても…
+emit([str(len(h)), str(h[[1]]), str(k)])     # 1 v [1, 2]   辞書側は [1] のまま
+
+emit([str("=== 読み・包含・更新 ===")])
+mut m = {"a": 1}
+m["a"] = 2
+emit([str(m["a"]), str("a" in m), str("b" in m), str("b" not in m)])
+emit([str((1, 2) in d), str((9, 9) in d)])
+
+# ── 出力を照らす ──
+check_output([
+    "=== あらゆる型がキーになる ===",
+    "13",
+    "=== 構造が同じなら引ける（値の同一性で照合する）===",
+    "tuple",
+    "list",
+    "instance",
+    "tuple",
+    "=== キーの照合は型厳密（B2-b）===",
+    "2 int key float key",
+    "2",
+    "=== キーは挿入時に複製される ===",
+    "1 v [1, 2]",
+    "=== 読み・包含・更新 ===",
+    "2 True False True",
+    "True False",
+    "",
+], "dict_key_types")

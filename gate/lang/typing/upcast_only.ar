@@ -1,0 +1,112 @@
+# upcast_only.ar — 容器の適合はアップキャストのみ ＋ 空リテラルは `list[⊥]`（タスク 4.1 / D-3 / D-11）
+#
+# ## 何を締めたか
+#
+# 素の容器と型引数つき容器の適合が**双方向**だった:
+#
+#   (ListOf(_), List)  => true      # list[int] → list      （アップキャスト・正しい）
+#   (List, ListOf(_))  => true      # list      → list[int] （ダウンキャスト・⛔）
+#
+# ⚠⚠ **タスク 8.1（案 A）以降、素の `list` 注釈は書けない。** 上の規則は実装に
+#   残っているが、Arrow のソースからは到達しない（素の容器型を作れるのは Python 翻訳の
+#   経路だけ）。この例題は同じ方向を **`list[int]` ↔ `list[Any]`** で示している。
+#
+# 後者があるために「要素型を捨てる」ことが「**何でも通す**」になっていた
+# （根本原因②の実装本体）。タスク 2.7 で推論側を直し、ここで規則を**片方向**にした。
+# `fixed_list` / `set` / `dict` / `list_like` も同じ。
+#
+# ## なぜ `⊥`（Never）が必要か
+#
+# 片方向にすると `mut xs: list[int] = []` が落ちる（空リテラルが素の `list` だったため）。
+# ⇒ 空リテラルの要素型を **`Never`（⊥ / 下端）** にした。`Never` は**あらゆる型へ
+#   アップキャストできる**ので `list[int]` にも `list[str]` にも渡せる。
+#
+# ⚠⚠ **`Any`（上端）では駄目。方向が逆になる。** `list[Any]` は `list[int]` の
+#   スーパータイプなので `list[Any]` → `list[int]` はダウンキャストになり、
+#   `mut xs: list[int] = []` が落ちてしまう（実測で確認した）。
+#
+# ⚠ 注釈なしの束縛では `Never` を `Any` へ開く（D-11 / U-6）。`Never` のまま束縛すると
+#   「要素を足せない空リスト」になるため。**その代わり `list[Any]` は `list[int]` へ
+#   渡せない**（下の注意書き）。
+#
+# 弾かれる例は upcast_only_error.ar
+
+# ⚠⚠ **素の容器型注釈（`list` / `set` / `dict` …）はタスク 8.1（案 A）で禁止された。**
+#   そのため「`list[int]` を素の `list` へ渡す」という**この規則の到達先そのものが
+#   Arrow のソースからは書けなくなった**。規則（`(ListOf(_), List) => true`）は
+#   実装に残っているが、素の容器型を作れるのは Python 翻訳の経路だけ
+#   （`src/type_check/types.rs` の `from_ann` のプリミティブ表の注記を参照）。
+#
+#   ⇒ ここでは**書ける綴りで同じ方向**を示す。`list[int]` → `list[Any]` は
+#     要素型を広げる（情報を落とす）方向なので通る。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/upcast_only.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 要素型を広げる方向は通る（アップキャスト） ===")])
+
+let xs: list[int] = [1, 2]
+let widened: list[Any] = xs
+emit([str(widened)])                      # [1, 2]
+
+let si: set[int] = {1}
+let widened_s: set[Any] = si
+emit([str(len(widened_s))])                 # 1
+
+let di: dict[str, int] = {"a": 1}
+let widened_d: dict[str, Any] = di
+emit([str(widened_d["a"])])                 # 1
+
+emit([str("=== 空リテラルは注釈の型になる（⊥ がアップキャスト） ===")])
+
+mut a: list[int] = []
+a.append(1)
+emit([str(a)])                            # [1]
+
+mut b: list[str] = []
+b.append("s")
+emit([str(b)])                            # ['s']
+
+mut d: dict[str, int] = {}
+d["k"] = 9
+emit([str(d["k"])])                       # 9
+
+emit([str("=== 空リテラルを引数として渡せる ===")])
+
+fn take_ints(let items: list[int]) -> int:
+    return len(items)
+
+let empty: list[int] = []
+emit([str(take_ints(empty))])             # 0
+emit([str(take_ints([]))])                # 0   ← リテラルを直接渡しても通る
+
+emit([str("=== 注釈なしの空リテラルは list[Any] ===")])
+
+# ⚠⚠ `let xs = []` は `list[Any]` になるので **`list[int]` へは渡せない**
+#   （`Any` は上端なのでダウンキャストになる）。渡したいときは注釈を付ける。
+#   → upcast_only_error.ar
+mut loose = []
+loose.append(1)
+loose.append("s")                   # `Any` なので何でも入る
+emit([str(loose)])                        # [1, 's']
+
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== 要素型を広げる方向は通る（アップキャスト） ===",
+    "[1, 2]",
+    "1",
+    "1",
+    "=== 空リテラルは注釈の型になる（⊥ がアップキャスト） ===",
+    "[1]",
+    "['s']",
+    "9",
+    "=== 空リテラルを引数として渡せる ===",
+    "0",
+    "0",
+    "=== 注釈なしの空リテラルは list[Any] ===",
+    "[1, 's']",
+    "done",
+    "",
+], "upcast_only")

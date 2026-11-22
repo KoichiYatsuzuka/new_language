@@ -1,0 +1,66 @@
+# Intersection type example: a value satisfying ALL constituent types simultaneously
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/classes/intersection.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+trait Flyable:
+    fn fly(self) -> str:
+        ...
+
+trait Swimmable:
+    fn swim(self) -> str:
+        ...
+
+class Duck(Flyable, Swimmable):
+    let name: str
+
+    fn __init__(mut self, n: str) -> None:
+        self.name = n
+
+    fn fly(self) -> str:
+        return self.name + " is flying"
+
+    fn swim(self) -> str:
+        return self.name + " is swimming"
+
+class FlyingFish(Flyable, Swimmable):
+    let name: str
+
+    fn __init__(mut self, n: str) -> None:
+        self.name = n
+
+    fn fly(self) -> str:
+        return self.name + " leaps through the air"
+
+    fn swim(self) -> str:
+        return self.name + " swims fast"
+
+# A function accepting a value that must be BOTH Flyable AND Swimmable
+fn show_abilities(creature: Intersection[Flyable, Swimmable]) -> None:   # expect: warning IntersectionSkippedCompile
+    # member access on both constituent types — no downcast needed
+    emit([str(creature.fly())])
+    emit([str(creature.swim())])
+
+let duck = Duck("Donald")
+let fish = FlyingFish("Exocoetus")
+
+show_abilities(duck)
+show_abilities(fish)
+
+# Type guard narrowing: x is C narrows to C within the branch
+let animal: Intersection[Flyable, Swimmable] = duck
+if animal is Duck:
+    emit([str("It's a duck:"), str(animal.fly())])
+
+emit([str("Done")])
+
+# ── 出力を照らす ──
+check_output([
+    "Donald is flying",
+    "Donald is swimming",
+    "Exocoetus leaps through the air",
+    "Exocoetus swims fast",
+    "It's a duck: Donald is flying",
+    "Done",
+    "",
+], "intersection_warning")

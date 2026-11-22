@@ -1,0 +1,55 @@
+# frozenset — 不変でハッシュできる集合（python_builtins_plan.md のタスク 3-1）
+#
+# `frozenset(iterable)` で作る。set と同じ演算子・書き換えないメソッドを持ち、辞書のキーや集合の要素にできる。
+# 型は `frozenset[T]`（`set[T]` とは別の型で、互いに代入できない）。出力は CPython と同じ。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/collections/frozenset.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+let a: frozenset[int] = frozenset([1, 2, 3, 2])
+let b = frozenset({3, 4})
+let s: set[int] = {2, 3}
+emit([str(a), str(len(a)), str(2 in a), str(9 not in a)])
+emit([str(frozenset()), str(bool(frozenset())), str(bool(a))])
+
+# 演算子（結果は左の種類）
+emit([str(a | b), str(a & b), str(a - b), str(a ^ b)])
+emit([str(a | s), str(type(s | a).__name__), str(sorted(s | a))])
+
+# 比べる（set とも要素で比べる・大小は包含関係）
+emit([str(a == frozenset([3, 2, 1])), str(a == {1, 2, 3}), str(a != b)])
+emit([str(frozenset([1, 2]) <= a), str(frozenset([1, 2]) < a), str(a < a), str(a >= frozenset([1]))])
+
+# 書き換えないメソッド
+let small: frozenset[int] = a.intersection(s)
+emit([str(small), str(a.difference([1])), str(a.union([7], (8,))), str(a.symmetric_difference(b))])
+emit([str(a.issubset([1, 2, 3, 4])), str(a.issuperset(s)), str(a.isdisjoint(frozenset([9])))])
+
+# 辞書のキー・集合の要素にできる
+let names: dict[frozenset[str], str] = {frozenset(["x", "y"]): "pair"}
+emit([str(names[frozenset(["y", "x"])])])
+emit([str(frozenset([frozenset([1])]))])
+
+# 反復・変換・型の判定
+mut total = 0
+for v in a:
+    total += v
+emit([str(total), str(sorted(a)), str(set(a) == a)])
+emit([str(isinstance(a, frozenset)), str(type(a).__name__), str(a is frozenset)])
+
+# ── 出力を照らす ──
+check_output([
+    "frozenset({1, 2, 3}) 3 True True",
+    "frozenset() False True",
+    "frozenset({1, 2, 3, 4}) frozenset({3}) frozenset({1, 2}) frozenset({1, 2, 4})",
+    "frozenset({1, 2, 3}) set [1, 2, 3]",
+    "True True True",
+    "True True False True",
+    "frozenset({2, 3}) frozenset({2, 3}) frozenset({1, 2, 3, 7, 8}) frozenset({1, 2, 4})",
+    "True True True",
+    "pair",
+    "frozenset({frozenset({1})})",
+    "6 [1, 2, 3] True",
+    "True frozenset True",
+    "",
+], "frozenset")

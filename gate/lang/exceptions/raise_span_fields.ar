@@ -1,0 +1,63 @@
+# raise_span_fields.ar — `raise` した例外インスタンスに焼き込まれる位置情報の確認（#77）。
+#
+# `raise <expr>` は例外インスタンスへ file / line / col / code_context を直接書き込み、
+# 同じ位置で StackFrame を 1 つ作る。この組み立ては #77 で
+# `build_raised_error` の 1 箇所に集約した（それ以前は VM 経路とツリーウォーク経路に
+# 同じ 40 行が書かれていて、doc に「同一意味論」と書いてあるだけだった）。
+#
+# ⚠ #77 の時点で **これらのフィールドを読むアクティブな例題は 1 本も無かった**。
+# ＝ 組み立てが壊れても全ゲートが緑のままだった（#56/#68/#71/#75 と同じ形）。
+#
+# ⚠ `file` は絶対パスなので**そのまま print しない**（実行環境で変わる）。
+# 末尾がファイル名かどうかだけを見る。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/exceptions/raise_span_fields.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+fn thrower(n: int) -> int:
+    if n > 0:
+        raise ValueError("boom")
+    return 0
+
+# --- 関数の中から raise（VM 経路） ---
+try:
+    let r = thrower(1)
+except ValueError as e:
+    emit([str("msg:"), str(e.message)])                                  # boom
+    emit([str("file-ok:"), str(e.file.endswith("raise_span_fields.ar"))]) # True
+    emit([str("line:"), str(e.line)])                                     # 19（写しの見出しで 3 行ずれた）
+    emit([str("col:"), str(e.col)])                                       # 9
+    emit([str("ctx-has-raise:"), str("raise" in e.code_context)])          # True
+
+# --- 最上位から raise（同じ組み立てを通る） ---
+try:
+    raise IndexError("top")
+except IndexError as e:
+    emit([str("top-line:"), str(e.line)])                                 # 34（同上）
+    emit([str("top-ctx-has-raise:"), str("raise" in e.code_context)])      # True
+
+# --- 位置が違えば line も違う（＝ 焼き込みが呼び出しごとに起きている） ---
+mut lines: list[int] = []
+for i in range(2):
+    try:
+        if i == 0:
+            raise ValueError("a")
+        else:
+            raise ValueError("b")
+    except ValueError as e:
+        lines.append(e.line)
+
+emit([str("distinct-lines:"), str(lines[0] != lines[1])])                 # True
+
+# ── 出力を照らす ──
+check_output([
+    "msg: boom",
+    "file-ok: True",
+    "line: 19",
+    "col: 9",
+    "ctx-has-raise: True",
+    "top-line: 34",
+    "top-ctx-has-raise: True",
+    "distinct-lines: True",
+    "",
+], "raise_span_fields")

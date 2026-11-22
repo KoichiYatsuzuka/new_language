@@ -1,0 +1,51 @@
+# float_repr.ar — float と complex の表示を CPython の repr に合わせる（python_builtins_plan.md のタスク 1-5）
+#
+# float（str / repr / print）は最短の往復表現で、10 進の指数が -4 以下か 16 より大きければ指数表記、
+# それ以外は小数表記に `.0` を足す（CPython の PyOS_double_to_string(x, 'r', 0, Py_DTSF_ADD_DOT_0)）。
+# complex は成分に `.0` を付けず、実部が +0 なら虚部だけ（CPython の complex_repr）。
+# ⚠ 以前は指数表記を使わず、`1e20` が `100000000000000000000`（`.0` も無し）、`1e-10` が `0.0000000001`、
+#   NaN が `NaN`、complex が `(1.0+2.0j)` だった。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/float_repr.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== 1. ordinary values (unchanged) ===")])
+emit([str(0.1), str(2.5), str(100.0), str(-0.0)])                    # 0.1 2.5 100.0 -0.0
+emit([str(0.1 + 0.2)])                                # 0.30000000000000004
+
+emit([str("=== 2. the switch to exponent notation ===")])
+emit([str(1e15), str(1e16)])                               # 1000000000000000.0 1e+16
+emit([str(0.0001), str(0.00001)])                          # 0.0001 1e-05
+emit([str(1.5e-7), str(2.5e300), str(-1e100)])                  # 1.5e-07 2.5e+300 -1e+100
+
+emit([str("=== 3. inf and nan ===")])
+let big: float = 1e308 * 10.0
+emit([str(big), str(-big), str(big - big)])                     # inf -inf nan
+
+emit([str("=== 4. str / repr / in a list ===")])
+emit([str(str(1e20)), str(repr(1e-10))])                   # 1e+20 1e-10
+emit([str([1e16, 0.5])])                              # [1e+16, 0.5]
+
+emit([str("=== 5. complex ===")])
+emit([str(1 + 2j), str(2j), str(1.5 - 0j)])                     # (1+2j) 2j (1.5+0j)
+emit([str(complex(1e20, 1e-5))])                      # (1e+20+1e-05j)
+
+# ── 出力を照らす ──
+check_output([
+    "=== 1. ordinary values (unchanged) ===",
+    "0.1 2.5 100.0 -0.0",
+    "0.30000000000000004",
+    "=== 2. the switch to exponent notation ===",
+    "1000000000000000.0 1e+16",
+    "0.0001 1e-05",
+    "1.5e-07 2.5e+300 -1e+100",
+    "=== 3. inf and nan ===",
+    "inf -inf nan",
+    "=== 4. str / repr / in a list ===",
+    "1e+20 1e-10",
+    "[1e+16, 0.5]",
+    "=== 5. complex ===",
+    "(1+2j) 2j (1.5+0j)",
+    "(1e+20+1e-05j)",
+    "",
+], "float_repr")

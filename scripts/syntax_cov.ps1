@@ -26,13 +26,15 @@
 #   増えて読めなくなるので、**意図的に分けていない**（代わりに上の nested-fn 列を見る）。
 #   ./scripts/syntax_cov.ps1 -SkipBuild
 #   ./scripts/syntax_cov.ps1 -Exclude 'archived|practical_examples'
+#   ./scripts/syntax_cov.ps1 -Root gate -Exclude '\\lib\\|_mods\\'   # gate/ のテストを測る（D-12）
 #
 # ⚠ このファイルは**日本語コメントを含むので UTF-8 BOM 付きで保存すること**（PS5.1 は BOM 無しを ANSI で読む）。
 param(
     [int]$Timeout = 30,
     [switch]$SkipBuild,
     [switch]$Pairs,
-    [string]$Exclude = '\\archived\\'
+    [string]$Exclude = '\\archived\\',
+    [string]$Root = ''   # 既定は examples/。gate/ を測るときは -Root gate（gate_speed_plan.md D-12 / 4-1）
 )
 
 $ErrorActionPreference = 'Stop'
@@ -52,7 +54,8 @@ if (-not $SkipBuild) {
 $exe = Join-Path $repo 'target\debug\arrow.exe'
 if (-not (Test-Path $exe)) { throw "not built: $exe" }
 
-$files = Get-ChildItem -Path (Join-Path $repo 'examples') -Filter *.ar -Recurse |
+if (-not $Root) { $Root = Join-Path $repo 'examples' }
+$files = Get-ChildItem -Path $Root -Filter *.ar -Recurse |
          Where-Object { $_.FullName -notmatch $Exclude }
 
 $stmt = @{}; $expr = @{}; $ctx = @{}; $pair = @{}

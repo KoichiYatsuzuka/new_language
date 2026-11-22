@@ -375,8 +375,32 @@
 1 タスクごとにコミットする。各タスクの終わりに、その範囲で D-12 の基準を下回らないこと（構文・型義務・禁止の段階と
 種類）と、全部が 3-4 の照合を通ることを見る。
 
-- **4-1** 言語の中核（`examples/` の `basics` / `collections` / `classes` / `typing` / `exceptions` に当たる範囲）の正常系。
+- **4-1（済・2026-11-23）** 言語の中核（`examples/` の `basics` / `collections` / `classes` / `typing` / `exceptions` に当たる範囲）の正常系。
   捕まえられる実行時の誤りもここで確かめる（D-14）。
+  - 方法: 5 カテゴリの正常の例題 205 件を `gate/lang/<主題>/` に写した。`print(..)` を `emit([str(..), ..], sep=.., end=..)` に
+    置き換え、写したときの stdout を末尾の `check_output([..])` の期待にした（`gate/lib/check.ar`・README の 2.2）。
+    import とモジュールを主題にする 11 件は 4-7、`debug_demo` は 4-9 に回した。名前が `_errors` で終わる 3 件
+    （`functions_errors` / `other_typing_errors` / `try_except_errors`）は落ちる例題なので 4-2 に回す。
+  - 写すときに直したもの:
+    - 例題のパス（`examples/basics/_tmp_*.txt` など・作業ディレクトリが違う）: 7 件。
+    - 実行ごとに変わる値（`slice` の中のアドレス・`id` の値）: 2 件。
+    - 写しの見出しでずれた行番号（`raise_span_fields`）: 1 件。
+    - 展開時の `print`（`emit` は展開時に呼べない）: 1 件。
+    - 警告が出る 3 件: 警告を期待として書き、`_warning.ar` にした。判定に「警告だけを期待するテストは exit 0 で
+      最後まで走る」規則を足した（README の 3.4。正の対照 6 件で不合格になることを見た）。
+  - 期待の正しさの確かめ:
+    - 例題の行末のコメント（`# 15`）と、その行が 1 回だけ出した行を突き合わせた。1,244 件のうち説明文 12 件を除いた
+      1,232 件で合った。表記の違いでない食い違いは 1 件で、例題のコメントが古かった（`classes/polymorphism.ar`）。
+    - `impl_python` の stdout とは 202 件中 95 件だけが一致した（`impl_python` が止まっているため）。根拠にはしていない。
+  - 結果:
+    - `gate/` 全体の 211 件が `gate_expect` に合格した。`-Fresh` で 2 回走らせても同じで、2 回目は保存した結果を使った。
+    - `force_gate -Root gate/lang` で `VmForceError` は 0 件。
+    - `syntax_cov`（`-Root` を足した）では、例題の同じ範囲と同じ穴だった。`gate/` に無いのは `BreakPoint` だけで、
+      これは `debug_demo`（4-9）にしか無い。
+  - 共通ランナーも直した: テストが書く `_tmp_*` をツリーの指紋から外した（入れると毎回指紋が変わり、保存した結果が
+    使われない）。`.gitignore` に `gate/**/_tmp_*.txt` を足した。
+  - ⚠ 見つけた別件: `id(x).value > 0`（`uint` と `int` の比較）が静的には通り、実行時に位置の無い
+    `TypeError: unsupported operand types for Gt: uint and int` になる。`builtins/built_in.ar` では文字列にして比べた。
 - **4-2** 同じ範囲の禁止の形。静的な誤りは主題ごとにまとめ、構文・展開・捕まえない実行時の誤りは 1 件 1 ファイル（D-14）。
 - **4-3** `async`。同じ exe で 2 回実行して結果が変わらない書き方にする（1-3 の一覧）。
 - **4-4** 外部言語: C / C++（cpp-dll / cpp-lib）。GUI のライブラリ（DxLib）は使わない。

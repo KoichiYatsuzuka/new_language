@@ -22,7 +22,8 @@
 | `repl/` | 対話 REPL の入力と期待する出力 |
 | `debugger/` | デバッガのコマンド列と期待する出力 |
 
-- テストは 1 ファイル 1 主題。名前は `<主題>.ar`（正常系）と `<主題>_error.ar`（禁止の形・3 節）。
+- テストは 1 ファイル 1 主題。名前は `<主題>.ar`（正常系）と `<主題>_error.ar`（禁止の形・3 節）、
+  `<主題>_warning.ar`（警告だけを期待し、最後まで走る正常系・3.4 節）。
   - ⚠ **`_error.ar` で終わる名前は禁止の形だけに使う。** 主題が例外の正常系は `eof_exception.ar` のように名付ける
     （`examples/` には `eof_error.ar` など、名前が `_error` で終わるのに正常に終わる例題が 5 件ある・2-1）。
 - **作業ディレクトリは実行するファイルのディレクトリ**（ランナーがそう走らせる）。
@@ -45,7 +46,10 @@ check(len(xs) > 0, "xs is not empty")
 - `check_eq(actual, expected, what)` は `==` で比べ、違えば説明・期待・実際の値（`repr`）つきで `GateCheckFailed` を
   `raise` する。`check(cond, what)` は `cond` が偽なら、`fail(what)` は必ず `raise` する。
 - ⚠ `print` は確かめにならない（stdout を照らさないので）。表示が主題なら `str` / `repr` / f-string で作った文字列を
-  `check_eq` で比べる。`print` そのものの引数（`sep` / `end` / `file`）は、ファイルへ書いて読み戻して比べる。
+  `check_eq` で比べるか、2.2 の `emit` で貯めて照らす。
+  - `print` そのものの引数（`sep` / `end`）を確かめるテスト（`lang/io/print_keywords.ar`）も `emit` に写している。
+    `print` の `file=` は `None` しか受けない（標準出力の外へ書けない）ので、`print` 自身の出力はコードの中で
+    照らせない。⚠ `print` そのものが壊れても `gate/` は気づかない（REPL の golden・4-9 が `print` を通る）。
 
 ### 2.1 正しく誤りになる形は、捕まえて正常に終わる
 
@@ -65,6 +69,31 @@ check(raised, "d['b'] raises KeyError")       # ⚠ try の外で確かめる
 - **`except Exception` / `except BaseException` で捕まえない**（別の理由の誤りまで捕まえて通る）。期待するクラスを
   書く。階層そのもの（`except LookupError` が `KeyError` を捕まえること）が主題のときだけ親のクラスを書く。
 - 文面を確かめるときは `str(e)` を `check_eq` する（一部だけなら `check(".." in str(e), ..)`）。
+
+### 2.2 出力を貯めて照らす（`emit` / `check_output`）
+
+値を並べて出すテスト（`examples/` から写したものの多く）は、`print` の代わりに `emit` で出力を貯め、最後に
+`check_output` で行ごとに照らす。
+
+```ar
+from ...lib.check import emit, check_output
+
+emit([str(1 + 2)])                            # print(1 + 2) と同じ行を貯める
+emit([str("a"), str("b")], sep=", ", end="")  # print("a", "b", sep=", ", end="")
+check_output(["3", "a, b"], "what")           # 違えば GateCheckFailed: what: output line N: expected …, got …
+```
+
+- `check_output(lines, what)` は貯めた出力を `\n` で分けた並びと `lines` を比べる。出力が改行で終わるときは最後の
+  要素が `""`。照らした後は貯めた出力を空にする。
+- `examples/` から写したテスト（4-1）は、写したときの出力を期待にしている。⚠ 期待の値は「写した時点の exe の出力」。
+  写したときに次の 2 つで正しさを確かめた（2026-11-23・4-1）:
+  - 例題の行末のコメントに書かれた期待（`print(x)  # 15`）と、その行が出した 1 行を突き合わせた。1 回だけ出る行の
+    1,244 件のうち、説明文のコメント 12 件を除く 1,232 件で合った。表記が違うだけ（`["a"]` と `['a']` など）でないものは
+    1 件で、コードを読むと出力が正しく、コメントが古かった（`classes/polymorphism.ar` の `Box[MyInt]`）。
+  - 参照実装（`impl_python`）の stdout とは 202 件中 95 件が一致した。残りは `impl_python` が止まっている（100 コミット
+    以上前に同期・D-9）ため、根拠にはしていない。
+  - 写すときに直したもの: 例題のパス（作業ディレクトリが違う）・実行ごとに変わる値（アドレス・`id`）・写しの見出しで
+    ずれた行番号。テストの冒頭に、もとの例題の名前を書いている。
 
 ## 3. 禁止の形: 期待した誤りで止まること（D-14）
 
@@ -107,6 +136,13 @@ let a: int = "s"            # expect: static VarTypeMismatch
 - **構文の誤り・展開の誤り・捕まえない実行時の誤り**は最初の 1 つで止まるので 1 件 1 ファイル。
 - 捕まえられる例外は 2.1 のとおり正常系の中で確かめる。捕まえない形（止まり方・exit・トレースバック）は
   段階ごとに数件だけ置く。
+
+### 3.4 警告だけを期待するテスト（`_warning.ar`）
+
+警告（`StaticTypeWarning`）は実行を止めない。警告が出る正常系は、警告の行に `# expect: warning <種類>` を書き、
+名前を `<主題>_warning.ar` にする。判定は「期待した警告の集まりが一致し、**exit 0 で最後まで走った**こと」
+（途中の `check_eq` / `check_output` で止まれば、期待に無い誤りとして不合格）。
+誤りと警告の両方を期待するテストは `_error.ar`（exit が 0 でないこと）。
 
 ## 4. 外部言語の生成物（cpp-lib の中継 DLL）
 

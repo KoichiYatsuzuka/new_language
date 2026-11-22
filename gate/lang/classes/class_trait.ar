@@ -1,0 +1,266 @@
+# class_trait.tl — class definitions, traits, and implementation
+
+# --- Basic class with auto-generated constructor ---
+# Fields without defaults become positional constructor parameters in order.
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/classes/class_trait.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== basic class ===")])
+
+class Point:
+    mut x: int
+    mut y: int
+
+    fn to_str(self) -> str:
+        return "Point"
+
+    fn translate(self, dx: int, dy: int) -> Self:
+        return Self(self.x + dx, self.y + dy)
+
+    fn distance_sq(self, other: Self) -> int:
+        let dx = self.x - other.x
+        let dy = self.y - other.y
+        return dx * dx + dy * dy
+
+let p = Point(3, 4)
+emit([str(p.x), str(p.y)])
+
+let q = p.translate(1, -1)
+emit([str(q.x), str(q.y)])  # 4 3
+
+let dsq = p.distance_sq(q)
+emit([str(dsq)])  # (3-4)^2 + (4-3)^2 = 1 + 1 = 2
+
+# --- Class with explicit __init__ ---
+emit([str("=== class with __init__ ===")])
+
+class Circle:
+    mut radius: int
+    const PI: int = 3
+
+    fn __init__(mut self, r: int) -> None:
+        self.radius = r
+
+    fn area_approx(self) -> int:
+        return self.PI * self.radius * self.radius
+
+    fn scale(mut self, factor: int) -> None:
+        self.radius = self.radius * factor
+
+mut c = Circle(5)
+emit([str("radius:"), str(c.radius)])         # 5
+emit([str("area approx:"), str(c.area_approx())])  # 75
+c.scale(2)
+emit([str("after scale:"), str(c.radius)])   # 10
+
+# --- const field (class-level, shared) ---
+emit([str("PI constant:"), str(c.PI)])       # 3
+
+# --- Trait definition ---
+emit([str("=== trait ===")])
+
+trait Describable:
+    fn describe(self) -> str:
+        ...
+
+trait Measurable:
+    fn measure(self) -> int:
+        ...
+
+# --- Class implementing a trait ---
+class Box(Describable, Measurable):
+    let width: int
+    let height: int
+
+    fn describe(self) -> str:
+        return "Box"
+
+    fn measure(self) -> int:
+        return self.width * self.height
+
+let b = Box(4, 6)
+emit([str(b.describe())])  # Box
+emit([str(b.measure())])   # 24
+
+# --- Trait-qualified access: explicit read/write of trait fields ---
+emit([str("=== trait-qualified access ===")])
+
+trait Creature:
+    mut name: str
+    mut hp: int
+    fn speak(self) -> str:
+        ...
+
+class Wolf(Creature):
+    mut pack_size: int
+
+    fn speak(self) -> str:
+        return "Howl!"
+
+    fn get_name(self) -> str:
+        return self::Creature.name
+
+    fn get_hp(self) -> int:
+        return self::Creature.hp
+
+    fn take_damage(mut self, dmg: int) -> None:
+        self::Creature.hp = self::Creature.hp - dmg
+
+    fn is_alive(self) -> bool:
+        return self::Creature.hp > 0
+
+# Trait fields come first in the auto-constructor, then class fields:
+# Wolf(name: str, hp: int, pack_size: int)
+mut wolf = Wolf("Grey", 40, 5)
+emit([str(wolf.get_name())])   # Grey
+emit([str(wolf.get_hp())])     # 40
+emit([str(wolf.speak())])      # Howl!
+wolf.take_damage(15)
+emit([str(wolf.get_hp())])     # 25
+emit([str(wolf.is_alive())])   # True
+
+# --- Self type for method chaining ---
+emit([str("=== Self type ===")])
+
+class Builder:
+    mut value: int
+
+    fn set(self, v: int) -> Self:
+        return Self(v)
+
+    fn doubled(self) -> Self:
+        return Self(self.value * 2)
+
+let result = Builder(1).set(5).doubled()
+emit([str(result.value)])  # 10
+
+# --- Immutable let fields (set at construction, never changed) ---
+emit([str("=== let fields ===")])
+
+class Token:
+    let kind: str
+    let text: str
+
+let t = Token("ident", "foo")
+emit([str(t.kind), str(t.text)])  # ident foo
+# t.kind = "op"  # TypeError: cannot assign to immutable field 'kind'
+
+# --- Access control: public / private / protected ---
+emit([str("=== access control ===")])
+
+class Counter:
+    public:
+    mut label: str
+
+    private:
+    mut count: int
+
+    private:
+    mut step: int
+
+    # ⚠ 区切りは次の区切りまで続く。`public:` が無いと下のメソッドも private になる
+    #   （以前はメソッドだけ見ていなかったので通っていた・フェーズ10 10-6）。
+    public:
+    fn __init__(mut self, label: str) -> None:
+        self.label = label
+        self.count = 0
+        self.step = 1
+
+    fn increment(mut self) -> None:
+        self.count = self.count + self.step
+
+    fn get_count(self) -> int:
+        return self.count
+
+    fn set_step(mut self, s: int) -> None:
+        self.step = s
+
+    fn show(self) -> None:
+        # inside the class: all members accessible
+        emit([str(self.label)])
+        emit([str(self.count)])
+        emit([str(self.step)])
+
+mut ctr = Counter("hits")
+emit([str(ctr.label)])        # public: OK -> hits
+ctr.increment()
+ctr.increment()
+emit([str(ctr.get_count())])  # via method: OK -> 2
+ctr.set_step(5)
+ctr.increment()
+emit([str(ctr.get_count())])  # -> 7
+ctr.show()              # inside class: all OK -> hits, 7, 5
+
+# --- static methods and class methods ---
+emit([str("=== static / class_method ===")])
+
+class Registry:
+    static mut entry_count: int = 0
+
+    fn __init__(mut self) -> None:
+        Registry.entry_count += 1
+
+    static fn reset() -> None:
+        Registry.entry_count = 0
+
+    static fn count() -> int:
+        return Registry.entry_count
+
+    class_method fn describe(cls: type[Self]) -> str:
+        return cls.name
+
+# static method called on the class
+emit([str(Registry.count())])        # 0
+let r1 = Registry()
+let r2 = Registry()
+emit([str(Registry.count())])        # 2
+
+# static mut field shared across instances — write via class
+Registry.reset()
+emit([str(Registry.count())])        # 0
+let r3 = Registry()
+emit([str(Registry.count())])        # 1
+
+# class_method called on the class
+emit([str(Registry.describe())])     # Registry
+
+# ── 出力を照らす ──
+check_output([
+    "=== basic class ===",
+    "3 4",
+    "4 3",
+    "2",
+    "=== class with __init__ ===",
+    "radius: 5",
+    "area approx: 75",
+    "after scale: 10",
+    "PI constant: 3",
+    "=== trait ===",
+    "Box",
+    "24",
+    "=== trait-qualified access ===",
+    "Grey",
+    "40",
+    "Howl!",
+    "25",
+    "True",
+    "=== Self type ===",
+    "10",
+    "=== let fields ===",
+    "ident foo",
+    "=== access control ===",
+    "hits",
+    "2",
+    "7",
+    "hits",
+    "7",
+    "5",
+    "=== static / class_method ===",
+    "0",
+    "2",
+    "0",
+    "1",
+    "Registry",
+    "",
+], "class_trait")

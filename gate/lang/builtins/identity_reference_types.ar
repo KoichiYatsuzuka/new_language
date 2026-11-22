@@ -1,0 +1,70 @@
+# identity_reference_types.ar — 関数・クラス・ジェネレータなど**参照で比べる値**の等値（B2-b）。
+#
+# ⚠⚠ 以前はこれらの腕が `values_eq` に**丸ごと無く** `_ => false` に落ちていたため、
+#   **`f == f` すら False** だった。エラーにならないので気付けない形。
+#   「あらゆる型を辞書のキーに」（B1）の前提でもある。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/basics/identity_reference_types.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+fn f() -> int:
+    return 1
+fn g() -> int:
+    return 1
+
+gen counter() -> int:
+    yield 1
+
+class C:
+    let x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+class D:
+    let x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+
+emit([str("=== 関数 ===")])
+emit([str(f == f)])          # True    同じ関数
+emit([str(f == g)])          # False   別の関数（中身が同じでも別物）
+let h = f
+emit([str(h == f)])          # True    束縛しても同一
+
+emit([str("=== ジェネレータ関数 ===")])
+emit([str(counter == counter)])   # True
+
+emit([str("=== 組み込み ===")])
+emit([str(len == len)])      # True
+emit([str(len == str)])      # False
+
+emit([str("=== クラス ===")])
+# ⚠ クラスは `class_id`（`alloc_class_id()` の一意 ID）で比べる。
+#   `Rc::ptr_eq` にすると、async の share-nothing deep-clone で複製された瞬間に
+#   `C == C` が False になる（実測で確認済みのバグだった）。
+let K = C
+emit([str(C == K)])          # True
+emit([str(C == D)])          # False   名前もフィールドも同じだが別のクラス
+
+emit([str("=== 型 ===")])
+emit([str(int == int)])      # True
+emit([str(int == str)])      # False
+
+# ── 出力を照らす ──
+check_output([
+    "=== 関数 ===",
+    "True",
+    "False",
+    "True",
+    "=== ジェネレータ関数 ===",
+    "True",
+    "=== 組み込み ===",
+    "True",
+    "False",
+    "=== クラス ===",
+    "True",
+    "False",
+    "=== 型 ===",
+    "True",
+    "False",
+    "",
+], "identity_reference_types")

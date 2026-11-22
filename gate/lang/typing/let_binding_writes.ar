@@ -1,0 +1,106 @@
+# let_binding_writes.ar — `let` 束縛への書き込みと `freeze`（タスク 7.2）
+#
+# ## 何が壊れていたか
+#
+# **`let` 束縛への書き込みは 3 経路あるのに、1 つだけ実行時だった**（実測）:
+#
+# | 書き方 | 以前 |
+# |---|---|
+# | `xs.append(2)` | 静的エラー ✅ |
+# | `xs[0] = 2` | 静的エラー ✅ |
+# | `c.n = 2` | **実行時エラー** ⛔ |
+#
+# 判定はどれも「**パスの根の可変性**」で同じ（規則 1: 要素・フィールドは根の属性を継ぐ）なのに、
+# 属性だけが検査から漏れていた。
+#
+# ⚠ `check_immutable_field_assign` は「**フィールド**が `let` 宣言か」を見る別の検査。
+#   こちらは「**束縛**が `let` か」。
+#
+# ## ⚠⚠ 根が「値の束縛」のときだけ
+#
+# | 書き方 | 根 | 弾いてはいけない理由 |
+# |---|---|---|
+# | `Counter.total = 100` | クラス名 | `static mut` は**クラス側が**可変。束縛の可変性は無関係 |
+# | `m.x = 1` | import したモジュール | モジュールは `mutable: false` で束縛されている |
+#
+# ## `freeze` は **`mut` を `let` に降格**する（タスク 9.2・仕様確定）
+#
+# | `freeze xs` の後 | 9.2 以降 | 9.2 より前 |
+# |---|---|---|
+# | `xs = [2]` | 静的エラー | 静的エラー |
+# | `xs.append(2)` | **静的エラー** | 通っていた |
+# | `xs[0] = 2` | **静的エラー** | 通っていた |
+# | `c.f = 2` | **静的エラー** | 実行時エラー |
+#
+# ⚠⚠ タスク 7.2 は `frozen: Vec<HashSet<String>>` という**別の集合**を持って
+#   再束縛だけを弾いていた。9.2 で**宣言スコープの可変フラグそのものを倒す**形に
+#   変えたので、`let` 束縛のために既にある検査がそのまま効く。
+#   ⇒ 「同じ問いに 2 つの実装」が 1 つに減った。
+#
+# ⚠ 降格は**スコープを抜けても戻らない**。実行時の `make_var_immutable` が変数を
+#   書き換える（＝その変数の寿命の間ずっと不変）のに合わせてある。
+#
+# 弾かれる例は let_binding_writes_error.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/let_binding_writes.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== mut 束縛なら 3 経路とも書ける ===")])
+
+class Counter:
+    static mut total: int = 0
+    mut n: int
+
+mut c = Counter(1)
+c.n = 2
+emit([str(c.n)])                          # 2
+
+mut xs: list[int] = [1]
+xs.append(2)
+xs[0] = 9
+emit([str(xs)])                           # [9, 2]
+
+emit([str("=== static mut はクラス名経由で書ける ===")])
+
+# ⚠ 根はクラス名。束縛の可変性とは無関係。
+Counter.total = 100
+emit([str(Counter.total)])                # 100
+
+emit([str("=== freeze は mut を let に降格する ===")])
+
+mut ys: list[int] = [1]
+ys.append(2)                        # 降格前なので書ける
+freeze ys
+emit([str(ys)])                           # [1, 2]   読みは通る
+
+# ⚠ ここから先は `let` と同じ。どれも静的エラーになる:
+#   ys = [9]          # 再束縛
+#   ys.append(3)      # 変更メソッド
+#   ys[0] = 5         # 添字代入
+# 弾かれる例は let_binding_writes_error.ar
+
+emit([str("=== 降格はスコープを抜けても戻らない ===")])
+
+# ⚠ 実行時の `make_var_immutable` は変数そのものを書き換えるので、
+#   `if` の中で freeze したらその後もずっと不変。静的検査もそれに合わせた。
+mut zs: list[int] = [1]
+if True:
+    freeze zs
+emit([str(zs)])                           # [1]   読みは通る（書けば静的エラー）
+
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== mut 束縛なら 3 経路とも書ける ===",
+    "2",
+    "[9, 2]",
+    "=== static mut はクラス名経由で書ける ===",
+    "100",
+    "=== freeze は mut を let に降格する ===",
+    "[1, 2]",
+    "=== 降格はスコープを抜けても戻らない ===",
+    "[1]",
+    "done",
+    "",
+], "let_binding_writes")

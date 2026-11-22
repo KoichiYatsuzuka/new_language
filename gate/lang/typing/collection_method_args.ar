@@ -1,0 +1,110 @@
+# collection_method_args.ar — 組み込みコレクションメソッドの引数と可変長引数の要素型
+# （タスク 5.2c）
+#
+# ## 何が壊れていたか
+#
+# | 義務 | 以前 | 検体 |
+# |---|---|---|
+# | `list[int].append(v)` の `v` | **無検査**（黙って `[1, 's']` になる） | `L14` |
+# | 可変長引数の要素型 | **型が混ざると検査が消える** | `C15` |
+#
+# ### 可変長引数の穴の形が面白い（実測）
+#
+#     fn f(let ...: int) -> int: ...
+#     f(... = "a", "s")     # ⛔ 捕まる（全部 str なので list[str] に推論される）
+#     f(... = 1, "s")       # ✅ 通っていた（型が混ざると素の list へ落ちる）
+#
+# 「全部まちがえると捕まるのに、1 つ混ぜると通る」。素の `list` は下流の可変長検査に
+# 当たらないためで、**根本原因②「要素型を捨てると何とでも適合する」がここに残っていた**。
+# ⇒ コレクションリテラルと同じ合成（`join_elem_types`・タスク 2.7）を使うようにした。
+#
+# ## 対象は「要素を 1 つ受け取るメソッド」だけ
+#
+# | レシーバ | メソッド |
+# |---|---|
+# | `list` / `fixed_list` / `list_like` | `append` |
+# | `set` | `add` ・ `discard` ・ `remove` |
+#
+# ⚠⚠ **実装側に無いメソッドを推測で足さないこと。** 実測で確かめた:
+# `insert` / `extend` / `remove` / `index` / `count`（list）・`get`（dict）は
+# **存在しない**（`AttributeError: 'list' object has no method 'insert'`）。
+#
+# 弾かれる例は collection_method_args_error.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/typing/collection_method_args.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+emit([str("=== list.append ===")])
+
+mut xs: list[int] = [1]
+xs.append(2)
+emit([str(xs)])                           # [1, 2]
+
+mut names: list[str] = ["a"]
+names.append("b")
+emit([str(names)])                        # ['a', 'b']
+
+emit([str("=== 入れ子のリストも要素型どおりなら通る ===")])
+
+mut grid: list[list[int]] = [[1]]
+grid.append([2, 3])
+emit([str(grid)])                         # [[1], [2, 3]]
+
+emit([str("=== set.add / discard ===")])
+
+mut st: set[int] = {1}
+st.add(2)
+st.discard(1)
+emit([str(st)])                           # {2}
+
+emit([str("=== 要素型を問わない容器は素通しする ===")])
+
+# `list[Any]` は判定材料が無いので照合しない。
+# ⚠ タスク 8.1（案 A）で素の `list` 注釈は書けなくなったので、これが唯一の綴り。
+mut anything: list[Any] = [1]
+anything.append("s")
+anything.append([1, 2])
+emit([str(anything)])                     # [1, 's', [1, 2]]
+
+emit([str("=== 可変長引数 ===")])
+
+fn count_all(let ...: int) -> int:
+    return len(local::args)
+
+emit([str(count_all(... = 1, 2, 3))])     # 3
+
+fn join_all(let ...: str) -> str:
+    mut out: str = ""
+    for s in local::args:
+        out += s
+    return out
+
+emit([str(join_all(... = "a", "b"))])     # ab
+
+emit([str("=== 集合演算は集合そのものを受け取る（要素型と突き合わせない） ===")])
+
+let a: set[int] = {1, 2}
+let b: set[int] = {2, 3}
+emit([str(a.intersection(b))])            # {2}
+
+emit([str("done")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== list.append ===",
+    "[1, 2]",
+    "['a', 'b']",
+    "=== 入れ子のリストも要素型どおりなら通る ===",
+    "[[1], [2, 3]]",
+    "=== set.add / discard ===",
+    "{2}",
+    "=== 要素型を問わない容器は素通しする ===",
+    "[1, 's', [1, 2]]",
+    "=== 可変長引数 ===",
+    "3",
+    "ab",
+    "=== 集合演算は集合そのものを受け取る（要素型と突き合わせない） ===",
+    "{2}",
+    "done",
+    "",
+], "collection_method_args")
