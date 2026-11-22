@@ -2,6 +2,7 @@
 
 - Read .claude/settings.json and .claude/setting.local.json to check the permitted commands and avoid asking permissions by using the commands in the file.
 - When a new grammer is implemented, an example code to check if it works must be generated in example folder. And if error pattern is implemented, an error example is also neede, whose name has "_error" at the last.
+  - 例題（`examples/`）は利用者向けの見本。**ゲートのテストは別に `gate/` に書く**（`gate/README.md`・`implementation_plans/gate_speed_plan.md` D-13）。新しい文法・新しい禁止を足したら、`gate/` にも正常系（結果をコードの中で `check_eq` などで確かめる）と禁止の形（`_error`・誤りが出る行に `# expect: <段階> <種類>`）のテストを書く。`gate/` のテストは `examples/` を参照しない。
 - When Python implementation is updated, also update the git SHA to track and syncronize the versions between the Rust-implementation and Python-implementation.
 - If running the same script(s) many times, make them .ps1 file to ease command permission.
 - When VS code extension is updated, the compilation and the generation of VSIX file are required. To generate VSIX filee, run make-vsix.ps1.

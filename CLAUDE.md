@@ -96,6 +96,10 @@ python -m impl_python examples/basics/control_flow.ar
 | `check_ptr_protocol.ps1` | `PtrProtocol` の C ヘッダ・C# の写しを実際にコンパイルし、Arrow（Rust）の写しと**同じ並び**か（大きさ・欄の位置・flags） | **`bridge/ptr_protocol/` か `value/ptr.rs` の `PtrProtocolRaw` を触ったとき**（MSVC と dotnet が要る） |
 | `generate-codebase-map.ps1` | `codebase-map` skill のファイル木を再生成 | **ファイルを作成・移動・削除したら必ず** |
 
+⚠ **ゲートのテストを `gate/` へ移している途中**（[gate_speed_plan.md](implementation_plans/gate_speed_plan.md)）。`examples/` は利用者向けの
+見本、`gate/` はゲート専用のテスト（正常系は結果をコードの中で確かめ、禁止の形は `# expect:` で期待した誤りまで照らす・
+[gate/README.md](gate/README.md)）。フェーズ 5 で切り替えるまで、上のゲートはまだ `examples/` を見ている。
+
 ⚠⚠ **例題ゲートが見ていない場所がある**（タスク 9.3・意図的）。
 `scan_examples` / `compare_outputs` / `compare_bytecode` / `compare_python_impl` は
 `$categoryDirs` の 9 カテゴリ（`basics` `collections` `classes` `typing` `exceptions`
