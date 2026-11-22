@@ -63,7 +63,7 @@
 | ④ | `compare_outputs` と `compare_bytecode` は例題ごとに A・B を別々に起動する（計 4 回） | `AR_VM_DUMP=1` のダンプは stderr に出る。1 回の実行で stdout / exit / stderr / ダンプが全部取れる |
 | ⑤ | A/B 系の基準側（`-A`）は毎回同じ結果 | 基準の exe は 1 つのタスクの間は変わらない |
 | ⑥ | `compare_wasm_frontend` は 1 ファイルごとに `Code.exe` を起動して wasm を読み直す | [dump_diags.js](../crates/arrow-frontend/dump_diags.js) は 1 ファイルを解析して終わる |
-| ⑦ | `compare_wasm_frontend` の exe 側・`type_obligations` ・`annot_unresolved` は、どれも実行せずに全例題を舐める | 環境変数が違うだけ（`AR_CHECK_ONLY` / `AR_EXPANSION_MARK` / `AR_ANNOT_DIFF`） |
+| ⑦ | `compare_wasm_frontend` の exe 側・`annot_unresolved` は、どちらも全例題を舐める | 環境変数が違うだけ（`AR_CHECK_ONLY` / `AR_ANNOT_DIFF`）。⚠ 起票のときは `type_obligations` もここに入れていたが、あちらは例題ではなく自前の検体を実行する（1-4） |
 
 ### 0.3 そのほかに見えたもの
 
@@ -130,8 +130,10 @@
     起きない。違うときだけ今の仕組みが exe ごとに分ける。基準側の結果を保存しても、この動きは変えなくてよい。
   - ⚠ 今の仕組みは `examples/` の下のキャッシュを探す。`gate/` の下も探すように直す（6-2）。
 - **D-12 `gate/` へ切り替える条件は、覆う範囲が `examples/` を下回らないこと。**
-  - 構文と型義務: `syntax_cov` と `type_obligations` を `examples/` と `gate/` の両方で取り、`gate/` の側に新しい穴
-    （`NESTED-GAP`・`NONE` / `RUNTIME` への後退）が無いこと。
+  - 構文: `syntax_cov` を `examples/` と `gate/` の両方で取り、`gate/` の側に新しい穴（`UNCOVERED`・文脈の表の `.`・
+    `NESTED-GAP`）が無いこと（`examples/` の側の値は 1-4）。
+  - ⚠ 型義務（`type_obligations`）は `examples/` を見ない（自前の検体 `scripts/type_obligations/*.ar` 149 件を実行する・
+    1-4 で確かめた）ので、切り替えの影響を受けない。今のまま「型検査を触ったとき」のゲートとして残す。
   - 禁止の形: `examples/` の誤りの例題が出す誤りの段階と種類（3-1 の出力で取る）が、`gate/` の期待（D-14）に
     全部あること。
 - **D-13 `examples/` は利用者向けの見本で、ゲートのテストは `gate/` に独立に作る**（利用者の決定・2026-11-22・
@@ -223,8 +225,16 @@
 - **1-3** `AR_VM_DUMP=1` を付けても exit / stdout と、stderr からダンプの行を除いた残りが変わらないかを全例題で
   確かめる（重複 ④ の前提）。同じ exe で 2 回実行して結果が同じにならない例題の一覧も取る（`async`・アドレスの表示・
   経過時間）。`gate/` のテストを書くときの注意になる。
-- **1-4** 切り替えの基準のうち、今取れるものを取る（D-12）: `examples/` での `syntax_cov` / `type_obligations` の結果。
+- **1-4（済・2026-11-22）** 切り替えの基準のうち、今取れるものを取る（D-12）: `examples/` での `syntax_cov` の結果。
   禁止の形の基準は 3-1 の後に取る（3-1 の確かめに含める）。
+  - `syntax_cov`（既定の `-Exclude '\\archived\\'`・`45d8a0d0`）: 797 ファイルを解析（構文の誤りで測れないもの 34）。
+    `Stmt` 42 / 43（`DebugLet` が無い）、`Expr` 31 / 32（`DebugVar` が無い）。`NESTED-GAP` 10 件（`AttrAssign` / `Pass` /
+    `Freeze` / `GenDef` / `MetaFnDef` / `AsyncAssign` / `BreakPoint` / `Undefined` / `TraitAccess` / `Cast`）。
+    9 カテゴリだけにしても（`practical_examples` と直下を除く）787 ファイル・同じ穴。⇒ `gate/` はこれより穴を
+    増やさない（`DebugLet` / `DebugVar` と `NESTED-GAP` は `gate/` で埋めてもよい）。
+  - 文脈の表（`top` / `fn` / `nested_fn` / `type` / `module` / `async` の `O` / `.`）は 5-1 で `examples/` を測り直して比べる
+    （`examples/` は残るので、ここに写しを持たない）。
+  - `type_obligations`: 149 件中 `STATIC` 147・`NONE` 2、退行なし。⚠ `examples/` を見ないと分かったので D-12 から外した。
 
 ### フェーズ 2: `gate/` の形を決める
 
@@ -300,7 +310,7 @@
   exit が 0 でないこと。落ちたらリリースを止める。skill `release` に手順を書く。正の対照として、わざと壊した例題で
   止まることを見る（リリースそのものは走らせず、確かめの部分だけを呼ぶ）。
 - **5-5** `compare_python_impl` を凍結する（D-9）。スクリプトの先頭に凍結の理由と日付を書く。
-- **5-6** 全例題を再帰で舐めるゲート（`syntax_cov` / `type_obligations` / `tw_stats` / `compare_tm_grammar`）の対象を
+- **5-6** 全例題を再帰で舐めるゲート（`syntax_cov` / `tw_stats` / `compare_tm_grammar`）の対象を
   `gate/` にする（`compare_wasm_frontend` はフェーズ 7）。
 - **5-7** 文書を直す: CLAUDE.md のゲートの表と注意書き（「例題ゲートが見ていない場所」の節を含む）、`regulations.md`、
   skill `language-dev-principles` / `vm-pitfalls` / `add-syntax`、`BYTECODE_VM_PLAN.md` のスクリプトの表。
@@ -327,7 +337,8 @@
 
 ### フェーズ 8: 候補（フェーズ 7 の後に測って判断）
 
-- **8-1** `type_obligations` / `annot_unresolved` を共通ランナーに載せる（重複 ⑦）。
+- **8-1** `annot_unresolved` を共通ランナーに載せる（重複 ⑦）。`type_obligations` の検体（149 件・1 件 1 ファイル）を
+  共通ランナーで走らせるかもここで測って決める。
 - **8-2** `tw_stats` / `syntax_cov` は `--features tw_stats` の別のビルドなので実行はまとめられない。ビルドを 2 本で
   共有しているかだけ確かめる。
 - **8-3** `compare_tm_grammar` も 1 ファイルごとに `Code.exe` を起動していないか確かめ、していれば 7-1 と同じ形にする。
