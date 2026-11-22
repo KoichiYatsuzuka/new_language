@@ -1,0 +1,119 @@
+# async_demo.tl — demonstrates the async system
+#
+# AsyncManager(num_thread=N) manages a pool of OS threads.
+# mng <- async->T: body  submits a task; the body runs in a thread.
+# All variables captured at submission time are deep-cloned.
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/async/async_demo.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+fn slow_add(a: int, b: int) -> int:
+    mut i = 0
+    while i < 5_000_000:
+        i += 1
+    return a + b
+
+# ── basic usage ──────────────────────────────────────────────────────────────
+emit([str("=== basic usage ===")])
+
+mut mng = AsyncManager(num_thread=3)
+
+let x = 10
+let y = 20
+
+mng <- async->int:
+    block_return slow_add(x, y)
+
+mng <- async->int:
+    block_return slow_add(100, 200)
+
+mng <- async->int:
+    block_return slow_add(1, 2)
+
+mng.wait_for_finish()
+
+emit([str("results:"), str(mng.results)])          # [30, 300, 3]
+emit([str("errors:"), str(mng.error_list)])        # [None, None, None]
+emit([str("all_done:"), str(mng.all_done())])      # True
+emit([str("progress:"), str(mng.progress_status)]) # [Async.Done, Async.Done, Async.Done]
+
+# ⚠ 写すときに足した: error_list の誤りの文はトレースバック（実行したファイルの絶対パスと行番号）を含むので、
+#   最初と最後の行だけを照らす（パスは環境で、行番号は写しの見出しで変わる）。
+fn error_heads(let errs: list[Any]) -> list[Any]:
+    mut out: list[Any] = []
+    for e in errs:
+        if e is None:
+            out.append(None)
+        else:
+            let lines = str(e).split("
+")
+            out.append(lines[0] + " ... " + lines[len(lines) - 1])
+    return out
+
+# ── raise_immediately on first error ─────────────────────────────────────────
+emit([str("")])
+emit([str("=== raise_immediately (error propagated via try/except) ===")])
+
+mut mng2 = AsyncManager(num_thread=2, raise_immediately=True)
+
+mng2 <- async->int:
+    block_return 42
+
+mng2 <- async->int:
+    raise RuntimeError("SimulatedError: something went wrong")
+
+mng2 <- async->int:
+    block_return 99
+
+try:
+    mng2.wait_for_finish()
+except:
+    emit([str("caught: an async task raised an error")])
+
+emit([str("error_list:"), str(error_heads(mng2.error_list))])
+
+# ── raise_immediately=False: collect all errors manually ──────────────────────
+emit([str("")])
+emit([str("=== raise_immediately=False (check errors afterward) ===")])
+
+mut mng3 = AsyncManager(num_thread=2)
+
+mng3 <- async->int:
+    block_return slow_add(1, 1)
+
+mng3 <- async->int:
+    raise RuntimeError("AnotherError: oops")
+
+mng3.wait_for_finish()
+emit([str("results:"), str(mng3.results)])
+emit([str("error_list:"), str(error_heads(mng3.error_list))])
+
+# ── Async status enum ─────────────────────────────────────────────────────────
+emit([str("")])
+emit([str("=== Async status enum ===")])
+emit([str(Async.Waiting)])   # Async.Waiting
+emit([str(Async.Running)])   # Async.Running
+emit([str(Async.Done)])      # Async.Done
+
+# ── 出力を照らす ──
+check_output([
+    "=== basic usage ===",
+    "results: [30, 300, 3]",
+    "errors: [None, None, None]",
+    "all_done: True",
+    "progress: [Async.Done, Async.Done, Async.Done]",
+    "",
+    "=== raise_immediately (error propagated via try/except) ===",
+    "caught: an async task raised an error",
+    "error_list: [None, 'Traceback (most recent call last): ... RuntimeError: SimulatedError: something went wrong', 'AsyncError: task aborted ... AsyncError: task aborted']",
+    "",
+    "=== raise_immediately=False (check errors afterward) ===",
+    "results: [2, None]",
+    "error_list: [None, 'Traceback (most recent call last): ... RuntimeError: AnotherError: oops']",
+    "",
+    "=== Async status enum ===",
+    "Async.Waiting",
+    "Async.Running",
+    "Async.Done",
+    "",
+], "async_demo")
