@@ -1,0 +1,14 @@
+class Particle->Particle:
+    mut x: float
+    mut y: float
+    mut z: float
+    mut mass: float
+    fn __init__(mut self, x: float, y: float, z: float, mass: float) -> None:
+        ...
+
+
+fn compute_mut(mut pts: list[Particle]) -> float:
+    ...
+
+fn compute_frozen(pts: fixed_list[Particle]) -> float:
+    ...

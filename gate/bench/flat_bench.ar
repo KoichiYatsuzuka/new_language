@@ -1,0 +1,60 @@
+# flat_bench.ar — benchmark: list[Particle] vs fixed_list[Particle] iteration.
+#
+# 1. cargo run --release -- --compile examples/bench/flat_bench_module.ar
+# 2. cargo run --release -- examples/bench/flat_bench.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-8）: もとは examples/bench/flat_bench.ar。合否だけを見る（速さは測らない・README 7 節）。
+#   大文字の名前の定数（100 以上）と 1 万以上の整数のリテラルを 100 で割って回数を減らし、時計を決まったもの
+#   （lib/fake_time.ar）にした。print は emit に置き換え、出力は最後の check_output で照らす。
+#   期待は写したときの exe の出力（4-8）。
+from ..lib.check import emit, check_output
+
+import ..lib.fake_time as time   # ⚠ gate/ の写し: 決まった時計（README 7 節）
+from flat_bench_module import Particle
+from flat_bench_module import compute_mut
+from flat_bench_module import compute_frozen
+
+let N    = 500    # particles per list
+let REPS = 5      # repetitions  → 25 M element-accesses per path
+
+# ── Build mutable particle list (loop_yield) ─────────────────────────────────
+mut pts_mut = for i in range(N)->list[Particle]:
+    let fi = float(i)
+    loop_yield Particle(fi * 0.001, fi * 0.002, fi * 0.003, 1.0 + fi * 0.0001)
+
+# ── Baseline: mutable list — compiled code uses CB_ITER_FROM / CB_ITER_NEXT ──
+let t0 = time.time()
+mut r0 = 0.0
+mut k = 0
+while k < REPS:
+    r0 = compute_mut(pts_mut)
+    k += 1
+let t1 = time.time()
+let elapsed_mut = t1 - t0
+emit([str("mutable  list: " + str(elapsed_mut) + " s   (result=" + str(r0) + ")")])
+
+# ── Cast list => fixed_list (flat bytes, zero callbacks in compiled hot loop) ─
+mut pts_src = for j in range(N)->list[Particle]:
+    let fj = float(j)
+    loop_yield Particle(fj * 0.001, fj * 0.002, fj * 0.003, 1.0 + fj * 0.0001)
+let pts_fixed = pts_src => fixed_list[Particle]
+
+let t2 = time.time()
+mut r1 = 0.0
+mut m = 0
+while m < REPS:
+    r1 = compute_frozen(pts_fixed)
+    m += 1
+let t3 = time.time()
+let elapsed_fixed = t3 - t2
+emit([str("fixed_list:    " + str(elapsed_fixed) + " s   (result=" + str(r1) + ")")])
+
+let speedup = elapsed_mut / elapsed_fixed
+emit([str("speedup: " + str(speedup) + "x")])
+
+# ── 出力を照らす ──
+check_output([
+    "mutable  list: 0.001 s   (result=603.3720875)",
+    "fixed_list:    0.001 s   (result=603.3720875)",
+    "speedup: 1.0x",
+    "",
+], "flat_bench")

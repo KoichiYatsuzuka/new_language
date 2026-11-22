@@ -1,0 +1,11 @@
+# fake_time.ar — gate/ のベンチが `import[py] time` の代わりに読む、決まった時計（gate/README.md の 7 節・4-8）。
+#
+# ベンチは経過時間を出すが、gate/ は速さを測らない（ab_bench / speed_modes の担当）。経過時間を出力に入れると実行の
+# たびに変わるので、time() は呼ぶたびに 1 ミリ秒ずつ進む値を返す（0 のままだと経過時間で割るベンチが 0 除算になる）。
+# ⚠ async のタスクの中から呼ぶと、進めた値は呼び出し元へ伝わらない（タスクは mut の束縛し直しを伝えない）。
+
+mut _now = 0.0
+
+fn time() -> float:
+    _now = _now + 0.001
+    return _now

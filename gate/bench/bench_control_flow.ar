@@ -1,0 +1,50 @@
+# V-C ベンチ: ネストしたブロック内ローカル宣言 + break/continue + match。
+# これらは V-B までフォールバック（丸ごとツリーウォーク）していた。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-8）: もとは examples/bench/bench_control_flow.ar。合否だけを見る（速さは測らない・README 7 節）。
+#   大文字の名前の定数（100 以上）と 1 万以上の整数のリテラルを 100 で割って回数を減らし、時計を決まったもの
+#   （lib/fake_time.ar）にした。print は emit に置き換え、出力は最後の check_output で照らす。
+#   期待は写したときの exe の出力（4-8）。
+from ..lib.check import emit, check_output
+
+fn collatz_steps(start: int) -> int:
+    mut n: int = start
+    mut steps: int = 0
+    while n > 1:
+        let half: int = n // 2
+        if n % 2 == 0:
+            n = half
+        else:
+            let triple: int = n * 3
+            n = triple + 1
+        steps += 1
+        if steps > 1000:
+            break
+    return steps
+
+fn bucket(x: int) -> int:
+    match (x % 4):
+        case 0:
+            return 10
+        case 1:
+            return 20
+        case 2:
+            return 30
+        case _:
+            return 40
+
+fn main() -> None:
+    mut total: int = 0
+    mut i: int = 1
+    while i < 3000:
+        total += collatz_steps(i % 500 + 1)
+        total += bucket(i)
+        i += 1
+    emit([str(total)])
+
+main()
+
+# ── 出力を照らす ──
+check_output([
+    "231848",
+    "",
+], "bench_control_flow")

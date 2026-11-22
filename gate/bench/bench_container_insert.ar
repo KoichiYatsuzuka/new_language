@@ -1,0 +1,98 @@
+# bench_container_insert.ar — コンテナへの格納の単価（bug_fix.md B8/B9/B11 系統・L4）。
+#
+# ⚠⚠ **このベンチは「格納時に複製する」変更の A/B 用**。単体の絶対値ではなく、
+#   変更前後の差で判断する。⇒ 使う前に必ず同一 exe 同士で負の対照を取ること。
+#
+# 何を測るか:
+#   「共有するのは `let → let` のときだけ、それ以外は複製」という規則を
+#   **コンテナへの格納にも適用する**と、`lst.append(x)` が O(size(x)) になる。
+#   その代償が要素の種類でどう変わるかを分けて測る。
+#
+#   ① int を append        … 複製はほぼ無料（プリミティブはそのまま返る）
+#   ② 小さいインスタンス   … フィールド 1 個ぶんの複製
+#   ③ 入れ子リスト         … 要素数ぶんの再帰複製（**最悪ケース**）
+#   ④ dict への格納        … 値の複製
+#
+# Run: ./scripts/ab_bench.ps1 -A <旧> -B <新> -Scripts examples/bench/bench_container_insert.ar -Reps 7
+# ⚠ gate/ への写し（gate_speed_plan.md 4-8）: もとは examples/bench/bench_container_insert.ar。合否だけを見る（速さは測らない・README 7 節）。
+#   大文字の名前の定数（100 以上）と 1 万以上の整数のリテラルを 100 で割って回数を減らし、時計を決まったもの
+#   （lib/fake_time.ar）にした。print は emit に置き換え、出力は最後の check_output で照らす。
+#   期待は写したときの exe の出力（4-8）。
+from ..lib.check import emit, check_output
+
+import ..lib.fake_time as time   # ⚠ gate/ の写し: 決まった時計（README 7 節）
+let N = 3000
+
+class P:
+    mut x: int
+    fn __init__(mut self, let x: int) -> None:
+        self.x = x
+
+# ① int
+fn append_int(let n: int) -> int:
+    mut lst = []
+    mut i = 0
+    while i < n:
+        lst.append(i)
+        i += 1
+    return len(lst)
+
+# ② 小さいインスタンス
+fn append_inst(let n: int) -> int:
+    mut lst = []
+    mut i = 0
+    while i < n:
+        lst.append(P(i))
+        i += 1
+    return len(lst)
+
+# ③ 入れ子リスト（同じ実体を毎回入れる＝複製すれば毎回 8 要素ぶん働く）
+fn append_nested(let n: int) -> int:
+    mut src = [1, 2, 3, 4, 5, 6, 7, 8]
+    mut lst = []
+    mut i = 0
+    while i < n:
+        lst.append(src)
+        i += 1
+    return len(lst)
+
+# ④ dict への格納
+fn insert_dict(let n: int) -> int:
+    mut d = {}
+    mut i = 0
+    while i < n:
+        d[i] = P(i)
+        i += 1
+    return len(d)
+
+let t0 = time.time()
+let a = append_int(N)
+let t1 = time.time()
+let b = append_inst(N)
+let t2 = time.time()
+let c = append_nested(N)
+let t3 = time.time()
+let e = insert_dict(N)
+let t4 = time.time()
+
+emit([str("append int    : " + str((t1-t0)/float(N)*1e9) + " ns/insert")])
+emit([str("append inst   : " + str((t2-t1)/float(N)*1e9) + " ns/insert")])
+emit([str("append nested : " + str((t3-t2)/float(N)*1e9) + " ns/insert")])
+emit([str("dict insert   : " + str((t4-t3)/float(N)*1e9) + " ns/insert")])
+emit([str("METRIC append_int_ns " + str((t1-t0)/float(N)*1e9))])
+emit([str("METRIC append_inst_ns " + str((t2-t1)/float(N)*1e9))])
+emit([str("METRIC append_nested_ns " + str((t3-t2)/float(N)*1e9))])
+emit([str("METRIC dict_insert_ns " + str((t4-t3)/float(N)*1e9))])
+
+# ── 出力を照らす ──
+check_output([
+    "append int    : 333.33333333333337 ns/insert",
+    "append inst   : 333.33333333333337 ns/insert",
+    "append nested : 333.33333333333337 ns/insert",
+    "dict insert   : 333.33333333333337 ns/insert",
+    "METRIC append_int_ns 333.33333333333337",
+    "METRIC append_inst_ns 333.33333333333337",
+    "METRIC append_nested_ns 333.33333333333337",
+    "METRIC dict_insert_ns 333.33333333333337",
+    "",
+], "bench_container_insert")

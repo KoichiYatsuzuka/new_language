@@ -1,0 +1,87 @@
+# async_bench.tl — sequential vs parallel async comparison
+#
+# Each "task" counts primes up to LIMIT (pure integer loop, CPU-bound).
+# We run TASKS tasks sequentially, then the same TASKS tasks in parallel
+# using AsyncManager with NUM_THREADS threads, and compare elapsed times.
+# ⚠ gate/ への写し（gate_speed_plan.md 4-8）: もとは examples/async/async_bench.ar。合否だけを見る（速さは測らない・README 7 節）。
+#   大文字の名前の定数（100 以上）と 1 万以上の整数のリテラルを 100 で割って回数を減らし、時計を決まったもの
+#   （lib/fake_time.ar）にした。print は emit に置き換え、出力は最後の check_output で照らす。
+#   期待は写したときの exe の出力（4-8）。
+from ..lib.check import emit, check_output
+
+import ..lib.fake_time as time   # ⚠ gate/ の写し: 決まった時計（README 7 節）
+const LIMIT: int = 500
+const TASKS: int = 8
+const NUM_THREADS: int = 4
+
+fn count_primes(n: int) -> int:
+    if n < 2:
+        return 0
+    mut count = 0
+    mut i = 2
+    while i <= n:
+        mut is_prime = True
+        mut j = 2
+        while j * j <= i:
+            if i % j == 0:
+                is_prime = False
+            j += 1
+        if is_prime:
+            count += 1
+        i += 1
+    return count
+
+# ── sequential ──────────────────────────────────────────────────────────────
+emit([str("=== sequential ===")])
+let t0 = time.time()
+
+mut k = 0
+mut seq_result = 0
+while k < TASKS:
+    seq_result = count_primes(LIMIT)
+    k += 1
+
+let t1 = time.time()
+let seq_elapsed = t1 - t0
+emit([str("tasks:"), str(TASKS), str("  result:"), str(seq_result)])
+emit([str("sequential elapsed:"), str(seq_elapsed), str("s")])
+
+# ── async (parallel) ────────────────────────────────────────────────────────
+emit([str("")])
+emit([str("=== async ("), str(NUM_THREADS), str("threads ) ===")])
+let t2 = time.time()
+
+mut mng = AsyncManager(num_thread=NUM_THREADS)
+mut m = 0
+while m < TASKS:
+    mng <- async->int:
+        block_return count_primes(LIMIT)
+    m += 1
+
+mng.wait_for_finish()
+
+let t3 = time.time()
+let par_elapsed = t3 - t2
+emit([str("tasks:"), str(TASKS), str("  result[0]:"), str(mng.results[0])])
+emit([str("async elapsed:     "), str(par_elapsed), str("s")])
+
+# ── speedup ─────────────────────────────────────────────────────────────────
+emit([str("")])
+let speedup = seq_elapsed / par_elapsed
+emit([str("speedup: "), str(speedup), str("x")])
+emit([str("(ideal with"), str(NUM_THREADS), str("threads:"), str(NUM_THREADS), str("x)")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== sequential ===",
+    "tasks: 8   result: 95",
+    "sequential elapsed: 0.001 s",
+    "",
+    "=== async ( 4 threads ) ===",
+    "tasks: 8   result[0]: 95",
+    "async elapsed:      0.001 s",
+    "",
+    "speedup:  1.0 x",
+    "(ideal with 4 threads: 4 x)",
+    "",
+], "async_bench")

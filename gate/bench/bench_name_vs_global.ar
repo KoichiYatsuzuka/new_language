@@ -1,0 +1,68 @@
+# bench_name_vs_global.ar — 最上位からの関数呼び出しの単価（B6 / #11 R2-c の判断材料）。
+#
+# ⚠⚠ **このベンチは「旧バイナリとの A/B」でしか意味を持たない。** 単体の絶対値ではなく、
+#   B6 の修正で被呼び出し側のロードが `LoadGlobal` → `LoadName` に変わった代償を測る。
+#
+#   LoadGlobal … `scopes[0]` を索引キャッシュ付きで読む（#11 の既実装分）
+#   LoadName   … `get_val` でスコープ鎖を名前ハッシュで辿る（**キャッシュなし**）
+#
+# ⚠ モジュール本体の宣言は `exec_module` の `push_scope()` で `scopes[0]` に入らないので、
+#   `LoadGlobal` では必ず外れる（それが B6 のバグ）。#11 R2-c（ファイルごとのグローバル
+#   配列）が入れば索引アクセスへ戻せる。**回収見込みの上限がこのベンチの A/B 差**。
+#
+# 何を測るか:
+#   最上位のホットループから引数なし関数を呼ぶ、それだけ。**壁時計の差 ÷ N = ns/call**。
+#   ⚠ 他の作業を混ぜないこと。呼び出し 1 回は約 150-300ns あり、ロード命令 1 個の差
+#     （数十 ns）は他の作業を足すとすぐ埋もれる（最初にそれで測って符号を間違えた）。
+#
+# ⚠ 対照は fn 内の同じループ（**A/B で変わらない**）。ノイズ帯の把握に使う。
+#
+# Run: ./scripts/ab_bench.ps1 -A <旧> -B <新> -Scripts examples/bench/bench_name_vs_global.ar -Reps 7
+#      ⚠ 使う前に同一 exe 同士で負の対照を取ること。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-8）: もとは examples/bench/bench_name_vs_global.ar。合否だけを見る（速さは測らない・README 7 節）。
+#   大文字の名前の定数（100 以上）と 1 万以上の整数のリテラルを 100 で割って回数を減らし、時計を決まったもの
+#   （lib/fake_time.ar）にした。print は emit に置き換え、出力は最後の check_output で照らす。
+#   期待は写したときの exe の出力（4-8）。
+from ..lib.check import emit, check_output
+
+import ..lib.fake_time as time   # ⚠ gate/ の写し: 決まった時計（README 7 節）
+let N = 40000
+
+fn noop() -> int:
+    return 0
+
+# ── 対照: fn 内から呼ぶ（被呼び出しは常に LoadGlobal）─────────
+fn loop_call_in_fn(let n: int) -> int:
+    mut i = 0
+    while i < n:
+        noop()
+        i += 1
+    return i
+
+let t0 = time.time()
+let r = loop_call_in_fn(N)
+let t1 = time.time()
+
+# ── 本題: 最上位から呼ぶ（B6 で LoadGlobal → LoadName）────────
+mut i = 0
+while i < N:
+    noop()
+    i += 1
+let t2 = time.time()
+
+let fn_ns = (t1 - t0) / float(N) * 1000000000.0
+let tl_ns = (t2 - t1) / float(N) * 1000000000.0
+
+emit([str("call from fn       : " + str(fn_ns) + " ns/call")])
+emit([str("call from toplevel : " + str(tl_ns) + " ns/call")])
+emit([str("METRIC call_in_fn_ns " + str(fn_ns))])
+emit([str("METRIC call_toplevel_ns " + str(tl_ns))])
+
+# ── 出力を照らす ──
+check_output([
+    "call from fn       : 25.0 ns/call",
+    "call from toplevel : 25.0 ns/call",
+    "METRIC call_in_fn_ns 25.0",
+    "METRIC call_toplevel_ns 25.0",
+    "",
+], "bench_name_vs_global")

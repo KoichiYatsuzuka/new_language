@@ -1,0 +1,38 @@
+# bench_method_call.ar — instance-method dispatch in a hot loop (R3/method-IC target)
+# ⚠ gate/ への写し（gate_speed_plan.md 4-8）: もとは examples/bench/bench_method_call.ar。合否だけを見る（速さは測らない・README 7 節）。
+#   大文字の名前の定数（100 以上）と 1 万以上の整数のリテラルを 100 で割って回数を減らし、時計を決まったもの
+#   （lib/fake_time.ar）にした。print は emit に置き換え、出力は最後の check_output で照らす。
+#   期待は写したときの exe の出力（4-8）。
+from ..lib.check import emit, check_output
+
+import ..lib.fake_time as time   # ⚠ gate/ の写し: 決まった時計（README 7 節）
+class Point:
+    mut x: float
+    mut y: float
+    fn __init__(mut self, let x: float, let y: float) -> None:
+        self.x = x
+        self.y = y
+    fn sum(self) -> float:
+        return self.x + self.y
+
+let N = 20
+let REPS = 5
+let p = Point(1.0, 2.0)
+
+let t0 = time.time()
+mut total = 0.0
+mut rep = 0
+while rep < REPS:
+    mut i = 0
+    while i < N:
+        total += p.sum()
+        i += 1
+    rep += 1
+let t1 = time.time()
+emit([str("method call (p.sum): " + str(t1 - t0) + " s  (N=" + str(N) + " x REPS=" + str(REPS) + ")  result=" + str(total))])
+
+# ── 出力を照らす ──
+check_output([
+    "method call (p.sum): 0.001 s  (N=20 x REPS=5)  result=300.0",
+    "",
+], "bench_method_call")

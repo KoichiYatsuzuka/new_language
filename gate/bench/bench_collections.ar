@@ -1,0 +1,41 @@
+# タスク#5 ベンチ: 添字・コレクションリテラル。V-D まで丸ごとフォールバックしていた。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-8）: もとは examples/bench/bench_collections.ar。合否だけを見る（速さは測らない・README 7 節）。
+#   大文字の名前の定数（100 以上）と 1 万以上の整数のリテラルを 100 で割って回数を減らし、時計を決まったもの
+#   （lib/fake_time.ar）にした。print は emit に置き換え、出力は最後の check_output で照らす。
+#   期待は写したときの exe の出力（4-8）。
+from ..lib.check import emit, check_output
+
+fn dot(a: list[int], b: list[int], n: int) -> int:
+    mut s: int = 0
+    mut k: int = 0
+    while k < n:
+        s += a[k] * b[k]
+        k += 1
+    return s
+
+fn build_pairs(n: int) -> int:
+    mut total: int = 0
+    mut k: int = 0
+    while k < n:
+        let pair: tuple[int, int] = (k, k * 2)
+        total += pair[0] + pair[1]
+        k += 1
+    return total
+
+fn main() -> None:
+    let a: list[int] = [1, 2, 3, 4, 5, 6, 7, 8]
+    let b: list[int] = [8, 7, 6, 5, 4, 3, 2, 1]
+    mut acc: int = 0
+    mut i: int = 0
+    while i < 10000:
+        acc += dot(a, b, 8)
+        acc += build_pairs(8)
+        i += 1
+    emit([str(acc)])
+main()
+
+# ── 出力を照らす ──
+check_output([
+    "2040000",
+    "",
+], "bench_collections")

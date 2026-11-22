@@ -1,0 +1,219 @@
+# numeric_ops_equivalence.ar — 数値二項演算の網羅チェック（#16 段階(b)(iii)）
+#
+# VM は型検査の注釈（binop_kind）が int/int・float/float を確定した二項演算を
+# 型特化 op（IBIN_LL / FBIN_SS など）へ落とす。この例題はその特化パスと
+# ツリーウォークの汎用パスが**完全に同じ結果を出す**ことを確認するためのもの。
+#
+#   .\compare_vm_modes.ps1 -Filter numeric_ops_equivalence
+#   （または arrow --vm=off / --vm=auto で実行して出力を diff する）
+#
+# 網羅対象: int の + - * / // % ** & | ^ << >> と比較、float の + - * / ** と比較、
+#           int/float 混在、ゼロ除算の 3 種のエラー、float のゼロ除算（inf/NaN）。
+# 負値・ゼロ・負の指数など境界ケースを含む。
+#
+# NOTE: 混在の `<=` `>=` は現状の言語仕様では TypeError（`<` `>` は通る）。
+#       apply_binop に混在アームが無いため。この例題では扱わない。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-8）: もとは examples/bench/numeric_ops_equivalence.ar。合否だけを見る（速さは測らない・README 7 節）。
+#   大文字の名前の定数（100 以上）と 1 万以上の整数のリテラルを 100 で割って回数を減らし、時計を決まったもの
+#   （lib/fake_time.ar）にした。print は emit に置き換え、出力は最後の check_output で照らす。
+#   期待は写したときの exe の出力（4-8）。
+from ..lib.check import emit, check_output
+
+fn int_ops(let a: int, let b: int) -> None:
+    emit([str(a + b)])
+    emit([str(a - b)])
+    emit([str(a * b)])
+    emit([str(a / b)])
+    emit([str(a // b)])
+    emit([str(a % b)])
+    emit([str(a ** b)])
+    emit([str(a & b)])
+    emit([str(a | b)])
+    emit([str(a ^ b)])
+    emit([str(a < b), str(a > b), str(a <= b), str(a >= b), str(a == b), str(a != b)])
+
+fn int_shift(let a: int, let s: int) -> None:
+    emit([str(a << s)])
+    emit([str(a >> s)])
+
+fn float_ops(let a: float, let b: float) -> None:
+    emit([str(a + b)])
+    emit([str(a - b)])
+    emit([str(a * b)])
+    emit([str(a / b)])
+    emit([str(a ** b)])
+    emit([str(a < b), str(a > b), str(a <= b), str(a >= b), str(a == b), str(a != b)])
+
+fn mixed_ops(let i: int, let f: float) -> None:
+    emit([str(i + f), str(f + i)])
+    emit([str(i - f), str(f - i)])
+    emit([str(i * f), str(f * i)])
+    emit([str(i / f), str(f / i)])
+    emit([str(i ** f), str(f ** i)])
+    emit([str(i < f), str(f < i), str(i > f), str(f > i)])
+    # NOTE: i <= f / i >= f は現状の言語仕様では TypeError（apply_binop に混在アームが無い）
+
+fn div_zero_int(let a: int) -> None:
+    try:
+        emit([str(a / 0)])
+    except ZeroDivisionError as e:
+        emit([str("div:"), str(e.message)])
+    try:
+        emit([str(a // 0)])
+    except ZeroDivisionError as e:
+        emit([str("floordiv:"), str(e.message)])
+    try:
+        emit([str(a % 0)])
+    except ZeroDivisionError as e:
+        emit([str("mod:"), str(e.message)])
+
+fn float_div_zero(let a: float) -> None:
+    emit([str(a / 0.0)])
+
+emit([str("=== int ===")])
+int_ops(7, 3)
+int_ops(-7, 3)
+int_ops(7, -3)
+int_ops(-7, -3)
+int_ops(0, 5)
+emit([str("=== int shift ===")])
+int_shift(1, 10)
+int_shift(-16, 2)
+emit([str("=== int pow negative exponent ===")])
+int_ops(2, -2)
+emit([str("=== float ===")])
+float_ops(7.5, 2.5)
+float_ops(-7.5, 2.5)
+float_ops(2.0, 0.5)
+emit([str("=== mixed ===")])
+mixed_ops(3, 1.5)
+mixed_ops(-3, 1.5)
+mixed_ops(2, -0.5)
+emit([str("=== zero division ===")])
+div_zero_int(5)
+emit([str("=== float div by zero ===")])
+float_div_zero(1.0)
+float_div_zero(-1.0)
+
+# ── 出力を照らす ──
+check_output([
+    "=== int ===",
+    "10",
+    "4",
+    "21",
+    "2.3333333333333335",
+    "2",
+    "1",
+    "343",
+    "3",
+    "7",
+    "4",
+    "False True False True False True",
+    "-4",
+    "-10",
+    "-21",
+    "-2.3333333333333335",
+    "-3",
+    "2",
+    "-343",
+    "1",
+    "-5",
+    "-6",
+    "True False True False False True",
+    "4",
+    "10",
+    "-21",
+    "-2.3333333333333335",
+    "-3",
+    "-2",
+    "0.0029154518950437317",
+    "5",
+    "-1",
+    "-6",
+    "False True False True False True",
+    "-10",
+    "-4",
+    "21",
+    "2.3333333333333335",
+    "2",
+    "-1",
+    "-0.0029154518950437317",
+    "-7",
+    "-3",
+    "4",
+    "True False True False False True",
+    "5",
+    "-5",
+    "0",
+    "0.0",
+    "0",
+    "0",
+    "0",
+    "0",
+    "5",
+    "5",
+    "True False True False False True",
+    "=== int shift ===",
+    "1024",
+    "0",
+    "-64",
+    "-4",
+    "=== int pow negative exponent ===",
+    "0",
+    "4",
+    "-4",
+    "-1.0",
+    "-1",
+    "0",
+    "0.25",
+    "2",
+    "-2",
+    "-4",
+    "False True False True False True",
+    "=== float ===",
+    "10.0",
+    "5.0",
+    "18.75",
+    "3.0",
+    "154.04696929832798",
+    "False True False True False True",
+    "-5.0",
+    "-10.0",
+    "-18.75",
+    "-3.0",
+    "nan",
+    "True False True False False True",
+    "2.5",
+    "1.5",
+    "1.0",
+    "4.0",
+    "1.4142135623730951",
+    "False True False True False True",
+    "=== mixed ===",
+    "4.5 4.5",
+    "1.5 -1.5",
+    "4.5 4.5",
+    "2.0 0.5",
+    "5.196152422706632 3.375",
+    "False True True False",
+    "-1.5 -1.5",
+    "-4.5 4.5",
+    "-4.5 -4.5",
+    "-2.0 -0.5",
+    "nan 0.2962962962962963",
+    "True False False True",
+    "1.5 1.5",
+    "2.5 -2.5",
+    "-1.0 -1.0",
+    "-4.0 -0.25",
+    "0.7071067811865476 0.25",
+    "False True True False",
+    "=== zero division ===",
+    "div: division by zero",
+    "floordiv: integer division by zero",
+    "mod: modulo by zero",
+    "=== float div by zero ===",
+    "inf",
+    "-inf",
+    "",
+], "numeric_ops_equivalence")

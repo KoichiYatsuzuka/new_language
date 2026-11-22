@@ -1,0 +1,26 @@
+fn noop0() -> int:
+    ...
+
+fn id1(x: int) -> int:
+    ...
+
+fn hot_int(n: int) -> int:
+    ...
+
+fn hot_float(n: int) -> float:
+    ...
+
+class Item->Item:
+    mut v: int
+    fn __init__(mut self, v: int) -> None:
+        ...
+
+
+fn sum_fixed(xs: fixed_list[Item]) -> int:
+    ...
+
+fn sum_list(mut xs: list[Item]) -> int:
+    ...
+
+fn apply_fn(f: function{let x:int}->int, n: int) -> int:
+    ...

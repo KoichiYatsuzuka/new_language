@@ -202,6 +202,12 @@ let a: int = "s"            # expect: static VarTypeMismatch
 
 - 合否だけを見る（結果の値を `check_eq` で確かめる）。1 本 1 秒以内に収まる回数にする。
 - 速さは測らない（`examples/bench/` と `ab_bench` / `speed_modes` の担当）。
+- `examples/bench/` から写したもの（4-8）は、回数を減らし（大文字の名前の定数 100 以上と、1 万以上の整数のリテラルを
+  100 で割る）、`import[py] time` を `lib/fake_time.ar`（呼ぶたびに 1 ミリ秒ずつ進む決まった時計）に替えた。
+  出力（経過時間から出す値を含む）は `emit` で貯めて照らす。経過時間の値そのものに意味は無く、形が変わらないこと・
+  最後まで走ること・結果の値（`CHECKSUM` など）を見る。
+  - `.arc` と対になるモジュール（`bench_ab_native_module` など）は書き換えずに写した（陳腐化させないため）。
+  - `bench_ab_cdll` は cpp-lib の補助を共有するので `ffi/` に置いた。
 
 ## 8. 対話（REPL・デバッガ）
 
