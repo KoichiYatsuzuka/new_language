@@ -1,0 +1,46 @@
+# trait_conformance_error.ar — 基底 trait の要求に反する実装（0-8）
+#
+# 対になる正常系: trait_conformance.ar
+#
+# ⚠⚠ **同名だが中身が食い違う場合が要点。** 「実装し忘れ」は以前からパーサが検出していたが
+#   （`must override virtual method`）、同名で宣言はあるのに**型やシグネチャが違う**形は
+#   静的にも実行時にも素通りしていた。
+#
+# ⚠ 静的エラーなので最初のクラス宣言で停止する。各節は個別に確認すること。
+#
+# ⚠ フィールドの再宣言は**パース時に**弾かれ、そこで全体が中断するので
+#   この例題には置けない（→ trait_field_redeclare_error.ar）。ここはメソッド側だけを見る。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/classes/trait_conformance_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+trait Creature:
+    mut hp: int
+
+    fn speak(self, let volume: int) -> str:
+        ...
+
+# Section 2 — StaticTypeError: 戻り値型が違う
+#   Expected error (StaticTypeError):
+#     class 'R' does not satisfy trait 'Creature': method `speak` signature does not
+#     match the trait declaration
+
+class R(Creature):   # expect: static TraitConformanceFailed
+    fn speak(self, let volume: int) -> int:     # trait は -> str
+        return 1
+
+# Section 3 — StaticTypeError: 引数型が違う
+class A(Creature):   # expect: static TraitConformanceFailed
+    fn speak(self, let volume: str) -> str:     # trait は volume: int
+        return volume
+
+# Section 4 — StaticTypeError: 引数の個数が違う
+class N(Creature):   # expect: static TraitConformanceFailed
+    fn speak(self) -> str:                      # trait は引数 1 個
+        return "s"
+
+# Section 5 — StaticTypeError: 引数名が違う
+#   ⚠ Arrow はキーワード引数を持つので、名前が変わると trait 越しの呼び出し
+#     （`obj.speak(volume = 1)`）が壊れる。⇒ 名前も一致させる。
+class K(Creature):   # expect: static TraitConformanceFailed
+    fn speak(self, let loudness: int) -> str:   # trait は volume
+        return "s"

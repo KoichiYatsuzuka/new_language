@@ -1,0 +1,9 @@
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/exceptions/runtime_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+fn divide(let x: int, let y: int) -> float:
+    return x / y   # expect: runtime ZeroDivisionError "division by zero"
+
+fn compute(let n: int) -> float:
+    return divide(n, 0)
+
+let result: float = compute(10)

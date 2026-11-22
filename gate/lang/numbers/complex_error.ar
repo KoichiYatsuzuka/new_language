@@ -1,0 +1,8 @@
+# complex error example: calling a non-existent method
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/complex_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let z: complex = 1 + 2j
+print(z.conjugate())  # StaticTypeError: 'complex' has no member 'conjugate'   # expect: static NoSuchMember
+# ⚠ フェーズ10 10-14 より前は静的に通り、実行時の AttributeError だった。
+#   `complex` のメソッドは `real()` / `imag()` / `angle()` だけ。

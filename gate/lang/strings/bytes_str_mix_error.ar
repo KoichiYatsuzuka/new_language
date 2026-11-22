@@ -1,0 +1,13 @@
+# bytes_str_mix_error.ar — bytes と str は別の型（負例・3-1）
+#
+# バイト列と文字列を、文字コードを書かずに混ぜることはできない（静的エラー）。変換は `s.encode(enc)` /
+# `b.decode(enc)` で明示的に行う。
+# 対になる正例: bytes_basics.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/typing/bytes_str_mix_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let b: bytes = "abc".encode()
+let s: str = b   # expect: static VarTypeMismatch
+let joined = b + "d"   # expect: static IncompatibleBinOp
+let first: str = b[0]   # expect: static VarTypeMismatch
+let found = "a" in b   # expect: static CrossTypeEquality

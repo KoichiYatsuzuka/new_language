@@ -1,0 +1,13 @@
+# exception_hierarchy_error.ar — 親の例外を子の型へは入れられない（python_builtins_plan.md のタスク 4-1）
+#
+# 対になる正常系: exception_hierarchy.ar
+#
+# 期待されるエラー（静的）:
+#   StaticTypeError: 'e' is declared 'KeyError' but initialized with 'LookupError'
+#
+# ⚠ 逆向き（let e: LookupError = KeyError("k")）は通る。KeyError は LookupError の派生なので。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/exceptions/exception_hierarchy_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let e: KeyError = LookupError("not every lookup error is a key error")   # ⛔ 親は子ではない   # expect: static VarTypeMismatch
+print(e.message)

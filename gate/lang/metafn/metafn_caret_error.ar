@@ -1,0 +1,26 @@
+# metafn_caret_error.ar — メタ情報演算子 `^` を書ける位置（タスク 1-3 / 設計書 §1.5）。
+#
+# `^対象` は対象のメタ情報（`meta_instance` / `meta_function` / `meta_class` /
+# `meta_member`）を返す**展開時**の演算子。実行時には意味を持たない。
+# ⇒ 書けるのは **メタ関数の中**か、**呼び出しの実引数の中**だけ。
+#
+# ⚠ 中置の `^`（ビット XOR）は従来どおり。前置か中置かは位置で区別される。
+#   `print(6 ^ 3)` は 5 を出す。
+#
+# ⚠ 成功例は `metafn.ar` の「メタ情報演算子 ^」（メタ関数の実引数・メタ関数の中の `^`）。
+# ⚠ 呼び先がメタ関数かはパース時に分からないので、`print(^T)` のように**普通の関数の
+#   実引数**に書くとパースは通る。そのときは実行時に「展開時にしか評価できない」と
+#   言って止まる（`metafn_caret_runtime_error.ar`）。
+#
+# 期待されるエラー:
+#   ParseError: `^` (the meta-info operator) can only be written inside a metafunction
+#               or as an argument to one
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/metafn_caret_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let x = 1
+print(6 ^ 3)                # 5 — 中置はビット XOR のまま
+
+let meta = ^x               # ← ここが不正（メタ関数の外、かつ実引数でもない）   # expect: parse - "`^` (the meta-info operator) can only be written inside a me"
+
+print("unreachable")

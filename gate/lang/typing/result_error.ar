@@ -1,0 +1,4 @@
+# エラー例1: Ok型とErr型が同じ型 → 静的エラー
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/typing/result_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+let r: Result[int, int] = Ok(1)   # expect: static ResultSameTypes

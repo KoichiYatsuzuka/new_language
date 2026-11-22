@@ -1,0 +1,14 @@
+# exception_args_error.ar — 組み込みの例外はキーワード引数を受けない（python_builtins_plan.md のタスク 4-2）
+#
+# 対になる正常系: exception_args.ar
+#
+# 期待されるエラー（実行時）:
+#   TypeError: ValueError() takes no keyword arguments
+#
+# ⚠ 文言は CPython と同じ。位置引数ならいくつでも受ける（ValueError("a", 1)）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/exceptions/exception_args_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: runtime TypeError "ValueError() takes no keyword arguments"
+
+let e = ValueError(message="bad")                         # ⛔ キーワード引数
+print(e)

@@ -1,0 +1,6 @@
+# Undefined error example — assigning Undefined to a variable is a static type error.
+# StaticTypeError: cannot assign `Undefined` to a variable
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/typing/undefined_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let x = Undefined   # expect: static AssignUndefined

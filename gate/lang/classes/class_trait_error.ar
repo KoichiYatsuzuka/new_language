@@ -1,0 +1,58 @@
+# class_trait_error.tl — expected class/trait/access errors
+#
+# Section 1 — StaticTypeError: assigning to a let (immutable) field
+#   Expected error (StaticTypeError):
+#     Cannot assign to immutable field outside of __init__
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/classes/class_trait_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+class Token:
+    let kind: str
+    let text: str
+
+# ⚠ `mut t` にしてある。`let t` だと**束縛が不変**という別のエラー（タスク 7.2）も
+#   同時に出て、この節が示したい「**フィールド**が不変」の実演がぼやける。
+mut t = Token("ident", "foo")
+print(t.kind)   # ident — OK
+
+t.kind = "op"   # TypeError: cannot assign to immutable field 'kind'   # expect: static AssignToImmutableField
+
+# Section 2 — StaticTypeError: accessing a private field from outside the class
+#   Expected error (StaticTypeError):
+#     'y' is private and cannot be accessed outside 'MyClass'
+
+class MyClass:
+    public:
+    mut x: int
+
+    private:
+    mut y: int
+
+    fn __init__(mut self) -> None:
+        self.x = 1
+        self.y = 2
+
+let obj = MyClass()
+print(obj.y)   # AccessError: 'y' is private   # expect: static PrivateAccessError
+
+# Section 3 — AttributeError: calling a static method on an instance
+#   Expected error (runtime AttributeError):
+#     static method 'count' must be called on the class, not an instance
+
+class Registry:
+    static mut entry_count: int = 0
+
+    static fn count() -> int:
+        return Registry.entry_count
+
+let reg = Registry()
+reg.count()   # AttributeError: static method 'count' must be called on the class, not an instance   # expect: static StaticMethodOnInstance
+
+# Section 4 — StaticTypeError: default value on mut/let field in class declaration
+#   Expected error (StaticTypeError):
+#     'mut' / 'let' field cannot have a default value in the class declaration
+
+class WithDefaults:
+    mut x: int = 10     # StaticTypeError: mut field 'x' cannot have a default value   # expect: static FieldDefaultNotAllowed
+    let y: str = "hi"   # StaticTypeError: let field 'y' cannot have a default value   # expect: static FieldDefaultNotAllowed
+    const PI: float = 3.14  # OK: const fields may have defaults

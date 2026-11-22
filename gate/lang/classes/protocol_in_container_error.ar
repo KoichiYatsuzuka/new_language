@@ -1,0 +1,29 @@
+# protocol_in_container_error.ar — 容器の内側の非適合クラスを弾く（タスク 1.3）
+#
+# 正常系は protocol_in_container.ar
+#
+# `No` は `m: int` しか持たないので `HasN`（`mut n: int` を要求）を満たさない。
+#
+# ⚠ 以前は **`type_matches_exact` の `Protocol` アームが任意の `NamedInstance` を受理**して
+#   いたため、容器の内側では誰も検査しておらず**黙って通っていた**。
+#   「適合チェックは別途実施するため」とコメントされていたが、その「別途」
+#   （`check_expected`）は**期待型が最上位 `Protocol` のときだけ**動いていた。
+#
+# 期待されるエラー:
+#   StaticTypeError  'xs' is declared 'list[HasN]' but initialized with 'list[No]'
+#
+# ⚠ タスク 3.3 で文言が `list[protocol HasN]` → `list[HasN]` に変わった（**利用者が書いた
+#   綴りをそのまま出す**）。検査結果は不変で、`protocol` の解決は述語
+#   `types_compatible` の内側で行われる。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/classes/protocol_in_container_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+protocol HasN:
+    mut n: int
+
+class No:
+    mut m: int
+
+let xs: list[HasN] = [No(1)]        # ⛔ No は n: int を持たない   # expect: static VarTypeMismatch
+
+print("ここには到達しない")

@@ -1,0 +1,20 @@
+# dict_iter_error.ar — 辞書の反復で出るのは**キー**であることの確認（型で捕まる）。
+#
+# 期待されるエラー:
+#   StaticTypeError: 'n' is declared 'int' but initialized with 'str'
+#
+# ⚠ `for k in d:` の `k` は**キー型**（Python と同じ既定）。値が欲しければ
+#   `d.values()`、両方なら `d.items()` を使う。
+#
+# ⚠ `enumerate` / `zip` の戻り値は `generator[T]` なので、**リストとしては受けられない**:
+#   let l: list[int] = enumerate(xs)
+#     -> 'l' is declared 'list[int]' but initialized with 'generator[tuple[int, str]]'
+#
+# ⚠ **通る形**は `dict_iter_and_builtin_types.ar`。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/collections/dict_iter_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+mut d = {"a": 1}
+for k in d:
+    let n: int = k   # expect: static VarTypeMismatch
+    print(n)

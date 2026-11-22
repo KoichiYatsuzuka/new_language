@@ -1,0 +1,25 @@
+# metafn_caret_runtime_error.ar — 通常コードに `^` は書けない（タスク 1-3 / 3-9 / 2-11）。
+#
+# `^` は**展開中にしか評価できない**。書けるのは「メタ関数の中」か「メタ関数呼び出しの
+# 実引数の中」だけ。ただしパース時には**呼び先がメタ関数かどうかが分からない**ので、
+# `print(^Marker)` のように普通の関数の実引数に書いてもパースは通る（1-3）。
+#
+# ⚠⚠ 以前は展開器がそれを評価しないまま実行時まで残り、実行時に「前に何も宣言されていない」と
+#   **誤報していた**（`Marker` は宣言してあるのに）。3-9 で実行時の文面を直し、2-11 で
+#   展開の最後に通常コードを歩いて**展開時に**止めるようにした。
+#
+# ⚠ クラスの中身を実行時に使いたいなら、メタ関数で必要な情報を**コードとして置く**
+#   （成功例 `metafn.ar` の `bind_first_field`）。
+#
+# 期待されるエラー:
+#   MetaError: `^Marker` is written at the top level in ordinary code — `^` can only be
+#              evaluated while the program is being expanded: inside a metafunction, or as
+#              an argument to a metafunction call
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/metafn_caret_runtime_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: expand MetaError "MetaError: `^Marker` is written at the top level in ordinary"
+
+class Marker:
+    mut id: int
+
+print(^Marker)

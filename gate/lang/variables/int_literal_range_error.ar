@@ -1,0 +1,11 @@
+# int_literal_range_error.ar — `int`（64 ビット）に入らない整数リテラルは構文解析の誤り（known_bugs.md の #16）
+#
+# ⚠ 以前は黙って `0` になっていた（`print(18446744073709551615)` が `0`）。
+#
+# 期待されるエラー（ParseError）:
+#   integer literal 18446744073709551615 does not fit in `int` (64-bit: -9223372036854775808 to 9223372036854775807)
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/int_literal_range_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let mask = 18446744073709551615   # expect: parse - "integer literal 18446744073709551615 does not fit in `int` ("
+print(mask)

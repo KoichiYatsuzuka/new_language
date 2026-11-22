@@ -1,0 +1,53 @@
+# field_class_type_error.ar — クラス型フィールドへ別クラスを入れると実行時に弾く（A-4）
+#
+# 正常系は field_class_type.ar
+#
+# ## なぜ実行時検査が要るのか
+#
+# `xs` は `list`（要素型なし）なので `xs[0]` の型は `Unresolved` になり、静的検査は
+# `h.pet = xs[0]` を通す。A-3 でフィールドの実行時検査を入れたが、判定に使う `TypeTag` は
+# `int`/`float`/`str`/`bool` しか区別しないため、**クラス名は `TypeTag::Other` に落ちて
+# 素通り**していた。結果、`pet: Dog` のフィールドに `Cat` が黙って居座り、
+# `h.pet.m` という Dog に無いフィールドが読めてしまっていた。
+#
+#
+# ## ⚠⚠ タスク 8.1（案 A）で**静的側が先に捕まえるようになった**
+#
+# 素の容器型注釈（`mut xs: list`）が禁止されたので、書ける綴りは `list[Any]`。
+# `xs[i]` の型は `Unresolved`（万能受容体）ではなく **`Any`** になり、
+# `Any` を宣言型のフィールドへ入れるのは**明示ダウンキャストが要る**ので静的エラーになる。
+#
+# ⇒ **実行時検査は消していない。** FFI・ネイティブコールバック経由で
+#   静的検査を通らない値が来る経路の最後の砦として残っている。
+#   判定に使う述語（`TypeTag::matches`）は `src/vm/op.rs` の
+#   `mod type_tag_tests` が実行時の表と一致することを固定している。
+#   ⇒ Arrow のソースからは**この実行時エラーへ到達できなくなった**（案 A の帰結）。
+#
+# 期待されるエラー:
+#   StaticTypeError  field 'pet' of class 'Holder' is declared 'Dog' but got 'Any'
+#
+# ⚠ 8.1 より前はここが実行時エラーだった:
+#   TypeError: value does not match declared type of field 'pet'
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/classes/field_class_type_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+class Dog:
+    mut n: int
+
+class Cat:
+    mut m: int
+
+class Holder:
+    mut pet: Dog
+    mut label: str
+
+mut h = Holder(Dog(1), "h")
+
+mut xs: list[Any] = [Cat(2), 3]
+
+print("代入前:", h.pet.n)       # 1
+
+# ⚠ これを**最後の文**にしておくこと。後ろに文を置くと、実行時エラーで停止した時点で
+#   その文の chunk がコンパイルされず、`compare_bytecode.ps1` が
+#   「基準だけが末尾 chunk をダンプした」差分を出す（バイトコード自体は同一）。
+h.pet = xs[0]                   # ⛔ Cat を Dog フィールドへ   # expect: static FieldTypeMismatch

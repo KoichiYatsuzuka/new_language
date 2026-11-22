@@ -1,0 +1,14 @@
+# py_aggregates_error.ar — 空の列の max（python_builtins_plan.md のタスク 3-2）
+#
+# 対になる正常系: py_aggregates.ar
+#
+# 期待されるエラー（実行時）:
+#   ValueError: max() iterable argument is empty
+#
+# ⚠ 文言は CPython と同じ。空でありうるなら `max(xs, default=0)`。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/py_aggregates_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: runtime ValueError "max() iterable argument is empty"
+
+let xs: list[int] = []
+print(max(xs))                           # ⛔ 空の列

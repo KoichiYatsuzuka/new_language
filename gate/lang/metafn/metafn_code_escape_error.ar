@@ -1,0 +1,26 @@
+# metafn_code_escape_error.ar — `Code` はメタ関数の外へ持ち出せない（タスク 1-5 / 1-6 / 設計書 §1.2）。
+#
+# `code:` が作る `Code` は**展開時にしか存在しない値**。展開器が AST に埋め込んで
+# 消えるものなので、実行時には対応する値が無い。
+#
+# ⚠⚠ `code:` は**メタ関数の外では書けない**（パース時に弾く・タスク 1-6）。
+#   以前は束縛点（`let frag = code:`）だけを型検査で弾いていたので、**式文として書いた
+#   `code:` がすり抜けた** —— 中身が一度も走らないまま、プログラムが黙って完走した（実測）。
+#
+# ⚠ 残る持ち出し経路は「純粋メタ関数の返り値を束縛する」形（`let f = frag()`）。
+#   こちらは型検査が束縛点で弾く（タスク 1-5。展開しないエディタではこれが網になる）。
+#
+# ⚠ メタ情報型（`meta_instance` / `meta_function` / `meta_class` / `meta_member`）は
+#   注釈として書ける。Arrow は関数の仮引数の注釈が必須なので、これが無いと
+#   メタ関数そのものが書けない。成功例は `metafn.ar`。
+#
+# 期待されるエラー:
+#   ParseError: `code:` blocks can only be written inside a metafunction
+#               (a `Code` value exists only while the compile-time expander runs)
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/metafn_code_escape_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let frag = code:   # expect: parse - "`code:` blocks can only be written inside a metafunction (a"
+    print("この断片は実行時には存在しない")
+
+print("unreachable")

@@ -1,0 +1,21 @@
+# getattribute_hook_error.ar — Arrow のクラスは `__getattribute__` を定義できない（known_bugs.md の #12）
+#
+# すべての読みの上書き（`__getattribute__`）は Python のモジュール（`import[py]`）のクラスだけが持てる
+# （`examples/interop/py_getattribute_hook.ar`・`__setattr__` / `__delattr__` / `__getattr__` と同じ規則）。
+# Arrow のクラスのメンバーはクラスの本体で決まる。⚠ 以前は Arrow のクラスに書いても普通のメソッドとして扱われた。
+#
+# 期待されるエラー（ParseError・パース時）:
+#   `__getattribute__` can only be defined in a class of a Python module (import[py]); the members of an Arrow class
+#   are fixed by its class body
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/classes/getattribute_hook_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+class Logged:
+    mut x: int
+
+    fn __getattribute__(self, name: str) -> Any:   # expect: parse - "`__getattribute__` can only be defined in a class of a Pytho"
+        return name
+
+let o = Logged(1)
+print(o.x)
+print("unreachable")

@@ -1,0 +1,24 @@
+# bare_tuple_annotation_error.ar — 素の `tuple` 注釈は書けない（タスク 8.1・案 A）
+#
+# 正常系は bare_tuple_annotation.ar
+#
+# 素の容器型（`list` / `dict` / `set` / `fixed_list` / `list_like` / `tuple`）を
+# 注釈位置に書くと、要素型が `Unresolved`（＝**万能受容体**）になり、
+# 要素へのあらゆる検査（`append` の引数・`for` の要素・添字の結果）が**消える**。
+# 根本原因①の最後の入口だったので、注釈位置では禁止した。
+#
+# ⚠ タスク 8.3 より前は、`tuple` は `from_ann` の表に無く注釈が丸ごと無視されていたため
+#   `let t: tuple = 1` すら通っていた。8.3 で型として解決できるようにしたので、
+#   8.1 の禁止が `tuple` にも効くようになった。
+#
+# ⚠ 型テスト位置（`x is tuple`）は対象外。正常系を参照。
+#
+# 期待されるエラー:
+#   StaticTypeError  variable `t` is annotated 'tuple' without an element type;
+#                    write the element type (e.g. 'tuple[int, str]')
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/typing/bare_tuple_annotation_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let t: tuple = (1, 2)               # ⛔ 要素型を書くこと   # expect: static BareContainerAnnotation
+
+print("ここには到達しない")

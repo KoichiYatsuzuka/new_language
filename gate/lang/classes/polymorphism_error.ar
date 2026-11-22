@@ -1,0 +1,32 @@
+# polymorphism_error.ar — TemplateError: constraint not satisfied
+#
+# Expected error (TemplateError, before the program runs):
+#   Instantiating a template with a type that does not implement the required trait.
+#
+# ⚠ 2026-09-26（D36・タスク 2-16）から**展開時のエラー**。テンプレートの具体化はプログラムを
+#   走らせる前に作るので、`show[MyInt](ok)` の出力（MyInt）より前に止まる。以前は実行時に
+#   具体化していたので、MyInt を出してから止まっていた。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/classes/polymorphism_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: expand TemplateError "TemplateError: type `Plain` does not satisfy trait `Printabl"
+
+trait Printable:
+    fn to_str(self) -> str:
+        ...
+
+class MyInt(Printable):
+    mut value: int
+    fn to_str(self) -> str:
+        return "MyInt"
+
+class Plain:
+    mut value: int
+
+fn show[T: Printable](item: T) -> None:
+    print(item.to_str())
+
+let ok = MyInt(1)
+show[MyInt](ok)   # OK: MyInt implements Printable
+
+let bad = Plain(2)
+show[Plain](bad)  # TemplateError: Plain does not implement Printable

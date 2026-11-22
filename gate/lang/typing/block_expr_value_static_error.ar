@@ -1,0 +1,17 @@
+# block_expr_value_static_error.ar — `block_return` の値が `->T` と合わない（タスク 5.2）
+#
+# 正常系は block_expr_value_static.ar
+#
+# `block ->int:` と宣言しているのに `block_return` が `str` を返している。
+#
+# ⚠ 以前は**実行時まで**判らなかった（検体 `X1` が `RUNTIME` だった）。
+#
+# 期待されるエラー:
+#   StaticTypeError  'block_return' expects 'int' but got 'str'
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/typing/block_expr_value_static_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let r = block ->int:
+    block_return "s"                # ⛔ ->int と合わない   # expect: static BlockExprValueMismatch
+
+print(r)

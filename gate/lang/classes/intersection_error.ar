@@ -1,0 +1,38 @@
+# Intersection type error examples
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/classes/intersection_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+trait Flyable:
+    fn fly(self) -> str:
+        ...
+
+trait Swimmable:
+    fn swim(self) -> str:
+        ...
+
+trait Runnable:
+    fn run(self) -> str:
+        ...
+
+class Bird(Flyable, Runnable):
+    fn fly(self) -> str:
+        return "flying"
+
+    fn run(self) -> str:
+        return "running"
+
+# ERROR: type guard with a type that does not satisfy all intersection constraints.
+# Bird implements Flyable and Runnable but NOT Swimmable.
+#
+# ⚠ タスク 1.1 以降は**この束縛そのものも**エラーになる（2 件出る）。
+#   以前は `resolve_declared_type` が `Intersection` 注釈の妥当性だけ検査して
+#   early-return しており、右辺と照合していなかったので下の型ガードのエラーだけが出ていた。
+#   → examples/typing/intersection_result_bind{,_error}.ar
+let x: Intersection[Flyable, Swimmable] = Bird()   # expect: static VarTypeMismatch
+if x is Bird:   # expect: static IntersectionGuardTypeFails
+    print(x.fly())
+
+# ERROR: is not on Intersection is treated like is not on non-Union (static error)
+let y: Intersection[Flyable, Runnable] = Bird()
+if y is not Bird:   # expect: static IsNotOnNonUnion
+    print("unreachable")

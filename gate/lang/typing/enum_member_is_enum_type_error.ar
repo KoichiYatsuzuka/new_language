@@ -1,0 +1,48 @@
+# enum_member_is_enum_type_error.ar — enum のメンバーの型を enum 型にしたうえで、なお弾くもの
+#
+# 正常系は enum_member_is_enum_type.ar
+# 計画: implementation_plans/enum_member_type_plan.md
+#
+# ⚠ 別々の enum のメンバーは別の型のまま。比較も代入も弾く。
+# ⚠ メンバー（`BLUE`）は型の値（`Color`）からだけ、フィールド（`value`）はインスタンス
+#   （`Color` 型の値）からだけ引ける。以前は両方を同じ表で引いていたので、`m.PLANE` と
+#   `Color.value` が型検査を通って実行時に `AttributeError` になっていた（タスク 2-1）。
+# ⚠ `enum_item_Color` はソースから廃止した（メンバーの型は `Color`）。
+# ⚠ メンバーは**値**で、変数ではない（タスク 5-1）。暗黙に `const` で、代入はクラスの `const` と
+#   同じ規則で弾く（タスク 5-2・const_member_assign_error.ar）。中身（`value`）の
+#   書き換えも弾く。以前は `Color.BLUE = ..` が実行時まで通り、`Color.BLUE.value = 5` は
+#   **共有のメンバーそのものを書き換えていた**。
+#
+# 期待されるエラー:
+#   StaticTypeError  '==' between 'Color' and 'Shape' can never be true
+#   StaticTypeError  'o' is declared 'Color' but initialized with 'Shape'
+#   StaticTypeError  'Color' has no member 'PLANE'
+#   StaticTypeError  'Color' has no member 'value'
+#   StaticTypeError  unknown type 'enum_item_Color' in type guard; the branch can never match
+#   StaticTypeError  cannot assign to const 'Color.BLUE'
+#   StaticTypeError  cannot modify the contents of const 'Color.BLUE'
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/typing/enum_member_is_enum_type_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+enum Color:
+    PLANE
+    BLUE
+
+enum Shape:
+    SQUARE
+
+let m: Color = Color.BLUE
+
+print(m == Shape.SQUARE)            # ⛔ 別の enum のメンバーとは比べられない   # expect: static CrossTypeEquality
+
+let o: Color = Shape.SQUARE         # ⛔ 別の enum のメンバーは入らない   # expect: static VarTypeMismatch
+
+print(m.PLANE)                      # ⛔ メンバーはインスタンスからは引けない   # expect: static NoSuchMember
+
+print(Color.value)                  # ⛔ value は型の値からは引けない   # expect: static NoSuchMember
+
+print(m is enum_item_Color)         # ⛔ enum_item_Color は廃止した名前   # expect: static UnknownGuardType
+
+Color.BLUE = Color.PLANE            # ⛔ メンバーは値で、暗黙に const（クラスの const と同じ規則）   # expect: static AssignToConst
+
+Color.BLUE.value = 5                # ⛔ メンバーの中身も書き換えられない   # expect: static ModifyConst

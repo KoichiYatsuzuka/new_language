@@ -1,0 +1,12 @@
+# comprehension_types_error.ar — 内包表記の要素の型が宣言と違えば静的な誤り（known_bugs.md の #15）
+#
+# 内包表記の型は要素の式の型から決まるので、宣言と違えば静的に止まる（⚠ 以前は `list[Any]` で、宣言の側によっては
+# どの内包表記も誤りになり、どれも素通しにもなった）。
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   'names' is declared 'list[str]' but initialized with 'list[int]'
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/typing/comprehension_types_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let names: list[str] = [len(w) for w in ["a", "bb"]]   # expect: static VarTypeMismatch
+print(names)

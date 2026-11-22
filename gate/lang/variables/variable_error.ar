@@ -1,0 +1,17 @@
+# variable_error.tl — StaticTypeError: assigning to immutable variables
+#
+# Expected errors (all StaticTypeError, reported together before execution):
+#   - reassign to let variable
+#   - reassign to const variable
+#   - compound assignment on let variable
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/variable_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let x = 10
+x = 20          # StaticTypeError: immutable 'x'   # expect: static AssignToImmutable
+
+const LIMIT = 100
+LIMIT = 200     # StaticTypeError: immutable 'LIMIT'   # expect: static AssignToImmutable
+
+let count = 0
+count += 1      # StaticTypeError: immutable 'count'   # expect: static AssignToImmutable

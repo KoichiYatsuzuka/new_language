@@ -1,0 +1,34 @@
+# let_binding_writes_error.ar — `let` 束縛のフィールドは書き換えられない（タスク 7.2）
+#
+# 正常系は let_binding_writes.ar
+#
+# ⚠ 以前は**実行時エラー**だった（検体 `M5`）。同じ「`let` への書き込み」なのに
+#   `xs.append(2)` と `xs[0] = 2` は静的に弾かれ、`c.n = 2` だけが漏れていた。
+#
+# ⚠ `freeze` した束縛も**同じ扱い**（タスク 9.2）。`freeze` は `mut` を `let` に
+#   降格するので、以降の書き込みは 3 経路とも静的エラーになる。
+#   9.2 より前は `freeze` が禁じるのは**再束縛だけ**で、`append` / 添字代入は通っていた。
+#
+# 期待されるエラー（4 件）:
+#   StaticTypeError  cannot assign to immutable variable 'c'
+#   StaticTypeError  cannot assign to immutable variable 'xs'        （再束縛）
+#   StaticTypeError  cannot call 'append' on 'xs' — it is immutable  （変更メソッド）
+#   StaticTypeError  cannot assign to immutable variable 'xs'        （添字代入）
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/typing/let_binding_writes_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+class C:
+    mut n: int
+
+let c = C(1)
+
+c.n = 2                             # ⛔ c は let 束縛   # expect: static AssignToImmutable
+
+mut xs: list[int] = [1]
+freeze xs                           # ここで mut → let に降格する
+
+xs = [9]                            # ⛔ 再束縛   # expect: static AssignToImmutable
+xs.append(2)                        # ⛔ 変更メソッド   # expect: static MutatingMethodOnImmutable
+xs[0] = 5                           # ⛔ 添字代入   # expect: static AssignToImmutable
+
+print(c.n)

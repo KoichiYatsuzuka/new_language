@@ -1,0 +1,19 @@
+# seq_spread_error.ar — 列リテラルの展開が**型検査で止まる**形。
+#
+# 期待されるエラー:
+#   StaticTypeError: `*` expects an iterable, not 'int'
+#
+# ⚠ 他の形:
+#   let c: list[int] = [*a, "s"]   要素型が合わない（a が list[int] のとき）
+#     -> 'c' is declared 'list[int]' but initialized with 'list[Union[int,str]]'
+#
+# ⚠ **型が判らないときは通す**（`Any` / `Unresolved`）。実行時に
+#   `TypeError: 'int' object is not iterable` になる。
+#
+# ⚠ **通る形**は `seq_spread.ar`。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/collections/seq_spread_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let n = 5
+mut c = [*n]   # expect: static SpreadArgNotIterable
+print(c)

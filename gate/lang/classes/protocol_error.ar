@@ -1,0 +1,22 @@
+# Protocol error example: conformance failures
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/classes/protocol_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+protocol Printable:
+    fn print_info(self) -> None:
+        ...
+
+class Dog:
+    let name: str
+
+    # ⚠⚠ `mut self` が要る。`self`（`mut` なし）だと**フィールドが初期化されない**
+    #    （実行時 `AttributeError: 'Dog' object has no attribute 'name'`）。
+    #    タスク 7.2 の静的検査が `cannot assign to immutable variable 'self'` で捕まえる。
+    fn __init__(mut self, n: str) -> None:
+        self.name = n
+
+    # Missing print_info method — does not conform to Printable
+
+# This should fail: Dog doesn't implement print_info
+let d = Dog("Rex")
+let p: Printable = d   # expect: static ProtocolConformanceFailed

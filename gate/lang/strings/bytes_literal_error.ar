@@ -1,0 +1,11 @@
+# bytes_literal_error.ar — バイト列のリテラルに ASCII でない字は書けない（Python と同じ・known_bugs.md の #18）
+#
+# 字はエスケープで書く（`b"caf\xc3\xa9"`）か、文字列を文字コードを書いて変換する（`"café".encode("utf-8")`）。
+#
+# 期待されるエラー（構文解析）:
+#   ParseError: invalid bytes literal: bytes can only contain ASCII literal characters (found 'é')
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/bytes_literal_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let name = b"café"   # expect: parse - "invalid bytes literal: bytes can only contain ASCII literal"
+print(name)

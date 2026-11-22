@@ -1,0 +1,27 @@
+# metafn_decorator_member_error.ar — 宣言されていない装飾子（設計書 §1.6 / §1.7）。
+#
+# 展開は**ファイル先頭から逐次**（§1.7）。⇒ 装飾子に使えるのは**自分より前に宣言された
+# メタ関数だけ**。前に無いものを書いたら、その場でエラーにする。
+#
+# ⚠⚠ **黙って素通りさせてはいけない。** クラス／トレイト／プロトコル本体の文は
+#   実行時に 1 文ずつ `exec` を通らない（フィールド・メソッドとして読み取られるだけ）ので、
+#   装飾子を残したまま通すと**何も起きずに完走する**——「装飾子を書いたのに何も起きない」
+#   という最悪の失敗形になる。
+#   ⇒ 展開器・型検査（`UnexpandedMemberDecorator`）・`exec_class_def` の三段で止めてある。
+#
+# ⚠ クラスメンバーへの正しい装飾は、メタ関数を**前に**宣言してから書く（成功例参照）。
+#
+# ⚠ 成功例は `metafn.ar`。
+#
+# 期待されるエラー:
+#   MetaError: decorator '!validated' is not a metafunction declared before this point
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/metafn_decorator_member_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: expand MetaError "MetaError: decorator '!validated' is not a metafunction decl"
+
+class Point:
+    mut x: int
+    !validated
+    mut y: int
+
+print("unreachable")

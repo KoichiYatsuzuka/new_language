@@ -1,0 +1,33 @@
+# int_float_widening_error.ar — 数値型の暗黙変換が**許されない**ことを示す
+#
+# 対になる正常系: int_float_widening.ar（明示変換 `float(n)` を使う形）
+#
+# ⚠⚠ **タスク 4.2 で暗黙の `int` → `float` 拡大そのものを廃止した**（決定 D-5）。
+#   以前は「拡大は許すが**この方向は許さない**」という例題だったが、今は
+#   **どちらの方向も許さない**（明示変換 `float(n)` / `int(x)` を使う）。
+#   ⚠ 下の 2 つのエラーは廃止の前後で**変わらず**出る（`float` → `int` は縮小・
+#     要素型へは伝播しない）ので、例題の検体としてはそのまま有効。
+#
+# Section 1 — StaticTypeError: `float` → `int` は縮小なので許されない
+#   Expected error (StaticTypeError):
+#     argument 0 of 'takes_int' expects 'int' but got 'float'
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/typing/int_float_widening_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+fn takes_int(let n: int) -> int:
+    return n + 1
+
+print(takes_int(3.5))   # StaticTypeError: float を int 引数へ渡すことはできない   # expect: static CallArgTypeMismatch
+
+# Section 2 — StaticTypeError: 拡大は最上位のみ。要素型へは伝播しない
+#   Expected error (StaticTypeError):
+#     argument 0 of 'takes_floats' expects 'list[float]' but got 'list[int]'
+#
+#   実行時の昇格はスカラの `float` 注釈だけが対象で、`list` の要素は `int` のまま残る。
+#   ここで受理すると「静的には float のリストなのに中身は int」になる。
+
+fn takes_floats(let xs: list[float]) -> None:
+    print(xs)
+
+let ints = [1, 2, 3]
+takes_floats(ints)      # StaticTypeError: 要素型は拡大されない   # expect: static CallArgTypeMismatch

@@ -1,0 +1,5 @@
+# Error: multiple variadic parameters in one function definition
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/typing/variadic_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+fn bad_func(let ...: int, let ...: str) -> int:   # expect: parse - "ParseError: function `bad_func` has more than one variadic p"
+    return 0

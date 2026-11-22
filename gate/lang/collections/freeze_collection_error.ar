@@ -1,0 +1,8 @@
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/collections/freeze_collection_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+class Foo:
+    fn __freeze__(mut self) -> None:
+        pass
+
+mut f = Foo()
+f.__freeze__()   # StaticTypeError: __freeze__ cannot be called directly   # expect: static DirectFreezeCall

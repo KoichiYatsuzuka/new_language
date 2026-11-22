@@ -1,0 +1,17 @@
+# 変数の再宣言はエラー（同名変数が既にアクセス可能なスコープに存在する場合）
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/redeclare_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let a = 5
+print(a)
+let a = 6   # StaticTypeError / NameError: variable 'a' is already declared   # expect: static VariableRedeclaration
+print(a)
+
+# 外側スコープの変数と同名での再宣言もエラー
+let x = 1
+if True:
+    let x = 2   # エラー: 外側スコープの x と衝突   # expect: static VariableRedeclaration
+
+# _ は捨て変数として例外扱い（再宣言可能）
+let _ = 10
+let _ = 20   # OK

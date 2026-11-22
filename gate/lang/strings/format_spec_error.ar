@@ -1,0 +1,9 @@
+# format_spec_error.ar — `format(v, spec)` は `str` を返す（python_builtins_plan.md のタスク 3-4）
+#
+# 書式の誤り（`format(1, ".2")` など）は実行時の `ValueError`（format_spec.ar）。型は静的に決まる。
+# 期待: 静的型エラー（`int` と宣言した変数を `str` で初期化している）
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/format_spec_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let width: int = format(42, ">5")   # expect: static VarTypeMismatch
+print(width)

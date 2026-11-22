@@ -1,0 +1,19 @@
+# metafn_code_nested_error.ar — `code:` の中に `code:` は書けない（設計書 §1.2）。
+#
+# `code:` の中身は**パースされないトークンの並び**。入れ子を許すと、内側の `code:` は
+# 評価されないただのテキストとして外側に埋まり、書いた人の意図と無関係なコードが置かれる。
+#
+# ⚠ 複数の断片を組み立てたいときは、別々の `code:` を作って `+` で連結する
+#   （成功例 `metafn.ar` の「関数を包む装飾子」）。
+#
+# 期待されるエラー:
+#   ParseError: `code:` blocks cannot be nested (the inner block would be emitted as plain
+#               text, not evaluated)
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/metafn_code_nested_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+exprconst fn nested() -> Code:
+    let outer = code:
+        let inner = code:   # expect: parse - "`code:` blocks cannot be nested (the inner block would be em"
+            print("inner")
+    return outer

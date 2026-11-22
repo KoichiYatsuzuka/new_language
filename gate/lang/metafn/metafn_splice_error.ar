@@ -1,0 +1,19 @@
+# metafn_splice_error.ar — スプライス `<! !>` は `code:` の中でしか書けない（タスク 1-2 / 設計書 §1.4）。
+#
+# `<! 式 !>` は「展開時に評価した値を、その位置のトークン列へ変換して差し込む」記法。
+# ⇒ 差し込む先（`code:` ブロック）が無い場所に書いても意味を持たない。
+#
+# ⚠ `unexpected token: `<!`` だけを出すと「どこでなら書けるのか」が分からないので、
+#   置ける場所を名指しするエラーにしてある。
+#
+# ⚠ 成功例は `metafn.ar` の「スプライス <! !>」（`code:` の中のスプライス）。
+#
+# 期待されるエラー:
+#   ParseError: `<!` can only appear inside a `code:` block
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/metafn_splice_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+let name = "x"
+let bad = <! name !>   # expect: parse - "`<!` can only appear inside a `code:` block"
+
+print("unreachable")

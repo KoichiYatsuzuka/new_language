@@ -1,0 +1,9 @@
+# percent_format_args_error.ar — `%` の書式の引数が余れば `TypeError`（known_bugs.md の #13）
+#
+# 期待されるエラー（TypeError・実行時）:
+#   not all arguments converted during string formatting
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/percent_format_args_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: runtime TypeError "not all arguments converted during string formatting"
+
+print("%d items" % (3, 4))

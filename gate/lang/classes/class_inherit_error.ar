@@ -1,0 +1,20 @@
+# class_inherit_error.ar — ネイティブ `.ar` では **class の継承は今も不許可**であることの固定。
+#
+# ⚠ Python のクラス（`import[py]`・CPython で実行する）は継承できるが、Arrow のクラスの基底は**トレイトのみ**
+#   （`examples/classes/class_trait.ar` を参照）。ここでその境界を固定する。
+#
+# 期待されるエラー（ParseError・パース時）:
+#   class `Sub` cannot inherit from `Base` (only traits are allowed as bases)
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/classes/class_inherit_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+class Base:
+    fn hello(self) -> str:
+        return "base"
+
+class Sub(Base):   # expect: parse - "ParseError: class `Sub` cannot inherit from `Base` (only tra"
+    fn own(self) -> str:
+        return "sub"
+
+mut s = Sub()
+print(s.hello())

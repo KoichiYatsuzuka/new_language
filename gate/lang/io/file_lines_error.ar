@@ -1,0 +1,17 @@
+# file_lines_error.ar — 閉じたファイルを読む（python_builtins_plan.md のタスク 5-4）
+#
+# Python の形（`open(p)`）で開いたファイルは CPython と同じ文言で止まる。
+# 期待: ValueError: I/O operation on closed file.
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/basics/file_lines_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: runtime ValueError "I/O operation on closed file."
+
+let fname = "_tmp_file_lines_error.txt"
+let w = open(fname, "w")
+w.write("x\n")
+w.close()
+
+let f = open(fname)
+f.close()
+for line in f:
+    print(line)
