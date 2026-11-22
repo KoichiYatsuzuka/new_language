@@ -1,0 +1,4 @@
+# tuple_unpack_missing_qualifier_error.ar — 誤りの種類 `TupleUnpackMissingQualifier` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# 組の分解の 2 つ目以降に let / mut が無い。
+
+let a, b = (1, 2)   # expect: static TupleUnpackMissingQualifier

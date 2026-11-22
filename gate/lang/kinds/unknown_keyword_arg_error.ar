@@ -1,0 +1,10 @@
+# unknown_keyword_arg_error.ar — 誤りの種類 `UnknownKeywordArg` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# 関数の値の型に無い名前の引数を渡す。
+
+fn make() -> function{let value:int}->int:
+    fn inner(let value: int) -> int:
+        return value
+    return inner
+
+let f = make()
+let r = f(param = 1)   # expect: static UnknownKeywordArg

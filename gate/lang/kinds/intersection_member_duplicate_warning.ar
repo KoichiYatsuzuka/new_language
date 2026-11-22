@@ -1,0 +1,17 @@
+# intersection_member_duplicate_warning.ar — 誤りの種類 `IntersectionMemberDuplicate` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# 交差型の 2 つの trait が同じ形のメソッドを持つ（警告・変数の注釈で検査する）。
+
+trait Speaks:
+    fn sound(self) -> str:
+        ...
+
+trait Barks:
+    fn sound(self) -> str:
+        ...
+
+class Dog(Speaks, Barks):
+    mut n: int
+    fn sound(self) -> str:
+        return "woof"
+
+let x: Intersection[Speaks, Barks] = Dog(1)   # expect: warning IntersectionMemberDuplicate

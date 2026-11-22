@@ -1,0 +1,5 @@
+# missing_param_type_ann_error.ar — 誤りの種類 `MissingParamTypeAnn` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# 引数の型の注釈が無い。
+
+fn f(x) -> int:   # expect: static MissingParamTypeAnn
+    return 1

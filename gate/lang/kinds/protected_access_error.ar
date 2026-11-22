@@ -1,0 +1,13 @@
+# protected_access_error.ar — 誤りの種類 `ProtectedAccessError` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# trait の protected: のメソッドを、クラスの外からインスタンスで呼ぶ。
+
+trait Audited:
+    protected:
+    fn audit(self) -> int:
+        return 1
+
+class Account(Audited):
+    mut balance: int
+
+let a = Account(3)
+let n = a.audit()   # expect: static ProtectedAccessError

@@ -541,8 +541,19 @@
   - ⚠ 見つけた別件: デバッガで最上位の行を 1 行進めると、同じ行で 2 回止まる（`debug_demo` で 8 → 10 → 10 → 11 → 11）。
     golden は今の動きのまま記録した。
   - 結果: `gate/` の 746 件が合格。REPL 2 件・デバッガ 7 件が一致。
-- **5-2** 誤りの種類の網を足す: `TypeErrorKind` の全種類（約 85）に、期待を持つテストが `gate/` に 1 件以上あること。
+- **5-2（済・2026-11-23）** 誤りの種類の網を足す: `TypeErrorKind` の全種類（約 85）に、期待を持つテストが `gate/` に 1 件以上あること。
   届かない種類は理由つきの一覧に載せる（黙って外さない）。足りなければ exit 1（`type_obligations` と同じ形の網）。
+  - `scripts/gate_kinds.ps1`: 種類の一覧は `src/type_check/errors.rs` の `name()`（3-1 で作った網羅の match）から読み、
+    `gate/` の `# expect: static|warning <種類>` と照らす。足りない種類は `MISSING`、届かない一覧に載っているのに
+    期待がある・もう無い種類が載っているものは `STALE`、存在しない種類を期待に書いたものは `UNKNOWN`。どれかがあれば exit 1。
+  - 初めは 91 種類（`TypeErrorKind` 85・`TypeWarningKind` 6）のうち 20 種類に期待が無かった。16 種類は
+    `gate/lang/kinds/` に 1 件 1 ファイルで足した（単体テスト `src/frontend_tests/` の入力と、作る場所の条件から書いた）。
+  - 届かない 4 種類（理由はスクリプトの中の一覧）:
+    - `ProtocolInheritance` / `ProtocolSkippedCompile`: 宣言と表示だけがあり、作る場所が src に無い。
+    - `CodeEscapesMetafunction`: 型検査より前に展開が `MetaError` で止める（書いて確かめた）。
+    - `UnexpandedMemberDecorator`: 展開が漏れたときだけの守り。
+  - 結果: `GATE-KINDS: 91 kinds, 87 covered, 4 unreachable, 0 missing`。正の対照: 範囲を `gate/lang/kinds` に狭めると
+    71 種類が `MISSING` で exit 1、存在しない種類の期待は `UNKNOWN` で exit 1。
 - **5-3** `scan_examples` / `force_gate` の対象を `gate/` にし、期待との照合（3-4）を加えて、まとめて走らせる入口
   （`scripts/gates_every_time.ps1`）を作る。`test_build_gate` → 実行 1 回 → 判定。1 つでも落ちたら exit 1。
   `examples/` は「毎回」の対象に入れない（D-16）。

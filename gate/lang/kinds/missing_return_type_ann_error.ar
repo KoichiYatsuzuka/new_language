@@ -1,0 +1,5 @@
+# missing_return_type_ann_error.ar — 誤りの種類 `MissingReturnTypeAnn` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# 戻り値の型の注釈が無い。
+
+fn f(let x: int):   # expect: static MissingReturnTypeAnn
+    pass

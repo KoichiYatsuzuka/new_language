@@ -1,0 +1,9 @@
+# invalid_decorator_error.ar — 誤りの種類 `InvalidDecorator` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# 関数を返さない装飾子。
+
+fn bad_dec(let f: function) -> int:
+    return 0
+
+@bad_dec   # expect: static InvalidDecorator
+fn my_func(let a: int) -> int:
+    return a

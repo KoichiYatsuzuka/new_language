@@ -1,0 +1,8 @@
+# block_return_in_loop_expr_error.ar — 誤りの種類 `BlockReturnInLoopExpr` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# for / while の式（loop_yield で値を集める）の中では block_return を書けない。
+
+let xs = for i in range(3) -> list[int]:
+    loop_yield i
+    if i == 1:
+        block_return [9]   # expect: static BlockReturnInLoopExpr
+print(xs)

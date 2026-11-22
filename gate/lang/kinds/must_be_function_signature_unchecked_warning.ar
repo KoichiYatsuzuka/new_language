@@ -1,0 +1,8 @@
+# must_be_function_signature_unchecked_warning.ar — 誤りの種類 `MustBeFunctionSignatureUnchecked` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# 関数の型への mustbe は、関数であることしか実行時に確かめない（警告）。
+
+fn g(let a: int) -> int:
+    return a
+
+let h: Any = g
+let k = h mustbe function{let a: int}->int   # expect: warning MustBeFunctionSignatureUnchecked

@@ -1,0 +1,10 @@
+# no_matching_overload_error.ar — 誤りの種類 `NoMatchingOverload` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# どの多重定義にも合わない呼び出し。
+
+fn f(let a: int) -> None:
+    pass
+
+fn f(let a: int, let b: int) -> None:
+    pass
+
+f(1, 2, 3)   # expect: static NoMatchingOverload

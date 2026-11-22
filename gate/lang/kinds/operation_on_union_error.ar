@@ -1,0 +1,5 @@
+# operation_on_union_error.ar — 誤りの種類 `OperationOnUnion` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# Union の値に、型を絞らずに演算する。
+
+fn f(let x: Union[int, str]) -> None:
+    let y = x + 1   # expect: static OperationOnUnion

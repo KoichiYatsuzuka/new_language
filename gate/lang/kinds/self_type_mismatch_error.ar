@@ -1,0 +1,12 @@
+# self_type_mismatch_error.ar — 誤りの種類 `SelfTypeMismatch` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# Self の引数に、new_type で作った別の型を渡す。
+
+class Foo:
+    mut value: int
+    fn bar(self, let other: Self) -> None:
+        pass
+
+new_type FooAlias: Foo
+let a = Foo(1)
+let b = FooAlias(2)
+a.bar(b)   # expect: static SelfTypeMismatch

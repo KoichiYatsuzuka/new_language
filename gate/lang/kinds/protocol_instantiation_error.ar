@@ -1,0 +1,8 @@
+# protocol_instantiation_error.ar — 誤りの種類 `ProtocolInstantiation` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# protocol は作れない。
+
+protocol Shape:
+    fn area(self) -> float:
+        ...
+
+let s = Shape()   # expect: static ProtocolInstantiation

@@ -1,0 +1,4 @@
+# tuple_unpack_arity_mismatch_error.ar — 誤りの種類 `TupleUnpackArityMismatch` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# 組の分解の数が合わない。
+
+let a, let b = (1, 2, 3)   # expect: static TupleUnpackArityMismatch

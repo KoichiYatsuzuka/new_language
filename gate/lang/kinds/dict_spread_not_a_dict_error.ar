@@ -1,0 +1,5 @@
+# dict_spread_not_a_dict_error.ar — 誤りの種類 `DictSpreadNotADict` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# 辞書の表示の ** に辞書でないものを置く。
+
+let xs = [1, 2]
+let d = {"a": 1, **xs}   # expect: static DictSpreadNotADict

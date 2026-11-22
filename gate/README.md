@@ -15,6 +15,7 @@
 | `lib/` | 確かめ用のモジュール（`check.ar`）。テストではない（ランナーは実行しない） |
 | `check/` | `lib/check.ar` そのものの確かめ（合わない値・期待した例外が出ない・別の例外が出る、で確かめ落ちになること） |
 | `lang/<主題>/` | 言語の中核（`examples/` の `basics` / `collections` / `classes` / `typing` / `exceptions` に当たる範囲） |
+| `lang/kinds/` | `examples/` に無かった静的な誤りと警告の種類を 1 件ずつ出す禁止の形（`scripts/gate_kinds.ps1` が、全部の種類に期待を持つテストがあるかを数える・5-2） |
 | `async/` | `async` / イベントループ / シグナル |
 | `modules/` | import とモジュール（パッケージ・相対 import・再エクスポート）。`ffi/` と同じく、テストは直下だけで、下のディレクトリ（`namespace_modules/` など）は補助（名前は import のパスと型の名前に出るので `examples/` と同じにした）。`.arc` を使うテストは `ffi/` の `native_*` など（補助を共有するため） |
 | `ffi/` | 外部言語（C / C++ / C# / JS / Python / Rust）とネイティブの経路（`.arc`）。テストは `ffi/` の**直下だけ**に置き、名前の頭で言語を分ける（`cpp_` / `cs_` / `js_` / `py_` / `rs_` / `native_` …）。下のディレクトリ（`test_modules/` / `py_libs/` / `rs_crates/` / `cs_*/` …）は共有の補助で、ランナーは実行しない（`examples/interop/` と同じ名前で写したので import を書き換えていない・4-4）。例外: 名前が `_tests` で終わるディレクトリの下のテストは実行する（`py_subdir_tests/`: サブディレクトリから祖先の `ar_config.json` が見えること） |

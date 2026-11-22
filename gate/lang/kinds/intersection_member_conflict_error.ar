@@ -1,0 +1,14 @@
+# intersection_member_conflict_error.ar — 誤りの種類 `IntersectionMemberConflict` を出す形（gate_speed_plan.md 5-2: 全部の種類に期待を持つテストを置く）。
+# 交差型の 2 つの trait が同じ名前のメンバーを、片方はフィールド・片方はメソッドとして持つ（変数の注釈で検査する）。
+
+trait HasA:
+    fn v(self) -> int:
+        return 1
+
+trait HasB:
+    mut v: int
+
+class Both(HasA, HasB):
+    mut w: int
+
+let x: Intersection[HasA, HasB] = Both(1, 2)   # expect: static IntersectionMemberConflict
