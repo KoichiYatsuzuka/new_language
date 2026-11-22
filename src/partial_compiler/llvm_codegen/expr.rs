@@ -400,26 +400,16 @@ impl<'a> GenCtx<'a> {
                 let loop_blk = self.fresh_blk();
                 let (iv, it) = self.gen_expr(iter);
                 let ih = self.to_handle(&iv, it);
-                let iter_h = self.call_cb(CB_ITER_FROM, &[format!("i64 {ih}")]);
-                let iter_al = format!("%_iter{}", self.reg);
-                self.reg += 1;
-                self.alloca_buf.push_str(&format!("  {iter_al} = alloca i64, align 8\n"));
-                self.ec(&format!("store i64 {iter_h}, ptr {iter_al}"));
-                self.iter_scopes.push(iter_al.clone());
+                // 要素の並びか 1 つずつ（文の `for` と同じ・7-20）
+                let fl = self.emit_for_begin(&ih);
+                let iter_al = fl.iter_al.clone();
                 // 名前の場所は `alloca_var` が決める（同じ名前の 2 つ目の宣言・1-10）
                 let tgt_al = self.alloca_var(target, Ty::Handle);
                 let fuse = self.new_loop_fuse_slot();
                 let pre_pos = self.loop_pre_pos();
                 self.br(&loop_blk);
                 self.start_block(&loop_blk);
-                let next = self.emit_iter_next_at(&iter_al, &fuse);
-                self.ec(&format!("store i64 {next}, ptr {tgt_al}"));
-                self.note_handle_store(&tgt_al);
-                let done = self.fresh_reg();
-                self.ec(&format!("{done} = icmp eq i64 {next}, -1"));
-                let body_blk = self.fresh_blk();
-                self.br_cond(&done, &exit_blk, &body_blk);
-                self.start_block(&body_blk);
+                self.emit_for_next(&fl, &fuse, &tgt_al, &exit_blk);
                 self.block_stack.push(BlockCtx {
                     result_al: result_al.clone(), exit_label: exit_blk.clone(), list_al: list_al.clone(),
                     iter_depth: self.iter_scopes.len(),

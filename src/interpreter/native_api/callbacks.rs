@@ -843,13 +843,25 @@ extern "C" fn ar_get_global(name_ptr: *const u8, name_len: i32) -> i64 {
 /// イテラブルなオブジェクトハンドルからイテレータハンドルを生成する。
 /// イテレータハンドルは `-(idx+2)` の負値でエンコードされる。
 extern "C" fn ar_iter_from(obj_h: i64) -> i64 {
-    // ① 実体化してよい型（VM の `make_for_iterator` も実体化する型）は今までどおり要素を写す。
-    let (has_err, obj, interp_ptr) = with_state(|s| {
+    let (has_err, obj) = with_state(|s| {
         let st = s.borrow();
-        (st.error.is_some(), st.clone_value(obj_h), st.interp_ptr)
+        (st.error.is_some(), st.clone_value(obj_h))
     });
     if has_err { return TL_NONE; }
-    let items: Option<Vec<Value>> = match &obj {
+    let entry = match snapshot_items(&obj) {
+        Some(items) => NativeIter::Items(items, 0),
+        None => match protocol_iter(obj, "iter_from") {
+            Some(g) => NativeIter::Gen(g),
+            None => return TL_NONE,
+        },
+    };
+    push_iter(entry)
+}
+
+/// ① 実体化してよい型（VM の `make_for_iterator` も実体化する型）の要素の写し。ほかの型は `None`
+/// （[`protocol_iter`] で 1 つずつ取る）。反復の途中のリストの変更は反復に効かない（VM と同じ）。
+fn snapshot_items(obj: &Value) -> Option<Vec<Value>> {
+    match obj {
         Value::List(l) => Some(l.borrow().clone()),
         Value::FrozenList { state, layout } => {
             let fst = state.borrow();
@@ -859,39 +871,102 @@ extern "C" fn ar_iter_from(obj_h: i64) -> i64 {
         Value::Str(s) => Some(s.chars().map(|c| Value::str(c.to_string())).collect()),
         Value::Dict(d) => Some(d.borrow().all_keys()),
         _ => None,
-    };
-    let entry = match items {
-        Some(items) => NativeIter::Items(items, 0),
-        // ② それ以外は VM と同じ反復プロトコル（`make_for_iterator` → `gen_next`・1-3）。
-        //    ⚠ インタープリタへ呼び戻すので、`STATE` の借用を握ったまま呼ばない（`__iter__` がネイティブを呼ぶ）。
-        None => {
-            if interp_ptr.is_null() {
-                with_state(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for iter_from".to_string()));
-                return TL_NONE;
-            }
-            let interp = unsafe { &mut *interp_ptr };
-            match interp.make_for_iterator(obj) {
-                Ok(Value::Generator(g)) => NativeIter::Gen(g),
-                Ok(other) => {
-                    let got = interp.type_name(&other);
-                    with_state(|s| s.borrow_mut().error = Some(format!(
-                        "TypeError: iterator protocol returned '{got}', not a generator"
-                    )));
-                    return TL_NONE;
-                }
-                Err(e) => {
-                    with_state(|s| s.borrow_mut().error = Some(e));
-                    return TL_NONE;
-                }
-            }
+    }
+}
+
+/// ② 写さない型は VM と同じ反復プロトコル（`make_for_iterator` → `gen_next`・1-3）。失敗したらエラーを積んで `None`。
+/// ⚠ インタープリタへ呼び戻すので、`STATE` の借用を握ったまま呼ばない（`__iter__` がネイティブを呼ぶ）。
+fn protocol_iter(obj: Value, what: &str) -> Option<std::rc::Rc<RefCell<crate::interpreter::GeneratorState>>> {
+    let interp_ptr = with_state(|s| s.borrow().interp_ptr);
+    if interp_ptr.is_null() {
+        with_state(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set for {what}")));
+        return None;
+    }
+    let interp = unsafe { &mut *interp_ptr };
+    match interp.make_for_iterator(obj) {
+        Ok(Value::Generator(g)) => Some(g),
+        Ok(other) => {
+            let got = interp.type_name(&other);
+            with_state(|s| s.borrow_mut().error = Some(format!(
+                "TypeError: iterator protocol returned '{got}', not a generator"
+            )));
+            None
         }
-    };
+        Err(e) => {
+            with_state(|s| s.borrow_mut().error = Some(e));
+            None
+        }
+    }
+}
+
+/// イテレータの表へ足し、ハンドル `-(idx+2)` を返す。
+fn push_iter(entry: NativeIter) -> i64 {
     with_state(|s| {
         let mut st = s.borrow_mut();
         let idx = st.iter_table.len();
         st.iter_table.push(entry);
         -((idx as i64) + 2)
     })
+}
+
+/// [`ar_iter_begin`] がアリーナを伸ばすとき、要素の分に足す欄の数（ループの本体が 1 周に積む一時値の分）。
+const RUN_SLACK: usize = 1024;
+
+/// field 87（copy_alloc_speed_plan.md 7-20）: `for` の入口。[`ar_iter_from`] と同じくイテレータのハンドルを返し、写す型なら
+/// 要素を**全部アリーナへ積んで**、そのハンドルの並びの番地を `out[0]`・個数を `out[1]` へ書く。生成コードは周ごとに並びを
+/// 読むだけで、要素を取るコールバックを呼ばない。写さない型は `out[1] = -1`（field 84 で 1 つずつ）。
+/// 失敗したら `TL_NONE`（エラーは積んである）と 0 個の並び（生成コードのループは 1 周もしない）。
+/// - 要素は `iter_from` の写しと同じ値（リストの要素の参照を 1 つずつ足す）で、ハンドルは `push_value` と同じ（`None`・
+///   真偽値・小さい整数は決まったハンドル）。⚠ 積んだ欄はループの保存点より下にある（生成コードは保存点をこの呼び出しの
+///   後に取る）ので、周ごとの巻き戻しでは消えない。消えるのはループの外の巻き戻し（呼ぶ側の生成コード・呼び出しの出口）
+/// - 並びは表の `NativeIter::Run` が持ち、`iter_drop` まで書き換えない（表が伸びても並びの番地は動かない）
+/// - ⚠ 以前（7-15）は入口で要素を `Vec` へ写し、周ごとに `iter_next_at` が写しから取り出して積んでいた（1 周に 1 回の
+///   コールバック・k1 の約 2 割）
+extern "C" fn ar_iter_begin(obj_h: i64, out: *mut i64) -> i64 {
+    // SAFETY: 生成コードは 2 個の `i64` の置き場を渡す
+    let out = unsafe { std::slice::from_raw_parts_mut(out, 2) };
+    out[0] = 0;
+    out[1] = 0;
+    let (has_err, obj) = with_state(|s| {
+        let st = s.borrow();
+        (st.error.is_some(), st.clone_value(obj_h))
+    });
+    if has_err { return TL_NONE; }
+    let run = |n: usize, items: &mut dyn Iterator<Item = Value>, out: &mut [i64]| {
+        with_state(|s| {
+            let mut st = s.borrow_mut();
+            // アリーナは 1 回だけ、ちょうど要る大きさ（と本体の一時値の分）に伸ばす。⚠ 1 つずつ積むと倍々に伸び、伸ばす途中の
+            // 確保と余りの分だけ最大の量が増えた（10 万要素の k5 で、写しの `Vec` だけだった以前より 約 6 MB）
+            if st.arena.capacity() - st.arena.len() < n + RUN_SLACK {
+                st.arena.reserve_exact(n + RUN_SLACK);
+            }
+            let mut hs: Vec<i64> = Vec::with_capacity(n);
+            hs.extend(items.map(|v| st.push_value(v)));
+            // 並びの番地は `Vec` を表へ移しても変わらない（中身の確保は動かない）
+            out[0] = hs.as_ptr() as i64;
+            out[1] = hs.len() as i64;
+            let idx = st.iter_table.len();
+            st.iter_table.push(NativeIter::Run(hs));
+            -((idx as i64) + 2)
+        })
+    };
+    match &obj {
+        // リストは写しの `Vec` を作らずに要素の参照を足して積む（ほかの型は `iter_from` と同じ写しから）
+        Value::List(l) => {
+            let l = l.borrow();
+            run(l.len(), &mut l.iter().cloned(), out)
+        }
+        _ => match snapshot_items(&obj) {
+            Some(items) => run(items.len(), &mut items.into_iter(), out),
+            None => match protocol_iter(obj, "iter_begin") {
+                Some(g) => {
+                    out[1] = -1;
+                    push_iter(NativeIter::Gen(g))
+                }
+                None => TL_NONE,
+            },
+        },
+    }
 }
 
 /// `for` のループを抜けたときにイテレータを捨てる（field 71・11-1・D-12）。表を `iter_h` の位置まで縮めるので、
@@ -951,6 +1026,11 @@ fn iter_next_impl(iter_h: i64, rewind: Option<usize>) -> i64 {
                 None => Next::Stop,
             },
             Some(NativeIter::Gen(g)) => Next::Gen(g.clone()),
+            // 並び（`ar_iter_begin`）は生成コードが番地から読む。ここで進めると生成コードの添字とずれるので止める
+            Some(NativeIter::Run(_)) => {
+                st.error = Some(format!("NativeError: iter handle {iter_h} is a handle run (iter_begin); read it directly"));
+                return (Step::Done(TL_STOP_ITER), ip);
+            }
             None => Next::Bad,
         };
         let step = match next {
@@ -2724,6 +2804,7 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     iter_next_at: ar_iter_next_at,
     num_field_ptr: ar_num_field_ptr,
     attr_blocks: ar_attr_blocks,
+    iter_begin: ar_iter_begin,
 };
 
 /// field 86（copy_alloc_speed_plan.md 7-18）: 同じ親の `n` 個のフィールドが持つインスタンスの先頭の塊の番地を、親を 1 回だけ
@@ -3081,6 +3162,79 @@ mod tests {
         ar_iter_drop(it2);
         ar_iter_drop(it);
         assert!(take_error().is_none());
+    }
+
+    /// field 87（copy_alloc_speed_plan.md 7-20）: 写す型は要素を全部アリーナへ積み、ハンドルの並び（番地と個数）を返す。
+    /// 並びのハンドルは `push_value` と同じ（`None`・真偽値・小さい整数は決まったハンドル、ほかは順に新しい欄）で、要素は
+    /// 入口のときのもの（後でリストを変えても並びの値は変わらない）。並びを field 84 で進めるのはエラー。写さない型（集合）は
+    /// 個数 -1 で、field 84 が 1 つずつ取る。先に積まれた誤りがあれば `TL_NONE` と 0 個の並び。
+    #[test]
+    fn iter_begin_pushes_every_element_and_returns_the_handle_run() {
+        let inner = std::rc::Rc::new(RefCell::new(vec![Value::Int(1)]));
+        let items = std::rc::Rc::new(RefCell::new(vec![
+            Value::None,
+            Value::Bool(true),
+            Value::Int(7),
+            Value::Int(1_000_000),
+            Value::str("s"),
+            Value::List(inner.clone()),
+        ]));
+        let lh = push_handle(Value::List(items.clone()));
+        let len = || with_state(|s| s.borrow().arena.len());
+        let before = len() as i64;
+        let mut out = [7i64, 7];
+        let it = ar_iter_begin(lh, out.as_mut_ptr());
+        assert!(it <= -2, "an iterator handle: {it}");
+        assert_eq!(out[1], 6);
+        // SAFETY: 並びは `iter_drop` まで動かない
+        let run = unsafe { std::slice::from_raw_parts(out[0] as *const i64, 6) }.to_vec();
+        assert_eq!(&run[..3], &[TL_NONE, TL_TRUE, int_cache_handle(7)]);
+        assert_eq!(&run[3..], &[before, before + 1, before + 2], "the other elements take new slots in order");
+        assert_eq!(len() as i64, before + 3);
+        assert!(matches!(clone_value_at(run[3]), Value::Int(1_000_000)));
+        assert!(matches!(clone_value_at(run[4]), Value::Str(ref s) if &**s == "s"));
+        assert!(matches!(clone_value_at(run[5]), Value::List(ref l) if std::rc::Rc::ptr_eq(l, &inner)), "the element itself");
+        // 後でリストを変えても並びの値は変わらない（入口で要素の参照を足してある）
+        items.borrow_mut().clear();
+        assert!(matches!(clone_value_at(run[4]), Value::Str(ref s) if &**s == "s"));
+        // 並びを field 84 で進めない
+        assert_eq!(ar_iter_next_at(it, -1), TL_STOP_ITER);
+        assert!(take_error().is_some_and(|e| e.contains("handle run")));
+        ar_iter_drop(it);
+        assert!(take_error().is_none());
+        // 空のリスト: 0 個の並び
+        let eh = push_handle(Value::List(std::rc::Rc::new(RefCell::new(Vec::new()))));
+        let it = ar_iter_begin(eh, out.as_mut_ptr());
+        assert!(it <= -2 && out[1] == 0, "{it} {out:?}");
+        ar_iter_drop(it);
+        // 写さない型（集合）は 1 つずつ（反復プロトコルはインタープリタを呼ぶ）
+        let set = Value::Set(std::rc::Rc::new(RefCell::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)])));
+        let mut interp = crate::interpreter::Interpreter::new();
+        let outermost = super::enter_native_call(&mut interp as *mut _);
+        let sh = push_handle(set);
+        let it = ar_iter_begin(sh, out.as_mut_ptr());
+        assert!(it <= -2 && out[1] == -1, "{it} {out:?}");
+        let mut sum = 0;
+        loop {
+            let h = ar_iter_next_at(it, -1);
+            if h == TL_STOP_ITER {
+                break;
+            }
+            match clone_value_at(h) {
+                Value::Int(n) => sum += n,
+                other => panic!("not an int: {other:?}"),
+            }
+        }
+        assert_eq!(sum, 6);
+        ar_iter_drop(it);
+        assert!(take_error().is_none());
+        // 先に積まれた誤り: 何も作らない
+        set_native_error("ValueError: earlier".to_string());
+        out = [7, 7];
+        assert_eq!(ar_iter_begin(lh, out.as_mut_ptr()), TL_NONE);
+        assert_eq!(out, [0, 0]);
+        assert!(take_error().is_some_and(|e| e.contains("earlier")));
+        super::abort_native_call(outermost);
     }
 
     /// ガードが外れたときの戻り値の開け方（field 80・7-5）: 宣言の型の値だけを開け、違う型は黙って変換せずに TypeError。

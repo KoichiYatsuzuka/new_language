@@ -415,7 +415,7 @@ impl<'a> GenCtx<'a> {
 
                 } else {
                 // 5-2: `for i in range(..)`（組み込みの range・引数が全部 int・刻みが無いか 0 でないリテラル）は
-                // カウンタのループにする（`CB_ITER_FROM` / `CB_ITER_NEXT` もループ変数の箱詰めもしない）。
+                // カウンタのループにする（イテレータもループ変数の箱詰めも作らない）。
                 // 載らなければ、評価済みの引数で range を作って今までの道へ（引数は 1 回だけ評価する）。
                 let ih = match range_call_args(iter).filter(|_| self.plain_builtin(range_callee(iter), "range")) {
                     Some(rargs) => {
@@ -432,33 +432,19 @@ impl<'a> GenCtx<'a> {
                         self.to_handle(&iv, it)
                     }
                 };
-                // ── Original CB_ITER_FROM / CB_ITER_NEXT path ────────────────
-                let iter_h   = self.call_cb(CB_ITER_FROM, &[format!("i64 {ih}")]);
-                let iter_al  = format!("%_iter{}", self.reg);
-                self.reg += 1;
-                self.alloca_buf.push_str(&format!("  {iter_al} = alloca i64, align 8\n"));
-                self.ec(&format!("store i64 {iter_h}, ptr {iter_al}"));
-                self.iter_scopes.push(iter_al.clone());
-
+                // ── 要素の並び（`CB_ITER_BEGIN`）か 1 つずつ（`CB_ITER_NEXT_AT`）の道（7-20） ────────
+                let fl = self.emit_for_begin(&ih);
                 // 名前の場所は `alloca_var` が決める（同じ名前の 2 つ目の `for`・1-10）
                 let tgt_al = self.alloca_var(target, Ty::Handle);
-
                 let fuse = self.new_loop_fuse_slot();
                 let pre_pos = self.loop_pre_pos();
                 self.br(&loop_blk);
                 self.start_block(&loop_blk);
-                let next = self.emit_iter_next_at(&iter_al, &fuse);
-                self.ec(&format!("store i64 {next}, ptr {tgt_al}"));
-                self.note_handle_store(&tgt_al);
-                let is_done = self.fresh_reg();
-                self.ec(&format!("{is_done} = icmp eq i64 {next}, -1"));
-                let body_blk2 = self.fresh_blk();
-                self.br_cond(&is_done, &exit_blk, &body_blk2);
-                self.start_block(&body_blk2);
+                self.emit_for_next(&fl, &fuse, &tgt_al, &exit_blk);
                 self.loop_fuse_slot = Some(fuse);
                 self.gen_loop_body(body, &loop_blk, &exit_blk, pre_pos, |_| {});
                 self.start_block(&exit_blk);
-                self.drop_iter_scope(&iter_al);
+                self.drop_iter_scope(&fl.iter_al);
                 } // end else (original path)
             }
 
@@ -640,6 +626,93 @@ impl<'a> GenCtx<'a> {
         let save = self.fresh_reg();
         self.ec(&format!("{save} = load i64, ptr {slot}"));
         self.call_cb(CB_ITER_NEXT_AT, &[format!("i64 {it}"), format!("i64 {save}")])
+    }
+
+    /// `for x in <式>` の入口（copy_alloc_speed_plan.md 7-20）: 反復対象のハンドル `ih` から `CB_ITER_BEGIN` でイテレータを
+    /// 作り、写す型（リストなど）なら要素のハンドルの並び（番地と個数）を受け取る。イテレータは `iter_scopes` に積む
+    /// （出口で `drop_iter_scope`）。⚠ ループの保存点（`gen_loop_body` が `loop_pre_pos` に差し込む）はこの後に取るので、
+    /// 並びの要素の欄は周ごとの巻き戻しで消えない。
+    /// 並びの番地と個数は、コールバックへ渡した置き場から、渡さない置き場へ写す（LLVM がループの中で読み直さずに済む）。
+    pub(super) fn emit_for_begin(&mut self, ih: &str) -> ForLoop {
+        let n = self.reg;
+        self.reg += 1;
+        let out = format!("%_runout{n}");
+        let fl = ForLoop {
+            iter_al: format!("%_iter{n}"),
+            rptr_al: format!("%_rptr{n}"),
+            rlen_al: format!("%_rlen{n}"),
+            ridx_al: format!("%_ridx{n}"),
+        };
+        self.ea(&format!("{out} = alloca [2 x i64], align 8"));
+        self.ea(&format!("{} = alloca i64, align 8", fl.iter_al));
+        self.ea(&format!("{} = alloca ptr, align 8", fl.rptr_al));
+        self.ea(&format!("{} = alloca i64, align 8", fl.rlen_al));
+        self.ea(&format!("{} = alloca i64, align 8", fl.ridx_al));
+        let iter_h = self.call_cb(CB_ITER_BEGIN, &[format!("i64 {ih}"), format!("ptr {out}")]);
+        self.ec(&format!("store i64 {iter_h}, ptr {}", fl.iter_al));
+        let p = self.fresh_reg();
+        self.ec(&format!("{p} = load ptr, ptr {out}"));
+        self.ec(&format!("store ptr {p}, ptr {}", fl.rptr_al));
+        let lp = self.fresh_reg();
+        let len = self.fresh_reg();
+        self.ec(&format!("{lp} = getelementptr inbounds [2 x i64], ptr {out}, i32 0, i32 1"));
+        self.ec(&format!("{len} = load i64, ptr {lp}"));
+        self.ec(&format!("store i64 {len}, ptr {}", fl.rlen_al));
+        self.ec(&format!("store i64 0, ptr {}", fl.ridx_al));
+        self.iter_scopes.push(fl.iter_al.clone());
+        fl
+    }
+
+    /// `for` の見出し（7-20）: 次の要素のハンドルを `tgt_al` へ書き、本体の最初のブロックで終わる（終わりなら `exit` へ）。
+    /// - 並び（個数 ≥ 0）: 置き場 `fuse` の保存点が 0 以上なら巻き戻し（`CB_ARENA_COMPACT(0, ..)`・7-15 の `iter_next_at`
+    ///   と同じ）、添字が個数に届いていなければ並びから読む。**本体が値を積まないループは 1 周にコールバックを 1 つも呼ばない**
+    /// - 1 つずつ（個数 -1・ジェネレータ・`__iter__` など）: 今までどおり `CB_ITER_NEXT_AT`
+    ///
+    /// ⚠ 並びの道は周ごとに積まれた誤りを見ない（`for i in range(..)` のカウンタのループ・`while` と同じ）。誤りの後の
+    ///   コールバックは何もせず、番地を取るコールバックは空を返すので、残りの周は何も書かずに回り切る。
+    pub(super) fn emit_for_next(&mut self, fl: &ForLoop, fuse: &str, tgt_al: &str, exit: &str) {
+        let (b_run, b_rewind, b_check, b_get, b_one, b_body) =
+            (self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        let n = self.fresh_reg();
+        self.ec(&format!("{n} = load i64, ptr {}", fl.rlen_al));
+        let is_run = self.fresh_reg();
+        self.ec(&format!("{is_run} = icmp sge i64 {n}, 0"));
+        self.br_cond(&is_run, &b_run, &b_one);
+
+        self.start_block(&b_run);
+        let save = self.fresh_reg();
+        self.ec(&format!("{save} = load i64, ptr {fuse}"));
+        let rewind = self.fresh_reg();
+        self.ec(&format!("{rewind} = icmp sge i64 {save}, 0"));
+        self.br_cond(&rewind, &b_rewind, &b_check);
+        self.start_block(&b_rewind);
+        self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {save}")]);
+        self.br(&b_check);
+        self.start_block(&b_check);
+        let i = self.fresh_reg();
+        self.ec(&format!("{i} = load i64, ptr {}", fl.ridx_al));
+        let done = self.fresh_reg();
+        self.ec(&format!("{done} = icmp sge i64 {i}, {n}"));
+        self.br_cond(&done, exit, &b_get);
+        self.start_block(&b_get);
+        let (p, ep, h, i1) = (self.fresh_reg(), self.fresh_reg(), self.fresh_reg(), self.fresh_reg());
+        self.ec(&format!("{p} = load ptr, ptr {}", fl.rptr_al));
+        self.ec(&format!("{ep} = getelementptr inbounds i64, ptr {p}, i64 {i}"));
+        self.ec(&format!("{h} = load i64, ptr {ep}"));
+        self.ec(&format!("{i1} = add i64 {i}, 1"));
+        self.ec(&format!("store i64 {i1}, ptr {}", fl.ridx_al));
+        self.ec(&format!("store i64 {h}, ptr {tgt_al}"));
+        self.br(&b_body);
+
+        self.start_block(&b_one);
+        let next = self.emit_iter_next_at(&fl.iter_al, fuse);
+        self.ec(&format!("store i64 {next}, ptr {tgt_al}"));
+        let stop = self.fresh_reg();
+        self.ec(&format!("{stop} = icmp eq i64 {next}, -1"));
+        self.br_cond(&stop, exit, &b_body);
+
+        self.start_block(&b_body);
+        self.note_handle_store(tgt_al);
     }
 
     /// ループに入る直前（見出しへの `br` を出す前）の `code_buf` の位置。ループの前が到達しないなら `None`（9-1）。
@@ -1190,4 +1263,13 @@ struct CheckedBlock<'e> {
     attr: Option<String>,
     class: String,
     mask: u64,
+}
+
+/// `for` のループの置き場（[`GenCtx::emit_for_begin`]・copy_alloc_speed_plan.md 7-20）: イテレータのハンドル、要素のハンドルの
+/// 並びの番地と個数（1 つずつ取る反復対象なら個数 -1）、次に読む添字。
+pub(super) struct ForLoop {
+    pub(super) iter_al: String,
+    rptr_al: String,
+    rlen_al: String,
+    ridx_al: String,
 }

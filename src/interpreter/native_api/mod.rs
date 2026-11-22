@@ -140,6 +140,10 @@ pub(crate) enum NativeIter {
     /// 実体化した要素と次の位置（`list` / `tuple` / `str` / `dict` のキー / `fixed_list`）。要素は反復のための写しで、
     /// 取り出した要素（位置より前）は `None` に置き換わっている（`iter_next_impl` が複製せずに取り出す・7-15）。
     Items(Vec<Value>, usize),
+    /// 入口で全部積んだ要素のハンドルの並び（`ar_iter_begin`・copy_alloc_speed_plan.md 7-20）。生成コードが並びの番地から
+    /// 周ごとに読むので、`iter_next` では進めない（呼ばれたらエラー）。並びは捨てるまで書き換えない（番地が動かない）。
+    /// Rust からは読まない（並びを生かしておくために持つだけ）。
+    Run(#[allow(dead_code)] Vec<i64>),
     /// インタープリタの反復プロトコル: `make_for_iterator` が作ったジェネレータを `gen_next` で進める
     /// （VM の `GetIter` / `ForIter` と同じ。`set`・`bytes`・`enumerate` / `zip`・ジェネレータ・`__iter__` を持つ
     /// インスタンスなど・native_object_access_plan.md 1-3）。⚠ 以前はこれらが「not iterable in native context」だった。
@@ -848,6 +852,13 @@ pub struct ArCallbacks {
     /// (親, 件数 n, n 件の表 [`AttrBlockReq`], n 個の番地の置き場) を取り、親を 1 回だけたどって、1 件ごとに
     /// field 79（`attr_block`）と同じ番地（外れた件は空）を置き場へ書く。
     pub attr_blocks: extern "C" fn(i64, i32, *const AttrBlockReq, *mut *mut u64),
+
+    // ── `for` の入口で要素を全部積む（field 87・copy_alloc_speed_plan.md 7-20） ──
+    /// (反復対象, 2 個の `i64` の置き場 `out`) を取り、`iter_from` と同じくイテレータのハンドルを返す。反復対象が `iter_from`
+    /// の写す型（`list` / `tuple` / `str` / `dict` のキー / `fixed_list`）なら、要素を全部アリーナへ積み、そのハンドルの並びの
+    /// 番地を `out[0]`、個数を `out[1]` へ書く（並びはイテレータを捨てるまで動かない・生成コードが周ごとに読む）。ほかの型は
+    /// `out[1] = -1`（生成コードは field 84 で 1 つずつ取る）。失敗したら `TL_NONE` を返し、`out` は 0 個の並び。
+    pub iter_begin: extern "C" fn(i64, *mut i64) -> i64,
 }
 
 // SAFETY: 表の中身は関数の番地と、プロセスに 1 つの原子的な値の番地（読むだけ）だけ（7-7）。

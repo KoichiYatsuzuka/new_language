@@ -541,8 +541,21 @@ When nothing is kept, a `for` over an iterator merges the rewind into the next r
 `CB_ITER_NEXT_AT` (field 84) with a per-loop slot that is reset to -1 on entry and set to the save point only when the
 loop rewinds (`new_loop_fuse_slot` / `loop_fuse_slot`), so one callback per round instead of two. `break` skips the
 header, so the last round's values stay until the enclosing rewind (as before). The fetch moves the element out of the
-iterator's snapshot (`NativeIter::Items`) instead of cloning it; the snapshot itself (`ar_iter_from`) is kept because
-the VM also iterates over a copy taken when the loop starts.
+iterator's snapshot (`NativeIter::Items`) instead of cloning it.
+
+**Handle runs (copy_alloc_speed_plan.md 7-20).** A `for` (statement or expression) starts with `CB_ITER_BEGIN`
+(field 87, `emit_for_begin`) instead of `iter_from`. For the types that are copied when the loop starts (list / tuple /
+str / dict keys / fixed_list — the VM also iterates over that copy) it pushes **every element to the arena** at once
+(`push_value`, so `None` / bools / small ints get their fixed handles) and writes the address and count of the handle
+array (`NativeIter::Run`, alive until `iter_drop`) into a `[2 x i64]` scratch; the header (`emit_for_next`) then reads
+`run[i]` per round with no callback. Only when the slot holds a save point (body pushes, nothing kept) does the run path
+call `CB_ARENA_COMPACT(0, save)` first. Other iterables (set, generators, `__iter__`) return count -1 and keep the
+`CB_ITER_NEXT_AT` path. ⚠ The loop's save point is taken after `CB_ITER_BEGIN`, so the run's slots sit below it and
+survive every per-round rewind; they go with the enclosing rewind. ⚠ With no callback at the header, a remembered block
+of the loop variable is dropped only because the header's `store i64 %h, ptr %_al_x` matches `finish_block_cache`'s
+store pattern — keep that store in that exact form. ⚠ Like `range` loops and `while`, the run path does not look at a
+pending error per round: after an error the remaining rounds run, but every callback is a no-op and block fetches
+return null, so nothing is written.
 
 ### Compound Assignment of Numeric Fields (copy_alloc_speed_plan.md 7-16)
 
