@@ -1,0 +1,25 @@
+# cpp_struct_ptr.ar — import[cpp-lib] で書き込み用ポインタ引数（V3* / double*）へ可変値を渡す（正例）。
+# 流用元: examples/interop/cpp_struct_ptr.ar（写して持つ・README 1 節）。C のライブラリは cpp_struct_ptr_mods/。
+import[cpp-lib] .cpp_struct_ptr_mods.vec_math as vm
+from ...lib.check import check_eq
+
+# (1) mut ローカル変数を V3* へ渡すと C の書き込みが返る
+mut r = V3(0.0, 0.0, 0.0)
+let a = V3(1.0, 2.0, 3.0)
+let b = V3(4.0, 5.0, 6.0)
+vm.v3_add(r, a, b)
+check_eq((r.x, r.y, r.z), (5.0, 7.0, 9.0), "v3_add writes into a mut local")
+
+# (2) mut パラメータをそのまま渡す
+fn add_into(mut out: V3, x: V3, y: V3) -> None:
+    vm.v3_add(out, x, y)
+
+mut r2 = V3(0.0, 0.0, 0.0)
+add_into(r2, a, b)
+check_eq((r2.x, r2.y, r2.z), (5.0, 7.0, 9.0), "v3_add through a mut parameter")
+
+# (3) double* へ mut float を渡す
+let v = V3(3.0, 4.0, 0.0)
+mut n: float = 0.0
+vm.v3_norm(v, n)
+check_eq(n, 5.0, "v3_norm writes into a mut float")

@@ -1,0 +1,14 @@
+# int_loop.ar — 整数のループのベンチ（合否だけを見る・README 7 節）。経過時間は出さない。
+# 流用元: examples/bench/bench_arith.ar の int LL（acc + k）。1 秒以内に収まる回数にする。
+from ..lib.check import check_eq
+
+fn sum_to(let n: int) -> int:
+    mut acc = 0
+    mut k = 0
+    while k < n:
+        acc += k
+        k += 1
+    return acc
+
+let N = 2_000_000
+check_eq(sum_to(N), N * (N - 1) // 2, "sum of 0..N-1")

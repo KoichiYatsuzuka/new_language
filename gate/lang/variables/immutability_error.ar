@@ -1,0 +1,22 @@
+# immutability_error.ar — let / const / freeze の束縛に書き込む形は静的な誤り（主題ごとにまとめた禁止の形・README 3.3）。
+# 各々を別の関数に入れて、互いに影響しないようにする。
+
+fn rebind_let() -> None:
+    let a = 1
+    a = 2                                  # expect: static AssignToImmutable
+
+fn append_to_let() -> None:
+    let xs: list[int] = [1]
+    xs.append(2)                           # expect: static MutatingMethodOnImmutable
+
+fn assign_const() -> None:
+    const K = 3
+    K = 4                                  # expect: static AssignToConst
+
+fn write_after_freeze() -> None:
+    mut ys: list[int] = [1]
+    freeze ys
+    ys[0] = 5                              # expect: static AssignToImmutable
+
+fn wrong_annotation() -> None:
+    let s: int = "s"                       # expect: static VarTypeMismatch

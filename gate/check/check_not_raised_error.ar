@@ -1,0 +1,10 @@
+# check_not_raised_error.ar — 期待した例外が出なければ、try の外の確かめで GateCheckFailed になる（README の 2.1 の形）。
+from ..lib.check import check
+
+mut raised = False
+try:
+    let d: dict[str, int] = {"a": 1}
+    let v = d["a"]                     # 例外は出ない
+except KeyError as e:
+    raised = True
+check(raised, "d['a'] raises KeyError")   # expect: runtime GateCheckFailed "d['a'] raises KeyError"

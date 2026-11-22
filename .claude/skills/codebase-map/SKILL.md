@@ -115,7 +115,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (265 files, 133697 lines)
+src/  (265 files, 133821 lines)
   ar_config.rs (301)
   arc_format.rs (123)
   ast.rs (1731)
@@ -217,7 +217,7 @@ src/  (265 files, 133697 lines)
       string_methods.rs (688)
     cpp_bridge/
       codegen.rs (1031)
-      compiler.rs (811)
+      compiler.rs (822)
       mod.rs (30)
       types.rs (339)
     eval/
@@ -331,7 +331,7 @@ src/  (265 files, 133697 lines)
       stub_gen.rs (397)
       xml_docs.rs (115)
     imports/
-      ar_modules.rs (342)
+      ar_modules.rs (366)
       cpp.rs (402)
       cs_js_modules.rs (258)
       dispatch.rs (402)
@@ -349,7 +349,7 @@ src/  (265 files, 133697 lines)
       mod.rs (37)
   partial_compiler/
     mod.rs (19)
-    module_compiler.rs (423)
+    module_compiler.rs (509)
     stub_gen.rs (353)
     llvm_codegen/
       context.rs (1564)
@@ -359,7 +359,7 @@ src/  (265 files, 133697 lines)
       stmt.rs (1292)
     rs_loader/
       codegen.rs (758)
-      loader.rs (229)
+      loader.rs (232)
       mod.rs (44)
   rs_crate/
     mod.rs (216)
@@ -572,7 +572,7 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
 
 (repo root)
   ar_config.json (38)
-  CLAUDE.md (175)
+  CLAUDE.md (179)
   README.md (317)
 ```
 _Generated 2026-11-24 by generate-codebase-map.ps1_

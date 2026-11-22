@@ -1,0 +1,12 @@
+# check_wrong_exception_error.ar — 期待と違う例外は捕まえずに、その例外で止まる（README の 2.1 の形）。
+# ⚠ この IndexError は位置を持たずに報告される（gate_speed_plan.md 0.3）ので、期待はファイルの先頭に書く。
+# expect-file: runtime IndexError "list index 5 out of range"
+from ..lib.check import check
+
+mut raised = False
+try:
+    let xs: list[int] = [1]
+    let v = xs[5]                      # IndexError（KeyError ではない）
+except KeyError as e:
+    raised = True
+check(raised, "not reached")

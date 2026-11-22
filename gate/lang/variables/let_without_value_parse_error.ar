@@ -1,0 +1,2 @@
+# let_without_value_parse_error.ar — 構文の誤りは最初の 1 つで止まるので 1 件 1 ファイル（README 3.3）。
+let = 3                                    # expect: parse - "expected"

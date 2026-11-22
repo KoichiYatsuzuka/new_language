@@ -1,0 +1,4 @@
+# check_eq_mismatch_error.ar — 合わない値の check_eq は捕まえなければ GateCheckFailed で止まる（禁止の形）。
+from ..lib.check import check_eq
+
+check_eq(1, 2, "deliberate mismatch")   # expect: runtime GateCheckFailed "deliberate mismatch: expected 2, got 1"

@@ -1,0 +1,5 @@
+# division_by_zero_error.ar — 捕まえない実行時の誤りはそこで止まる（1 件 1 ファイル・README 3.3）。
+fn div(let a: int, let b: int) -> int:
+    return a // b                          # expect: runtime ZeroDivisionError
+
+print(div(1, 0))

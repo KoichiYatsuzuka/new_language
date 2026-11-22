@@ -1,0 +1,49 @@
+# check_self.ar — lib/check.ar の確かめ（正常系）。合う値では止まらず、合わない値では GateCheckFailed で止まること。
+from ..lib.check import check, check_eq, fail, GateCheckFailed
+
+# 合う値では止まらない（型ごとに 1 つずつ）
+check_eq(1 + 2, 3, "int")
+check_eq(0.5 + 0.25, 0.75, "float")
+check_eq("a" + "b", "ab", "str")
+check_eq([1, 2] + [3], [1, 2, 3], "list")
+check_eq({"k": 1}, {"k": 1}, "dict")
+check_eq((1, "x"), (1, "x"), "tuple")
+check_eq(None, None, "None")
+check(True, "check(True)")
+
+# 合わない値では GateCheckFailed で止まり、文面に説明・期待・実際の値が入る
+mut caught = ""
+try:
+    check_eq(1, 2, "mismatch")
+except GateCheckFailed as e:
+    caught = str(e)
+check_eq(caught, "mismatch: expected 2, got 1", "check_eq raises on a mismatch")
+
+caught = ""
+try:
+    check_eq("a", "b", "str mismatch")
+except GateCheckFailed as e:
+    caught = str(e)
+check_eq(caught, "str mismatch: expected 'b', got 'a'", "the message uses repr")
+
+caught = ""
+try:
+    check(False, "cond")
+except GateCheckFailed as e:
+    caught = str(e)
+check_eq(caught, "cond", "check(False) raises")
+
+caught = ""
+try:
+    fail("always")
+except GateCheckFailed as e:
+    caught = str(e)
+check_eq(caught, "always", "fail raises")
+
+# GateCheckFailed は Exception の下にある（except Exception で捕まる＝try の中に fail を置いてはいけない理由）
+mut is_exception = False
+try:
+    fail("x")
+except Exception as e:
+    is_exception = True
+check(is_exception, "GateCheckFailed is an Exception")

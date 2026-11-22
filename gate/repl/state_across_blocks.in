@@ -1,0 +1,18 @@
+# state_across_blocks.in — 対話 REPL: ブロックを跨いで束縛・関数が残ること、実行時の誤りのブロックの後も続けられること。
+# ⚠ REPL は静的な誤りを出さずに実行を続ける（src/repl.rs の run_block・gate_speed_plan.md 2-3）ので、静的な誤りは書かない。
+##REPL_EXEC##
+let a = 2
+mut xs: list[int] = [1]
+##REPL_EXEC##
+xs.append(a * 3)
+xs
+##REPL_EXEC##
+fn twice(let n: int) -> int:
+    return n * 2
+##REPL_EXEC##
+twice(len(xs))
+##REPL_EXEC##
+undefined_name
+##REPL_EXEC##
+a + 1
+##REPL_EXEC##

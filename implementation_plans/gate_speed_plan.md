@@ -278,10 +278,22 @@
     - ⚠ stderr をファイルに落としても色の符号（ANSI）が付き、`NO_COLOR` も効かない。3-1 の出力が要る理由の 1 つ。
 - **2-2（済・2026-11-22）** 規則を文書に書く: `regulations.md` に「新しい文法・新しい禁止には `gate/` のテスト（正常系と禁止の形）も
   書く」を足す（D-13）。CLAUDE.md に `gate/` と `examples/` の役割の違いを書く。
-- **2-3** 確かめ用のモジュールを作り、各主題で 1 本ずつ試しに書き（正常系・静的な誤りをまとめたファイル・構文の誤り・
-  捕まえない実行時の誤り・捕まえる実行時の誤り・確かめ用のモジュールそのものの確かめ・cpp-lib・ベンチ・REPL）、
-  2-1 の規則で足りるかを確かめる。照らす仕組み（3-4）はまだ無いので、
-  ここでは書けるか・読めるかだけを見る。
+- **2-3（済・2026-11-22）** 確かめ用のモジュールを作り、各主題で 1 本ずつ試しに書き（正常系・静的な誤りをまとめたファイル・
+  構文の誤り・捕まえない実行時の誤り・捕まえる実行時の誤り・確かめ用のモジュールそのものの確かめ・cpp-lib・ベンチ・REPL）、
+  2-1 の規則で足りるかを確かめる。照らす仕組み（3-4）はまだ無いので、ここでは書けるか・読めるかだけを見る。
+  - 書いたもの: `gate/check/`（`check_self` と、確かめ落ちになるべき 3 本）・`gate/lang/variables/immutability_error`
+    （静的な誤り 5 件をまとめたもの）・`let_without_value_parse_error`・`gate/lang/operators/division_by_zero_error`・
+    `gate/ffi/cpp/cpp_struct_ptr`（cpp-lib・中継 DLL を含む）・`gate/bench/int_loop`（0.1 秒）・
+    `gate/repl/state_across_blocks.in` / `.out`。どれも意図どおりの止まり方・終わり方をした。
+  - 分かったこと（3 節以降の前提）:
+    - **種類の名前は今の出力からは分からない**（`immutability_error` の `K = 4` が `AssignToConst` か `AssignToImmutable` か
+      は表の文面だけでは決まらない）。期待は 3-1 の後に 3-4 で確かめて直す。
+    - `try` の中で出た `IndexError` を捕まえずに止まると、位置が 1 つも出ない（`Traceback` の見出しだけ・0.3 の表）。
+      `check_wrong_exception_error` は `# expect-file:` で書いた。
+    - **REPL は静的な誤りを表示せずに実行を続ける**（`src/repl.rs` の `run_block` が型検査の誤りを捨てる。ブロックを
+      1 つずつ検査すると前のブロックの名前を知らないためと見ている）。`let b: int = "s"` が通り、`b` は `s` を返す。
+      本計画では直さない（`gate/repl/` には静的な誤りを書かない）。直すかは別に決める。
+    - cpp-lib の中継 DLL を初めて作るには、この環境の MSVC を指す一時的な `ar_config.json` が要った（README 4 節）。
 
 ### フェーズ 3: 診断の出力と共通ランナー
 
