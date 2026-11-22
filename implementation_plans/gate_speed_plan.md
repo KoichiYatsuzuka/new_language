@@ -487,6 +487,13 @@
   - ⚠ 期待の文面の断片に**絶対パス**が入っていた 2 件（`relative_import_error` / `ffi/unresolved_cpp_header_error`）を、
     パスの手前で切った。worktree や別の環境では合わなくなるため。照らす出力の期待にも絶対パスが無いことを確かめた。
   - 結果: `gate/` 全体の 715 件が `-Fresh` で 2 回とも合格した（6 並列で 23〜28 秒）。
+  - 置き場所に依らないことの確かめ: worktree（一時ディレクトリ）に取り出し、同じ exe で照らした。初めは 2 件落ちた:
+    - `lang/variables/variable.ar`: worktree は `core.autocrlf=true` で `.ar` を CRLF で取り出し、三重引用符の文字列の
+      中の CRLF が残って `'triple\r'` になった。⇒ `.gitattributes` で `gate/**/*.ar` を LF で取り出すようにした。
+      ⚠ 言語の側の別件: Arrow の字句解析は三重引用符の中の CRLF を残す（CPython は `\n` にそろえる）。
+    - `lang/builtins/built_in.ar`: 前の実行が残した一時ファイルの有無で出力の行が変わった。残り物を消す分岐では
+      何も出さず、作ったファイルを消すようにした。
+    - 直した後、worktree で 2 回（何も残っていない状態と、前の実行の後）とも 715 件が合格した。
 - **4-8** ベンチ。合否のゲートとして走らせる回数にする（今は 23 件で 82 秒。計測は `ab_bench` / `speed_modes` の担当）。
 - **4-9** 対話: REPL とデバッガの golden（`repl_session` / `debug_session` が読むもの）。
 
