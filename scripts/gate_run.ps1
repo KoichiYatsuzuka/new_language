@@ -67,7 +67,9 @@ function Start-GateProcess($Exe, $File, $WorkDir, $ExtraEnv, $Out, $Err, $Diag) 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $env:ComSpec
     # ⚠ cmd /c の引用符: 全体を "" で包み、中の各パスを " で包む（cmd の /s ではない既定の規則）
-    $psi.Arguments = '/d /c ""' + $Exe + '" "' + $File + '" >"' + $Out + '" 2>"' + $Err + '""'
+    # ⚠ 標準入力は NUL（EOF）。CreateNoWindow の子は隠れたコンソールから読むので、input() やデバッガの例題がそのまま止まった
+    #   （3-3 で examples/debugger/ の 6 件が時間切れになった。古いゲートは親の標準入力＝EOF を引き継いでいた）。
+    $psi.Arguments = '/d /c ""' + $Exe + '" "' + $File + '" <NUL >"' + $Out + '" 2>"' + $Err + '""'
     $psi.WorkingDirectory = $WorkDir
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true

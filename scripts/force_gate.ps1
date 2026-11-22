@@ -33,7 +33,13 @@
 # 使い方: ./scripts/force_gate.ps1 [-Timeout 45] [-Grace 25]
 #   -Timeout … 1 例題を待つ秒数（`flat_bench` が 24 秒かかるので既定 45）
 #   -Grace   … タイムアウト後に「窓を閉じ続ける」秒数（ダイアログを順に出す例題があるので既定 25）
-param([int]$Timeout = 45, [int]$Grace = 25, [switch]$SkipTestBuild)
+#   ./scripts/force_gate.ps1 -Root gate   # gate/ のテスト（禁止の形を含む）を対象にする
+#
+# ⚠ 実行は共通ランナー（gate_run.ps1）が行い、ここは保存した結果から判定するだけ（gate_speed_plan.md 3-3）。
+#   窓を閉じる猶予（-Grace）もランナーが行う（-GraceSec）。結果は target/gate_results/ に残り、同じ exe・同じファイルなら
+#   次は実行せずに読む（読んだことを表示する。-Fresh で実行し直す）。
+#   -Exclude … 対象から外すファイル（リポジトリ直下からの相対パスに対する正規表現。例: 窓を出す例題を外して測る）
+param([int]$Timeout = 45, [int]$Grace = 25, [switch]$SkipTestBuild, [string]$Root = '', [switch]$Fresh, [int]$Jobs = 1, [string]$Exclude = '')
 
 
 # ── 前段: `cargo test`（debug）がビルドできるか（`test_build_gate.ps1`）────────────
@@ -55,77 +61,27 @@ $repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジ�
 $exe = Join-Path $repo 'target\release\arrow.exe'
 if (-not (Test-Path $exe)) { throw "not built: $exe (run: cargo build --release)" }
 
-$files = Get-ChildItem -Path (Join-Path $repo 'examples') -Filter *.ar -Recurse |
-         Where-Object { $_.FullName -notmatch '\\archived\\' }
 
-$hits = @()
-$sampled = @()   # kill した＝その先の経路は未確認
-$closed = @()    # タイムアウト後に**自分で終了した**（窓を閉じる要求つき）＝終了処理まで確認済み
-$ran = 0
+. (Join-Path $PSScriptRoot 'gate_run.ps1')
+. (Join-Path $PSScriptRoot 'gate_judge.ps1')
 
-foreach ($f in $files) {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $exe
-    $psi.Arguments = "-src `"$($f.FullName)`""
-    $psi.WorkingDirectory = $f.DirectoryName
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-
-    $p = New-Object System.Diagnostics.Process
-    $p.StartInfo = $psi
-    [void]$p.Start()
-    $errTask = $p.StandardError.ReadToEndAsync()
-    $outTask = $p.StandardOutput.ReadToEndAsync()
-
-    $rel = $f.FullName.Substring($repo.Length + 1)
-    $timedOut = $false
-    if (-not $p.WaitForExit($Timeout * 1000)) {
-        # ⚠ **いきなり kill しない**（#29）。GUI 例題は「窓が閉じる」と正常終了するように
-        # 書かれている（DxLib は `ProcessMessage()` が非 0 を返す／pygame は QUIT イベント）。
-        # WM_CLOSE を送れば**終了処理のコードまで実行される**ので、kill より検査範囲が広い。
-        #
-        # ⚠ **1 回では足りない**。ダイアログを順に出す例題（`cs_form_app`）は、閉じるたびに
-        # 次の窓が出るので**閉じ続ける**必要がある。`MainWindowHandle` はキャッシュされるので
-        # 毎回 `Refresh()` してから送る。
-        $closedOk = $false
-        $deadline = (Get-Date).AddSeconds($Grace)
-        while (-not $closedOk -and (Get-Date) -lt $deadline) {
-            try {
-                $p.Refresh()
-                [void]$p.CloseMainWindow()
-            } catch {}
-            $closedOk = $p.WaitForExit(1000)
-        }
-        if ($closedOk) {
-            $closed += $rel
-        } else {
-            try { $p.Kill() } catch {}
-            $timedOut = $true
-            $sampled += $rel
-        }
-    }
-    # ⚠ **タイムアウトでも必ず stderr を読む**（#29）。kill でパイプが閉じるので待てば返る。
-    #    以前はここを読まずに `continue` していたため、force エラーが出ていても取り逃していた。
-    [void]$errTask.Wait(5000)
-    [void]$outTask.Wait(5000)
-    # ⚠ PS5.1 は `if` を式として書けない。先に既定値を入れてから上書きする。
-    $stderr = ''
-    if ($errTask.IsCompleted) { $stderr = $errTask.Result }
-    if (-not $timedOut) { $ran++ }   # 完走（窓を閉じて終わったものも含む）
-
-    foreach ($line in ($stderr -split "`n")) {
-        if ($line -match 'VmForceError: (.+)$') {
-            # ANSI 色コードを除いて読みやすくする
-            $msg = ($Matches[1] -replace "\x1b\[[0-9;]*m", '').Trim()
-            $hits += [pscustomobject]@{
-                File = $rel
-                What = $msg
-            }
-            break   # 最初の 1 件で止まるので 1 ファイル 1 件
-        }
-    }
+if ($Root) {
+    $rootDir = (Resolve-Path $Root).Path
+    $files = @(Get-GateTestFiles $rootDir)
+} else {
+    $rootDir = Join-Path $repo 'examples'
+    $files = @(Get-ChildItem -Path $rootDir -Filter *.ar -Recurse | Where-Object { $_.FullName -notmatch '\\archived\\' })
 }
+if ($Exclude) { $files = @($files | Where-Object { $_.FullName.Substring($repo.Length + 1) -notmatch $Exclude }) }
+
+# 作業ディレクトリは例題のディレクトリ（今までと同じ）
+$res = Invoke-GateRun -Exe $exe -Root $rootDir -Files @($files | ForEach-Object { $_.FullName }) -WorkDir file `
+    -TimeoutSec $Timeout -GraceSec $Grace -Jobs $Jobs -Fresh:$Fresh -TreeExclude '^(DxLib|archived)\\'
+$hits = @(Get-GateForceHits $res $repo)
+$closed = @($res | Where-Object { $_.Closed } | ForEach-Object { $_.File.Substring($repo.Length + 1) })    # タイムアウト後に**自分で終了した**＝終了処理まで確認済み
+$sampled = @($res | Where-Object { $_.TimedOut } | ForEach-Object { $_.File.Substring($repo.Length + 1) })  # kill した＝その先の経路は未確認
+$ran = @($res | Where-Object { -not $_.TimedOut }).Count   # 完走（窓を閉じて終わったものも含む）
+
 
 Write-Host ""
 Write-Host ("examples: {0} 完走（うち {1} 件はタイムアウト後に窓を閉じて終了） / {2} サンプル判定（kill）" -f $ran, $closed.Count, $sampled.Count)

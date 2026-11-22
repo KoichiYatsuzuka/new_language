@@ -6,7 +6,12 @@
 #   - 失敗した例題の stderr 末尾を 1 行に畳んで表示する
 #
 # 使い方: .\scripts\scan_examples.ps1
-param([string]$Exe = '', [int]$TimeoutSec = 45, [switch]$SkipTestBuild)
+#   ./scripts/scan_examples.ps1 -Root gate   # gate/ のテスト（禁止の形 `_error` を除く）を対象にする（作業ディレクトリはファイルのディレクトリ）
+#
+# ⚠ 実行は共通ランナー（gate_run.ps1）が行い、ここは保存した結果から判定するだけ（gate_speed_plan.md 3-3）。
+#   結果は target/gate_results/ に残り、同じ exe・同じファイルなら次は実行せずに読む（読んだことを表示する。-Fresh で実行し直す）。
+#   ⚠ examples/ を対象にするときの作業ディレクトリは**リポジトリ直下**のまま（3-3 で古い実装と同じ判定になることを確かめた）。
+param([string]$Exe = '', [int]$TimeoutSec = 45, [switch]$SkipTestBuild, [string]$Root = '', [switch]$Fresh, [int]$Jobs = 1)
 
 
 # ── 前段: `cargo test`（debug）がビルドできるか（`test_build_gate.ps1`）────────────
@@ -45,39 +50,25 @@ $skip = @(
 #    理由と現状は examples/archived/README.md ・ examples/practical_examples/README.md。
 $categoryDirs = @('basics','collections','classes','typing','exceptions','async','bench','apps','interop')
 
-$examples = $categoryDirs | ForEach-Object { Get-ChildItem "$repo\examples\$_\*.ar" -ErrorAction SilentlyContinue } | Where-Object {
-    $n = $_.BaseName
-    -not ($n -match '_error' -or $n -match '__errors' -or $skip -contains $n)
-} | Sort-Object Name
+. (Join-Path $PSScriptRoot 'gate_run.ps1')
+. (Join-Path $PSScriptRoot 'gate_judge.ps1')
 
-foreach ($f in $examples) {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $Exe
-    $psi.Arguments = '"' + $f.FullName + '"'
-    $psi.WorkingDirectory = $repo
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.CreateNoWindow = $true
-
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    # 出力バッファ充填でのデッドロックを避けるため非同期で読む
-    $outTask = $proc.StandardOutput.ReadToEndAsync()
-    $errTask = $proc.StandardError.ReadToEndAsync()
-
-    if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-        try { $proc.Kill() } catch {}
-        Write-Host "TIMEOUT`t$($f.Name)"
-        continue
-    }
-    $code = $proc.ExitCode
-    if ($code -ne 0) {
-        # ⚠ 子プロセス（js-proc の node など）が arrow.exe より長生きすると stderr のパイプが閉じず、`.Result` が
-        #   永久に返らない（2026-10-13 に compare_python_impl.ps1 で 7 時間止まった）。待つのは 10 秒まで。
-        $err = if ($errTask.Wait(10000)) { $errTask.Result } else { '(stderr is held open by a child process)' }
-        $line = ($err -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 3) -join ' | '
-        $line = ($line -replace '\x1b\[[0-9;]*m', '') -replace '\s+', ' '
-        Write-Host "FAIL`t$($f.Name)`t$($line.Trim())"
-    }
+if ($Root) {
+    # gate/ の正常系（禁止の形は gate_expect.ps1 が照らす・3-4）
+    $rootDir = (Resolve-Path $Root).Path
+    $examples = @(Get-GateTestFiles $rootDir | Where-Object { $_.BaseName -notmatch '_error$' } | Sort-Object Name)
+    $workDir = 'file'
+} else {
+    $rootDir = Join-Path $repo 'examples'
+    $examples = @($categoryDirs | ForEach-Object { Get-ChildItem "$repo\examples\$_\*.ar" -ErrorAction SilentlyContinue } | Where-Object {
+        $n = $_.BaseName
+        -not ($n -match '_error' -or $n -match '__errors' -or $skip -contains $n)
+    } | Sort-Object Name)
+    $workDir = $repo
 }
+
+# ⚠ examples/ の木の指紋から、実行のたびに書き換わる大きなもの・対象外のディレクトリを除く（速さのため）
+$res = Invoke-GateRun -Exe $Exe -Root $rootDir -Files @($examples | ForEach-Object { $_.FullName }) -WorkDir $workDir `
+    -TimeoutSec $TimeoutSec -Jobs $Jobs -Fresh:$Fresh -TreeExclude '^(DxLib|archived|practical_examples)\\'
+$null = Write-GateScanReport $res
 Write-Host "SCAN-DONE"
