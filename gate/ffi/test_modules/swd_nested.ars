@@ -1,0 +1,19 @@
+class Vec2->Vec2:
+    mut x: int
+    mut y: int
+    fn __init__(mut self, x: int, y: int) -> None:
+        ...
+
+
+class Particle->Particle:
+    mut pos: Vec2
+    mut vel: Vec2
+    fn __init__(mut self, pos: Vec2, vel: Vec2) -> None:
+        ...
+
+
+fn sum_ksq(particles: fixed_list[Particle]) -> int:
+    ...
+
+fn count_moving_right(particles: fixed_list[Particle]) -> int:
+    ...

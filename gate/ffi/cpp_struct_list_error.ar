@@ -1,0 +1,18 @@
+# cpp_struct_list_error.ar — ArPtrProtocol のフィールドを持つ構造体の配列は to_list() できない（負例・ffi_value_exchange_plan.md 4-6・7-14）
+#
+# `Ptr[構造体].to_list()` は、数値だけの構造体（4-6）と、ポインタのフィールドを持つ構造体（7-14・D-7 の規則で変換）の配列を
+# 展開する。ArPtrProtocol のフィールド（ここでは `Tagged` の `data`）を持つ構造体の配列は TypeError: 値返しでは 1 回だけ
+# 所有の Ptr にするが、配列の要素は to_list() を呼ぶたびに読まれるので、同じメモリに持ち主が何人もできる（解放が二重になる）。
+# 1 つずつの値返しは扱える（cpp_struct_expand.ar の fp_tagged）。
+# ⚠ 7-14 より前は、ポインタのフィールドを持つ構造体の配列（`Named`）もここで TypeError だった。
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_struct_expand.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/cpp_struct_list_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: runtime TypeError "Ptr[Tagged].to_list() cannot expand struct 'Tagged': its fie"
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+let tagged = fp.fp_tagged_list() mustbe Ptr[Tagged]
+print(tagged)
+print("unreachable:", tagged.to_list())

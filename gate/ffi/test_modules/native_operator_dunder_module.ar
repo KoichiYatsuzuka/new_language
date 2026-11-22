@@ -1,0 +1,50 @@
+# native_operator_dunder_module.ar — コンパイル済みコードの演算子もクラスの演算子のメソッドを呼ぶ
+# （native_object_access_plan.md 1-14・§0.3 ⑱）
+#
+# ⚠ 以前は生成コードの演算のコールバックが演算子のメソッドを見ず、`a + b` が TypeError、`a == b` が `__eq__` でなく
+#   フィールドの構造の比較（黙って違う値）、`-a` が TypeError になっていた。今は VM と同じ入口で評価する。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_operator_dunder_module.ar
+
+class V:
+    mut x: int
+    mut tag: int
+
+    fn __add__(let self, let o: V) -> V:
+        return V(self.x + o.x, 0)
+
+    # x だけで比べる（tag は見ない）: 構造の比較とは結果が違う
+    fn __eq__(let self, let o: V) -> bool:
+        return self.x == o.x
+
+    fn __lt__(let self, let o: V) -> bool:
+        return self.x < o.x
+
+    fn __neg__(let self) -> V:
+        return V(0 - self.x, self.tag)
+
+fn plus(let a: V, let b: V) -> int:
+    let c = a + b
+    return c.x
+
+fn equal(let a: V, let b: V) -> bool:
+    return a == b
+
+fn less(let a: V, let b: V) -> bool:
+    return a < b
+
+fn negate(let a: V) -> int:
+    let n = -a
+    return n.x
+
+fn contains(let a: V, let xs: list[V]) -> bool:
+    return a in xs
+
+fn accumulate(let n: int) -> int:
+    mut acc = V(0, 0)
+    mut i = 0
+    while i < n:
+        acc += V(i, 0)
+        i += 1
+    return acc.x

@@ -1,0 +1,24 @@
+class Vec3:
+    mut x: float
+    mut y: float
+    mut z: float
+    fn __init__(mut self, x: float, y: float, z: float) -> None:
+        ...
+
+
+class Reg:
+    mut v: int
+    fn __init__(mut self, v: int) -> None:
+        ...
+
+
+class Watched:
+    mut n: int
+    fn __freeze__(mut self) -> None:
+        ...
+    fn __init__(mut self, n: int) -> None:
+        ...
+
+
+fn run_checks() -> str:
+    ...

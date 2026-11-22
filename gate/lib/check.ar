@@ -39,8 +39,14 @@ fn emit(let parts: list[str], let sep: Union[str, None] = None, let end: Union[s
 # 貯めた出力を改行で分けた行の並びが `lines` と同じでなければ止める（最初に違う行の番号と両方の行を文面に入れる）。
 # 出力が改行で終わるときは、最後の要素が "" になる。照らした後は貯めた出力を空にする。
 fn check_output(let lines: list[str], let what: str) -> None:
-    let got = _emitted.split("\n")
+    let text = _emitted
     _emitted = ""
+    check_text(text, lines, what)
+
+# 文字列 `text` を改行で分けた行の並びが `lines` と同じでなければ止める（check_output と同じ文面）。
+# Python の側の出力（lib/pycap.ar の py_output()）を照らすのにも使う。
+fn check_text(let text: str, let lines: list[str], let what: str) -> None:
+    let got = text.split("\n")
     mut n = 0
     while n < len(got) and n < len(lines):
         if not (got[n] == lines[n]):

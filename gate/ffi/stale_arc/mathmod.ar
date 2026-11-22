@@ -1,0 +1,10 @@
+# mathmod.ar — stale_arc_check.ar の素材。
+# `--compile` して .arc を作ったあとにこのファイルを編集すると、
+# 以前は .arc が優先されて**編集が反映されないまま古い答えが返っていた**。
+# 現在は import 時に埋め込みソースと突き合わせ、食い違えばソース側を使う。
+
+fn scale(let x: float, let k: float) -> float:
+    return x * k
+
+fn offset(let x: float) -> float:
+    return x + 100.0

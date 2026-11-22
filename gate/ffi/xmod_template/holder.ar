@@ -1,0 +1,10 @@
+# holder.ar — テンプレートクラスを提供するモジュール（cross_module_template.ar が使う）。
+
+class Holder[T]:
+    mut v: T
+
+    fn __init__(mut self, let v: T) -> None:
+        self.v = v
+
+    fn get(self) -> T:
+        return self.v

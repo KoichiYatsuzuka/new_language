@@ -1,0 +1,53 @@
+# native_value_passing_module.ar — コンパイル済みコードのメソッド呼び出しの値渡し（native_object_access_plan.md 1-5）
+#
+# 規則（docs/spec.md の let/mut・D-8）: `mut` の値を `let` 仮引数・`let self` で受けるときだけ複製する。
+# ⚠ 以前のコンパイル済みコードは、メソッドの呼び出し（モジュール内の直接呼び出し・受け手のクラスが分からない
+#   呼び出しの両方）で複製せず、呼ばれた側が返した値が呼び出し元の後の変更と一緒に変わっていた。
+#
+# 各関数は、受け取った値を返させてから呼び出し元が元の値を書き換え、len() を返す:
+#   3 = 呼ばれた側は写しを受け取った（規則どおり）、4 = 元の値を共有した
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_value_passing_module.ar
+
+# ⚠ `n`（int のフィールド）が要る。今の codegen は int / float のフィールドを持つクラスしか受け手のクラスを
+#   引かない（計画 3-1）ので、無いと「直接呼び出し」の 2 件も名前による呼び出しになってしまう。
+class Box:
+    mut xs: list[int]
+    mut n: int
+
+    fn self_xs(let self) -> list[int]:
+        return self.xs
+
+    fn keep(let self, let ys: list[int]) -> list[int]:
+        return ys
+
+# 受け手のクラスが分かる（型注釈付きの仮引数）: モジュール内の直接呼び出し
+fn method_let_param(mut b: Box) -> int:
+    mut ys = [1, 2, 3]
+    let r = b.keep(ys)
+    ys.append(9)
+    return len(r)
+
+fn let_self_on_mut(mut b: Box) -> int:
+    let r = b.self_xs()
+    b.xs.append(9)
+    return len(r)
+
+# 受け手のクラスが分からない（list の要素）: 名前による呼び出し
+fn dynamic_let_param(mut boxes: list[Box]) -> int:
+    mut ys = [1, 2, 3]
+    mut total = 0
+    for b in boxes:
+        let r = b.keep(ys)
+        ys.append(9)
+        total += len(r)
+    return total
+
+fn dynamic_let_self(mut boxes: list[Box]) -> int:
+    mut total = 0
+    for b in boxes:
+        let r = b.self_xs()
+        b.xs.append(9)
+        total += len(r)
+    return total

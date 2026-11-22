@@ -45,10 +45,12 @@ function Get-GateForceHits($Results, [string]$RelBase) {
     return $hits
 }
 
-# gate/ の下の実行するテスト（lib/ と *_mods/ の下は除く・gate/README.md 1 節）。
+# gate/ の下の実行するテスト（lib/ と *_mods/ の下、ffi/ のサブディレクトリの下は除く・gate/README.md 1 節）。
+#   ⚠ ffi/ のテストは ffi/ の直下だけ。下のディレクトリ（test_modules/ など）は外部言語のテストが共有する補助
+#     （examples/interop/ と同じ名前で写した・4-4）。
 function Get-GateTestFiles([string]$Root) {
     return @(Get-ChildItem -LiteralPath $Root -Filter *.ar -Recurse | Where-Object {
-        $_.FullName -notmatch '\\lib\\' -and $_.FullName -notmatch '_mods\\'
+        $_.FullName -notmatch '\\lib\\' -and $_.FullName -notmatch '_mods\\' -and $_.FullName -notmatch '\\ffi\\[^\\]+\\'
     })
 }
 

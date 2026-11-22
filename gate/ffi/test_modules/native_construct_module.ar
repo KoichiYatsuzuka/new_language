@@ -1,0 +1,56 @@
+# native_construct_module.ar — コンパイル済みコードからモジュール内のクラスを生成する（native_object_access_plan.md 5-1）
+#
+# `Class(args)` は値として引かず、VM の `Call` と同じ `instantiate_evaled` を直接呼ぶ（新しいコールバック）。
+# ⚠ 以前はクラスを `CB_GET_GLOBAL` で値として引き、`CB_CALL_FN` の遅い道で呼んでいた。
+# 生成の意味が変わらないことを確かめる: 自動生成の `__init__`・明示の `__init__`・オーバーロードした `__init__`
+# （コンパイルしない・1-8）、`mut` の値を `let` 仮引数で受けたときの複製（D-8）。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_construct_module.ar
+
+class Pt:
+    mut x: int
+    mut y: int
+
+    fn sum(let self) -> int:
+        return self.x + self.y
+
+class Bag:
+    mut items: list[int]
+    mut label: str
+
+    fn __init__(mut self, let items: list[int], let label: str) -> None:
+        self.items = items
+        self.label = label + "!"
+
+class Box:
+    mut w: int
+    mut h: int
+
+    # 自動生成の __init__(w, h) と並ぶ（オーバーロード）
+    fn __init__(mut self, let side: int) -> None:
+        self.w = side
+        self.h = side
+
+    fn area(let self) -> int:
+        return self.w * self.h
+
+fn many_points(let n: int) -> int:
+    mut t = 0
+    for i in range(n):
+        let p = Pt(i, i * 2)
+        t += p.sum()
+    return t
+
+# mut のリストを let 仮引数で受けたら写し（後で元を書き換えても Bag の中身は変わらない）
+fn bag_copies() -> int:
+    mut xs = [1, 2]
+    let b = Bag(xs, "b")
+    xs.append(3)
+    return len(b.items) * 10 + len(xs)
+
+fn bag_label() -> str:
+    return Bag([7], "x").label
+
+fn boxes() -> int:
+    return Box(3).area() * 100 + Box(2, 5).area()

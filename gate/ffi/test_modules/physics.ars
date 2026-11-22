@@ -1,0 +1,25 @@
+class Body->Body:
+    let x: float
+    let y: float
+    let z: float
+    let vx: float
+    let vy: float
+    let vz: float
+    let mass: float
+    fn __init__(mut self, x: float, y: float, z: float, vx: float, vy: float, vz: float, mass: float) -> None:
+        ...
+    fn potential(self, other: Body) -> float:
+        ...
+    fn kinetic(self) -> float:
+        ...
+    fn vel_dot(self, other: Body) -> float:
+        ...
+    fn dist_sq(self, other: Body) -> float:
+        ...
+
+
+fn total_energy(a: Body, b: Body, n: int) -> float:
+    ...
+
+fn total_energy_inline(a: Body, b: Body, n: int) -> float:
+    ...

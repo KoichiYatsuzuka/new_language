@@ -1,0 +1,35 @@
+# native_str_literal_module.ar — コンパイル済みコードの文字列のリテラルは、箇所ごとに 1 回だけ作って使い回す
+# （native_object_access_plan.md 11-2・D-12）
+#
+# VM の定数表と同じく、評価のたびに作り直さない。文字列はスレッドごとの表に置くので、非同期タスクのワーカーは
+# 同じ箇所を自分の表に作る（`Rc<str>` はスレッドをまたげない）。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_str_literal_module.ar
+
+# ループの中のリテラル（連結・空文字列・非 ASCII）
+fn build(let n: int) -> str:
+    mut s = ""
+    mut i = 0
+    while i < n:
+        s = s + "ab" + "" + "→"
+        i += 1
+    return s
+
+# リテラルを値として持ち回る（リストに入れる・比較する・メソッドを呼ぶ）
+fn literal_values(let n: int) -> int:
+    mut xs: list[str] = []
+    mut i = 0
+    while i < n:
+        xs.append("日本")
+        i += 1
+    mut same = 0
+    for x in xs:
+        if x == "日本":
+            same += 1
+    let parts = "a,b,c".split(",")
+    return same * 10 + len(parts)
+
+fn run_checks() -> str:
+    let s = build(3)
+    return str(len(s)) + ":" + s + ":" + str(literal_values(4))

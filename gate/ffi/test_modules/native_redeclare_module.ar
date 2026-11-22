@@ -1,0 +1,44 @@
+# native_redeclare_module.ar — 同じ名前を 1 つの関数で 2 度宣言するコードのコンパイル（native_object_access_plan.md 1-10）
+#
+# ⚠ 以前の生成コードは宣言のたびに同じ名前の場所（`%_al_i`）を出していたので、2 つ目の `for i in ..` や兄弟の
+#   ブロックの `let x` で clang が `multiple definition of local value named '_al_i'` で落ち、**モジュール全体が**
+#   ネイティブにならなかった（`--compile` は「skipped」と出して DLL の無い .arc を書き、実行は黙って非コンパイル）。
+#   今は同じ型なら同じ場所を使い（VM も関数ごとに名前 1 つの slot）、型が違えば別の名前で取る。
+# ⚠ このモジュールが DLL 付きでコンパイルされることは check_native_ir_abi.ps1 が見る（DLL が無ければ失敗）。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_redeclare_module.ar
+
+fn two_loops(let n: int) -> int:
+    mut t = 0
+    for i in range(n):
+        t += i
+    for i in range(n):
+        t += i * 2
+    return t
+
+fn loops_over_different_lists(let xs: list[int], let names: list[str]) -> str:
+    mut out = ""
+    for v in xs:
+        out = out + str(v)
+    for v in names:
+        out = out + v
+    return out
+
+fn sibling_blocks(let flag: bool) -> int:
+    mut t = 0
+    if flag:
+        let x = 10
+        t += x
+    else:
+        let x = 20
+        t += x
+    return t
+
+fn sibling_blocks_other_types(let flag: bool) -> str:
+    if flag:
+        let y = 5
+        return str(y + 1)
+    else:
+        let y = "five"
+        return y + "!"

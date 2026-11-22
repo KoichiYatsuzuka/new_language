@@ -17,7 +17,7 @@
 | `lang/<主題>/` | 言語の中核（`examples/` の `basics` / `collections` / `classes` / `typing` / `exceptions` に当たる範囲） |
 | `async/` | `async` / イベントループ / シグナル |
 | `modules/` | import とモジュール（パッケージ・相対 import・再エクスポート・`.arc`） |
-| `ffi/<言語>/` | 外部言語（`c` / `cpp` / `cs` / `js` / `py` / `rs`） |
+| `ffi/` | 外部言語（C / C++ / C# / JS / Python / Rust）とネイティブの経路（`.arc`）。テストは `ffi/` の**直下だけ**に置き、名前の頭で言語を分ける（`cpp_` / `cs_` / `js_` / `py_` / `rs_` / `native_` …）。下のディレクトリ（`test_modules/` / `py_libs/` / `rs_crates/` / `cs_*/` …）は共有の補助で、ランナーは実行しない（`examples/interop/` と同じ名前で写したので import を書き換えていない・4-4） |
 | `bench/` | ベンチ（合否だけを見る。速さは `ab_bench` / `speed_modes` が測る） |
 | `repl/` | 対話 REPL の入力と期待する出力 |
 | `debugger/` | デバッガのコマンド列と期待する出力 |
@@ -98,6 +98,28 @@ check_output(["3", "a, b"], "what")           # 違えば GateCheckFailed: what:
     以上前に同期・D-9）ため、根拠にはしていない。
   - 写すときに直したもの: 例題のパス（作業ディレクトリが違う）・実行ごとに変わる値（アドレス・`id`）・写しの見出しで
     ずれた行番号。テストの冒頭に、もとの例題の名前を書いている。
+
+### 2.3 外部言語の側の出力
+
+`emit` で貯まるのは Arrow の側の出力だけ。外部言語の側（Python のモジュール・ネイティブのコード）の `print` は
+stdout へ直接出る。
+
+- **Python の側**は `lib/pycap.ar` で貯めて照らす。import した時点で CPython の `sys.stdout` を `io.StringIO` に
+  差し替えるので、テストの import の**いちばん初め**に置く（モジュールを読み込む時の `print` も貯まる）。
+
+  ```ar
+  from ..lib.pycap import py_output   # いちばん初めの import
+  from ..lib.check import emit, check_output, check_text
+  import[py] test_modules.py_del as m
+  ...
+  check_output([..], "py_del")                          # Arrow の側
+  check_text(py_output(), [..], "py_del (python side)") # Python の側
+  ```
+
+- ネイティブのコード（`.arc` / C）の `print` は照らせない。照らせない行の数をテストの末尾のコメントに書いている
+  （`ffi/native_builtins.ar` の 1 行）。
+- 写すとき（4-4〜4-6）は、`emit` の出力に印を付けて走らせ、印の付いた行（Arrow の側）と付かない行（外部言語の側）に
+  分けて期待にした。Arrow の側の行は、もとの例題の出力の中に同じ順で現れることを確かめた。
 
 ## 3. 禁止の形: 期待した誤りで止まること（D-14）
 

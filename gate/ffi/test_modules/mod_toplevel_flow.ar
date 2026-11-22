@@ -1,0 +1,22 @@
+# mod_toplevel_flow.ar — 最上位に制御フローを持つ import モジュール（#41 の計測用）
+#
+# ⚠ モジュール本体は `exec_module` が `push_scope` してから回すので `scopes.len() != 1` になり、
+#    **最上位 VM の対象外＝丸ごとツリーウォーク**で実行される（`AR_TW_STATS` で実測）。
+#    この形の例題が 1 本も無かったため「モジュール本体は定義文だけ」という判断が
+#    例題依存になっていた。ここを削るとその穴が再発する。
+
+mut total = 0
+
+for i in range(5):
+    if i == 2:
+        continue
+    total = total + i
+
+let doubled = for i in range(3) ->list[int]:
+    loop_yield i * 2
+
+fn get_total() -> int:
+    return total
+
+fn get_doubled() -> list[int]:
+    return doubled

@@ -1,0 +1,33 @@
+class Box:
+    mut xs: list[int]
+    fn __init__(mut self, xs: list[int]) -> None:
+        ...
+
+
+class Secret:
+private:
+    mut pin: int
+public:
+    fn get(self) -> int:
+        ...
+    fn __init__(mut self, pin: int) -> None:
+        ...
+
+
+class Tagged:
+    mut tag: int
+    fn __copy__(self) -> Tagged:
+        ...
+    fn __init__(mut self, tag: int) -> None:
+        ...
+
+
+class Pair:
+    mut a: Tagged
+    mut b: Tagged
+    fn __init__(mut self, a: Tagged, b: Tagged) -> None:
+        ...
+
+
+fn run_checks() -> str:
+    ...

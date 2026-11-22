@@ -1,0 +1,47 @@
+# native_attr_ic_module.ar — コンパイル済みコードの属性の読み出しを箇所ごとの IC で行う
+# （native_object_access_plan.md 2-2）
+#
+# 生成コードは属性を読む箇所ごとに IC のセルを持ち、命中判定・ミス経路とも VM の `GetAttr` と同じ関数を使う。
+# ここでは IC が**黙って違う値を読まない**ことを確かめる:
+#   - 1 つの箇所に 2 つのクラスが来る（class_id が変わるたびに外れて埋め直す）
+#   - `mut` の受け手を書き換えながら読む（IC は slot を覚えるだけで値は毎回読む）
+#   - 型の分かっている `int` / `float` のフィールド（型付きの読み出し）
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_attr_ic_module.ar
+
+trait HasX:
+    mut x: int
+
+class A(HasX):
+    mut pad: str
+
+class B(HasX):
+    mut a: int
+    mut b: int
+
+class Meter:
+    mut n: int
+    mut f: float
+
+# 同じ読み出し箇所（o.x）に A と B が交互に来る
+fn total_x(let items: list[HasX]) -> int:
+    mut t = 0
+    for o in items:
+        t += o.x
+    return t
+
+# mut の受け手は先読みしないので、毎回 IC 経由で今の値を読む
+fn bump_and_sum(mut m: Meter) -> int:
+    mut t = 0
+    for i in range(4):
+        m.n += i
+        t += m.n
+    return t
+
+fn scaled(mut m: Meter) -> float:
+    mut s = 0.0
+    for i in range(3):
+        m.f = m.f * 2.0
+        s += m.f
+    return s

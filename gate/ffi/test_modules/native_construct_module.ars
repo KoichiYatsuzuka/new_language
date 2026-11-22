@@ -1,0 +1,38 @@
+class Pt:
+    mut x: int
+    mut y: int
+    fn sum(self) -> int:
+        ...
+    fn __init__(mut self, x: int, y: int) -> None:
+        ...
+
+
+class Bag:
+    mut items: list[int]
+    mut label: str
+    fn __init__(mut self, items: list[int], label: str) -> None:
+        ...
+
+
+class Box:
+    mut w: int
+    mut h: int
+    fn __init__(mut self, side: int) -> None:
+        ...
+    fn area(self) -> int:
+        ...
+    fn __init__(mut self, w: int, h: int) -> None:
+        ...
+
+
+fn many_points(n: int) -> int:
+    ...
+
+fn bag_copies() -> int:
+    ...
+
+fn bag_label() -> str:
+    ...
+
+fn boxes() -> int:
+    ...

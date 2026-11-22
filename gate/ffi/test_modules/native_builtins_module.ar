@@ -1,0 +1,44 @@
+# native_builtins_module.ar — コンパイル済みコードから組み込み関数を呼ぶ（native_object_access_plan.md 1-3）
+#
+# ⚠ 以前のコンパイル済みコードは組み込み関数をグローバルの「値」として引いていたので、値として登録されて
+#   いない range / print / repr / enumerate / zip / getenv が実行時に NameError になっていた（コンパイルは通る）。
+#   今は VM の CallBuiltin と同じ入口（Interpreter::call_builtin_by_name_evaled）で呼ぶ。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_builtins_module.ar
+
+fn sum_range(let n: int) -> int:
+    mut s = 0
+    for x in range(n):
+        s += x
+    return s
+
+fn count_enumerate(let xs: list[int]) -> int:
+    mut c = 0
+    for p in enumerate(xs):
+        c += 1
+    return c
+
+fn count_zip(let a: list[int], let b: list[int]) -> int:
+    mut c = 0
+    for p in zip(a, b):
+        c += 1
+    return c
+
+# ⚠ 反復も VM と同じ入口（make_for_iterator → gen_next）を使う。以前は list / tuple / str / dict 以外
+#   （set・enumerate / zip の結果・ジェネレータ）が「not iterable in native context」だった。
+fn count_set(let s: set[int]) -> int:
+    mut c = 0
+    for x in s:
+        c += x
+    return c
+
+fn show(let x: int) -> str:
+    return repr(x)
+
+fn say(let msg: str) -> int:
+    print(msg)
+    return len(msg)
+
+fn env_or(let name: str, let fallback: str) -> str:
+    return getenv(name, fallback)

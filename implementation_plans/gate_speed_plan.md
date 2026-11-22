@@ -437,9 +437,39 @@
       （README 2.2 に注意を足した）。
   - 結果: `gate/async` の 12 件が `-Fresh` で 5 回とも合格した。例題のコメントと 1 回だけ出る行の突き合わせは
     14 行で合った（説明文 1 を含む）。
-- **4-4** 外部言語: C / C++（cpp-dll / cpp-lib）。GUI のライブラリ（DxLib）は使わない。
-- **4-5** 外部言語: C#（cs-dll / cs-proc）と JS（js-proc）。フォームは使わない。
-- **4-6** 外部言語: Python（`import[py]`）と Rust（`import[rs]`）。
+- **4-4（済・2026-11-23）** 外部言語: C / C++（cpp-dll / cpp-lib）。GUI のライブラリ（DxLib）は使わない。
+- **4-5（済・2026-11-23）** 外部言語: C#（cs-dll / cs-proc）と JS（js-proc）。フォームは使わない。
+- **4-6（済・2026-11-23）** 外部言語: Python（`import[py]`）と Rust（`import[rs]`）。
+  - 4-4〜4-6 はまとめて写した（補助を共有するため）。コミットは言語ごとに分けた。
+  - 置き場所: `examples/interop/` の補助（`test_modules/` / `py_libs/` / `rs_crates/` / `cs_*/` / `ar_config.json` …・
+    追跡されているものだけ）を**同じ名前で** `gate/ffi/` に写し、テストは `gate/ffi/` の直下に置いた。名前を変えると
+    import を書き換えることになり、Python のモジュールの名前や型の名前が変わって出力も変わるため。
+    ランナーは `ffi/` のサブディレクトリの下を実行しない（`Get-GateTestFiles`・README 1 節）。
+    もとの試しの `gate/ffi/cpp/cpp_struct_ptr.ar`（2-3）は、写した `ffi/cpp_struct_ptr.ar` に置き換えた。
+  - 対象: `examples/interop/` の 283 件のうち 277 件（C / C++ 36・C# / JS 25・Python / Rust 170・ネイティブの経路と
+    モジュール 46。最後の 46 件は 4-7 の範囲）。外したもの: 窓を出す 3 件（`cs_form_app` / `cs_proc_app` /
+    `math_render`）と補助（`cs_form_test` / `math_output`）、ベンチの `bench_ab_cdll`（4-8）、この環境で例題そのものが
+    落ちる 2 件（`event_external_handler` は `import[rs] libm` のクレートが無い・`importation` は exit 1）。
+  - 直したもの:
+    - 例題のパス（`examples/interop/_tmp_*` など）: テスト 6 件と Python の補助 1 件（`test_modules/py_os_error_args.py`）。
+    - 絶対パスの出力（`js_proc_async_test` の `path.resolve`）: 末尾だけを照らす。
+    - 警告の 2 件: `_warning.ar` にした。
+    - モジュール `native_method_call_module.ar` を写しの形に書き換えて `.arc` が陳腐化した（README 5 節の検査で
+      止まった）。もとのまま写し直した。
+    - **外部言語の側の `print`**（27 件）: Python のモジュールやネイティブのコードの `print` は stdout へ直接出て
+      `emit` に入らない。`emit` の出力に印を付けて走らせ、Arrow の側の行と外部言語の側の行に分けた。Python の側の
+      行は `gate/lib/pycap.ar`（CPython の `sys.stdout` を `io.StringIO` に差し替える）で貯めて `check_text` で照らす
+      （26 件・計 300 行余り。README 2.3）。ネイティブのコードの 1 行（`native_builtins`）だけは照らせない。
+      Python の側の 1 行を変えた写しで `GateCheckFailed` になることを見た。
+    - `py_int_foreign_error` は正常に終わる例題なので、正常系 `py_int_foreign_exception.ar` として写した。
+  - cpp-lib の中継 DLL は、写した場所でも印（`.syms`）が一致して作り直されなかった（MSVC は要らなかった）。
+  - 結果:
+    - `gate/` 全体の 693 件が `-Fresh` で 3 回とも合格した（6 並列で 22〜24 秒）。`force_gate -Root gate` で
+      `VmForceError` は 0 件。
+    - 禁止の形 84 件は、例題（作業ディレクトリはリポジトリ直下）と写し（`gate/ffi`）で、ファイルごとの誤りの段階と
+      種類の集まりが全部同じだった（4-2 の 193 件も同じ方法で全部同じ）。
+  - ⚠ 全体を走らせたとき `async/async_demo` が 1 回揺れた（`raise_immediately=True` で 3 つ目のタスクが終わるか
+    中断されるかはスレッドの順で決まる）。決まる部分だけを照らす形に直した（4-3 の 5 回では揺れなかった。負荷で出る）。
 - **4-7** import とモジュール（パッケージ・相対 import・再エクスポート・`.arc`）。`compare_import_paths` の 13 例題に
   当たる範囲を含める。
 - **4-8** ベンチ。合否のゲートとして走らせる回数にする（今は 23 件で 82 秒。計測は `ab_bench` / `speed_modes` の担当）。

@@ -1,0 +1,61 @@
+# cpp_struct_ptr.ar — 書き込み用ポインタ引数（`V3*` / `double*`）へ可変値を渡す正例
+#
+# C 側の非 const ポインタパラメータは Arrow の `mut` パラメータとして型検査される。
+# 可変な値の渡し方はどれも静的検査を通り、C 側の書き込みが呼び出し元へ反映される:
+#   (1) `mut` ローカル変数（レイアウト一致 → ゼロコピー write-back）
+#   (2) 呼び出し元関数の `mut` パラメータの参照引き渡し
+#   (3) プリミティブポインタ（`double*`）への `mut float` 変数
+#
+# 実行には examples/interop/test_modules/vec_math_x64.lib が必要:
+#   powershell -File examples/interop/test_modules/build_vec_math.ps1
+# （ar_config.json の cpp.msvc に vcvarsall.bat を設定しておくこと）
+#
+# 対になる負例: examples/interop/cpp_struct_ptr_error.ar（`let` を渡して静的エラー）
+# 参照: .claude/skills/c-abi-interop/SKILL.md（P5/P6）
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/cpp_struct_ptr.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[cpp-lib] test_modules.vec_math as vm
+
+# (1) mut ローカル変数を書き込みポインタ（V3* out）へ渡す
+mut r = V3(0.0, 0.0, 0.0)
+let a = V3(1.0, 2.0, 3.0)
+let b = V3(4.0, 5.0, 6.0)
+vm.v3_add(r, a, b)
+emit([str(r.x), str(r.y), str(r.z)])          # 5 7 9
+
+# (2) `mut` パラメータ out をそのまま C の書き込みポインタへ引き渡す
+#     （型解決済み V3 の可変参照 — P6 で偽の型エラーが修正されたケース）
+fn add_into(mut out: V3, x: V3, y: V3) -> None:
+    vm.v3_add(out, x, y)
+
+mut r2 = V3(0.0, 0.0, 0.0)
+add_into(r2, a, b)
+emit([str(r2.x), str(r2.y), str(r2.z)])       # 5 7 9
+
+# (3) プリミティブポインタ（double* out_len）へ mut float 変数を渡す
+let v = V3(3.0, 4.0, 0.0)
+mut n: float = 0.0
+vm.v3_norm(v, n)
+emit([str(n)])                      # 5.0
+
+# (4) 同じことを**関数本体の中で**やる（#15e の回帰）
+#     書き戻し先の登録が `Expr::Ident` の `res` を見ており、リゾルバが解決した
+#     ローカル変数（＝関数本体）では out_wb に積まれず、**書き戻しが黙って起きなかった**。
+#     最上位の (3) は通るのに関数内だけ 0.0 が返る、という位置依存のバグだった。
+fn norm_in_fn(let vv: V3) -> float:
+    mut m: float = 0.0
+    vm.v3_norm(vv, m)
+    return m
+
+emit([str(norm_in_fn(v))])          # 5.0（以前は 0.0）
+
+# ── 出力を照らす ──
+check_output([
+    "5.0 7.0 9.0",
+    "5.0 7.0 9.0",
+    "5.0",
+    "5.0",
+    "",
+], "cpp_struct_ptr")

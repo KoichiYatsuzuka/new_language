@@ -1,0 +1,47 @@
+# native_private_access_module.ar — コンパイル済みのメソッドが自分のクラスの private を読み書きする
+# （native_object_access_plan.md 1-9）
+#
+# ⚠ 以前はネイティブのメソッドを呼ぶとき `current_class` を設定しなかったので、実行時のアクセスの検査が
+#   `AccessError: 'secret' is private and cannot be accessed outside 'Vault'` を出した（非コンパイルでは動く）。
+#   自動生成の `__init__` が private のフィールドを設定するだけでも落ちた。
+#
+# 文脈が要る入口を 1 つずつ通す:
+#   - インタープリタからネイティブのメソッド（`v.rotate()`・自動生成の `__init__`）
+#   - 生成コードの直接呼び出しで、呼ぶ側の文脈が違うもの（自由関数から `v.rotate()`）
+#   - 名前による呼び出し（受け手のクラスが分からない `for v in vs: v.rotate()`）
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_private_access_module.ar
+
+class Vault:
+    private:
+    mut secret: int
+    mut level: int
+
+    public:
+    mut opened: int
+
+    fn rotate(mut self) -> int:
+        for i in range(3):
+            self.secret = self.secret * 2
+            self.opened = self.opened + 1
+            self.bump_level()
+        return self.secret
+
+    fn level_of(let self) -> int:
+        return self.level
+
+    private:
+    fn bump_level(mut self) -> None:
+        self.level = self.level + 1
+
+# 自由関数（文脈なし）から Vault のメソッドを直接呼ぶ
+fn rotate_vault(mut v: Vault) -> int:
+    return v.rotate()
+
+# 受け手のクラスが分からない呼び出し（名前で呼ぶ）
+fn rotate_all(mut vs: list[Vault]) -> int:
+    mut t = 0
+    for v in vs:
+        t += v.rotate()
+    return t

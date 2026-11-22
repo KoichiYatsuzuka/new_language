@@ -1,0 +1,15 @@
+class Point:
+    mut x: int
+    mut y: int
+    fn __init__(mut self, x: int, y: int) -> None:
+        ...
+
+
+class Label:
+    mut text: str
+    fn __init__(mut self, text: str) -> None:
+        ...
+
+
+fn build(n: int) -> int:
+    ...

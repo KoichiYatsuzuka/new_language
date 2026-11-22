@@ -1,0 +1,29 @@
+# native_class_same_name_module.ar — 本体と同じ名前のクラスを持つコンパイル済みモジュール
+# （native_object_access_plan.md 11-4）
+#
+# コンパイル済みのメソッドの表はクラスの番号で引く。本体の `Reg` の生成・メソッド呼び出しでこのモジュールの
+# メソッドが呼ばれてはいけない（型はモジュールごとに別・10-8）。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_class_same_name_module.ar
+
+class Reg:
+    mut v: int
+
+    fn __init__(mut self, let v: int) -> None:
+        self.v = v
+        LOG.append("module")
+
+    fn who(let self) -> str:
+        return "module:" + str(self.v)
+
+mut LOG: list[str] = []
+
+fn make(let v: int) -> Reg:
+    return Reg(v)
+
+fn who_of(let r: Reg) -> str:
+    return r.who()
+
+fn log_len() -> int:
+    return len(LOG)

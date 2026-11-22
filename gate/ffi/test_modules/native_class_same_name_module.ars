@@ -1,0 +1,16 @@
+class Reg:
+    mut v: int
+    fn __init__(mut self, v: int) -> None:
+        ...
+    fn who(self) -> str:
+        ...
+
+
+fn make(v: int) -> Reg:
+    ...
+
+fn who_of(r: Reg) -> str:
+    ...
+
+fn log_len() -> int:
+    ...

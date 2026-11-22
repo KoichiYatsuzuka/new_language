@@ -1,0 +1,29 @@
+# native_call_binding_module.ar — コンパイル済みの関数を名前つき引数・既定値で呼ぶ
+# （native_object_access_plan.md 1-11・§0.3 ⑭ ⑮）
+#
+# 規則（インタープリタと同じ）: 名前つき引数は仮引数の名前で、省いた引数は既定値で束縛する。既定値は
+# 関数を定義したモジュールの大域で、呼び出しのたびに評価する。
+# ⚠ 以前はインタープリタからの呼び出しが名前を捨てて呼び出しの順に並べ（`sub(b=1, a=10)` が -9）、既定値を省くと
+#   `expects 2 argument(s), got 1` のエラーか、引数の配列の外を読んでいた。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/test_modules/native_call_binding_module.ar
+
+let PREFIX = "id-"
+
+fn sub(let a: int, let b: int) -> int:
+    return a - b
+
+fn sub_default(let a: int, let b: int = 3) -> int:
+    return a - b
+
+# 既定値の式はこのモジュールの大域で評価する（取り込み側の `PREFIX` ではない）
+fn label(let n: int, let tag: str = PREFIX + "x") -> str:
+    return tag + str(n)
+
+# コンパイル済みコードから関数値を通して呼ぶ（既定値を省く）
+fn through_value() -> int:
+    let f = sub_default
+    return f(10)
+
+# ⚠ コンパイル済みコードの中で直接呼ぶ関数・メソッドの既定値を省く形（`sub_default(10)`）は 1-13（§0.3 ⑰）

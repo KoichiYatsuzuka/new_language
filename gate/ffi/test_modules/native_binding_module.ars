@@ -1,0 +1,30 @@
+class Inner:
+    mut v: int
+    fn __init__(mut self, v: int) -> None:
+        ...
+
+
+class Outer:
+    mut inner: Inner
+    mut xs: list[int]
+    fn __init__(mut self, inner: Inner, xs: list[int]) -> None:
+        ...
+
+
+fn let_from_attr(mut o: Outer) -> int:
+    ...
+
+fn let_list_from_attr(mut o: Outer) -> int:
+    ...
+
+fn let_from_element() -> int:
+    ...
+
+fn mut_from_attr(mut o: Outer) -> int:
+    ...
+
+fn mut_list_from_attr(mut o: Outer) -> int:
+    ...
+
+fn let_from_mut_name() -> int:
+    ...

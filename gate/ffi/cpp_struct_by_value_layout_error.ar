@@ -1,0 +1,19 @@
+# cpp_struct_by_value_layout_error.ar — C と同じレイアウトが分からない構造体は値で受け渡せない（負例・1-3）
+#
+# `Mat2` は `float m[4]` という配列のフィールドを持つ。ヘッダ解析は配列のフィールドを読み飛ばすので、
+# この構造体のフィールドの並びを C と同じには再現できない（`CStructDef::complete` が偽）。
+# 値で受け渡す関数は未対応として、使った箇所を静的エラーにする（1-2・TypeErrorKind::FfiUnsupported）。
+# 中継 DLL にも入れない（黙って壊れた値を返す代わりに止める）。
+#
+# ⚠ 1-3 の時点では `Rgba8`（`unsigned char` × 4）をこの例に使っていた。1-6 で C の整数の幅を
+#   区別するようになり、`Rgba8` は値で受け渡せるようになった（cpp_dll_struct_by_value.ar）。
+#
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_dll_struct_by_value.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/cpp_struct_by_value_layout_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+let m = fp.fp_make_mat2()   # expect: static FfiUnsupported
+print("unreachable:", m)

@@ -1,0 +1,11 @@
+class Reading:
+    mut w: float
+    mut n: int
+    fn __init__(mut self, w: float, n: int) -> None:
+        ...
+    fn total(self) -> float:
+        ...
+
+
+fn make_total(w: float, n: int) -> float:
+    ...

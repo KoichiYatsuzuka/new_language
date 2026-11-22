@@ -1,0 +1,18 @@
+# import_py_ancestor_config.ar — **自分の設定を持たないサブディレクトリ**から、
+# 祖先の `ar_config.json` の `python.search_paths` が見えることの検査（#74）。
+#
+# このファイルの置き場所（`examples/interop/py_subdir/`）には `ar_config.json` が無い。
+# 設定は 1 つ上の `examples/interop/ar_config.json` にあり、そこの
+# `"python": {"search_paths": ["py_libs"]}` を読めて初めて `cfg_probe` を解決できる。
+# 探索先は型（構文解析の `python_search_dirs_from`）と実行（CPython の `sys.path`・`Interpreter::python_search_dirs`）の
+# 両方で使うので、どちらも祖先を root まで遡る。
+#
+# ⚠ #74 以前は型の側（パーサ）だけが `source_dir` と `root_dir` の 2 箇所しか見ず、ここで落ちていた。
+# ⚠ この例題が無いと、方針がまた 2 通りに分かれても全ゲートが緑のまま通る
+#   （#58 の cs-proc・#68 の enum と同じ「例題が 1 本も無い」形）。
+
+import[py] cfg_probe
+import[py] cfg_probe as cfg_int
+
+print(cfg_probe.MARKER)
+print(cfg_int.MARKER)

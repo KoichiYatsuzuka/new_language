@@ -1,0 +1,16 @@
+# cpp_cstring_nul_error.ar — NUL を含む bytes を `const char*` へ渡すと実行時エラー（負例・1-2・4-3）
+#
+# C の文字列は NUL で終わるので、"a\0b" のバイト列を渡すと C 側では "a" に見える。以前は黙って途中で切れ、
+# `fp_len("a\0b")` が 1 を返していた。今は渡す前に ValueError にする（C 関数は呼ばない）。
+# bytes と None 以外を渡した場合も TypeError にする（静的に分かる場合は静的エラー・cpp_cstring_str_arg_error.ar）。
+#
+# 実行には examples/interop/test_modules/ffi_probe.dll が要る（build_ffi_probe.ps1）。
+# 対になる正例: cpp_cstring_arg.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/cpp_cstring_nul_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: runtime ValueError "bytes passed to a C string (`const char*`) parameter must no"
+
+import[cpp-dll] test_modules.ffi_probe as fp
+
+print("ok:", fp.fp_len("ab".encode()))
+print("unreachable:", fp.fp_len("a\0b".encode()))

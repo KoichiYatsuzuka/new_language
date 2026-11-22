@@ -1,0 +1,14 @@
+# pycap.ar — Python の側（import[py] のモジュール）が print した出力を貯めて照らす（gate/README.md の 2.3）。
+#
+# import した時点で CPython の sys.stdout を io.StringIO に差し替える。Python の print は Arrow の stdout ではなく
+# ここへ書かれ、py_output() で取り出せる。⚠ テストの import の**いちばん初め**に置く（これより前に読んだ Python の
+# モジュールが読み込みの時に print したものは貯まらない）。
+import[py] sys
+import[py] io
+
+mut _buf = io.StringIO()
+sys.stdout = _buf
+
+# ここまでに Python の側が print した文字列（差し替えてからの全部）。
+fn py_output() -> str:
+    return _buf.getvalue()
