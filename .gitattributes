@@ -1,0 +1,4 @@
+# gate/ のテストは、取り出し方（core.autocrlf）に依らず LF で取り出す（gate_speed_plan.md 4-7）。
+# ⚠ Arrow の字句解析は三重引用符の文字列の中の CRLF をそのまま残す（CPython は \n にそろえる）ので、CRLF で
+#   取り出すと出力が変わるテストがある（lang/variables/variable.ar の 'triple\r'）。
+gate/**/*.ar text eol=lf

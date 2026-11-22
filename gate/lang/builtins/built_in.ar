@@ -206,7 +206,7 @@ import[py] os
 try:
     os.remove("_tmp_built_in_new.txt")
 except Exception as e:
-    emit([str("no leftover to clean")])
+    pass   # ⚠ gate/ への写し: 前の実行の残り物の有無で出力が変わらないよう、ここでは何も出さない（4-7 の worktree で揺れた）
 
 let nf = open("_tmp_built_in_new.txt", FileOpenMode.make_and_write)
 nf.write("Created fresh!")
@@ -214,6 +214,7 @@ close(nf)
 let nfr = open("_tmp_built_in_new.txt", FileOpenMode.read)
 emit([str(nfr.read())])   # Created fresh!
 close(nfr)
+os.remove("_tmp_built_in_new.txt")   # ⚠ gate/ への写し: 次の実行のために消しておく
 
 # byte mode
 let bf = open("_tmp_built_in_bytes.txt", FileOpenMode.rewrite, StartPoint.top, ByteRecognizingMode.byte)
