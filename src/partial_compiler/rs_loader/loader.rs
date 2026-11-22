@@ -16,7 +16,10 @@ pub(crate) fn load(module_name: &str, search_dirs: &[PathBuf], version: Option<&
     let source = find_config(module_name, version, search_dirs)?;
 
     let stem = module_name.replace(['.', '-'], "_");
-    let tmp = std::env::temp_dir().join(format!("ar_rs_{stem}"));
+    // ⚠ このプロセスだけの作業ディレクトリ。固定の名前（`ar_rs_<crate>`）だと、同時に走る arrow.exe の片方が終わりに
+    //   ディレクトリを消し、もう片方の cargo が `manifest path … does not exist` で落ちた（gate_speed_plan.md 2-1）。
+    let tmp = crate::partial_compiler::private_temp_dir(&format!("ar_rs_{stem}"))
+        .map_err(|e| format!("cannot create temp dir: {e}"))?;
 
     let (crate_src_dir, crate_ident) = prepare_wrapper(&source, &stem, &tmp)?;
 

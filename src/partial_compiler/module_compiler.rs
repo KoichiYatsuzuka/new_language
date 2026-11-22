@@ -1,10 +1,10 @@
-﻿/// `.arc` compiled module — writer, native compilation, and the runtime cache of embedded DLLs.
+/// `.arc` compiled module — writer, native compilation, and the runtime cache of embedded DLLs.
 ///
 /// ⚠ The file format (and the reader) lives in `crate::arc_format`: the import processing reads the
 ///   embedded source with it, in the VS Code extension's wasm too (editor_import_resolution_plan.md 3-2).
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::llvm_codegen as codegen;
@@ -209,6 +209,58 @@ fn remove_stale_native_libs(dir: &Path, prefix: &str, keep: &str) {
     }
 }
 
+/// 一時ディレクトリの下に、**このプロセスだけが使う**作業ディレクトリ（`<prefix>_<pid>_<連番>`）を作る。
+///
+/// ⚠ 以前は cpp-dll の中継のビルド（`_tl_cpp_bridge.rs` と rustc の中間）・`import[rs]` の cargo のプロジェクト
+///   （`ar_rs_<crate>`）・`--compile` の clang の入出力が一時ディレクトリの**固定の名前**を使っていたので、同時に走る
+///   arrow.exe どうし（ゲートの並列実行・別のセッション）が同じファイルを書き合い、rustc のリンクの失敗・cargo の
+///   プロジェクトが消えるなどで落ちた（gate_speed_plan.md 2-1）。
+/// ⚠ **読み込む DLL**（`.arc` から取り出す DLL・cpp-dll の中継 DLL）はここに置かない。中身のハッシュの名前で
+///   プロセスをまたいで使い回す `materialize_native_lib`（copy_alloc_speed_plan.md 7-8）が置く。プロセスごとに
+///   書き直すと、読み込みのたびにウイルス対策の検査を受ける。
+///
+/// 前に作った同じ接頭辞のディレクトリのうち 1 時間より古いものは、ここで消す（途中で止まったプロセスの残り）。
+/// ⚠ 消すのは失敗しても構わない（使用中のものは消せずに残るだけ）。1 時間は、ビルドの途中のディレクトリを消さない
+/// ための余裕。
+pub fn private_temp_dir(prefix: &str) -> std::io::Result<PathBuf> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static SEQ: AtomicUsize = AtomicUsize::new(0);
+    let root = std::env::temp_dir();
+    sweep_stale_private_dirs(&root, prefix);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    let dir = root.join(format!("{prefix}_{}_{n}", std::process::id()));
+    std::fs::create_dir_all(&dir)?;
+    Ok(dir)
+}
+
+/// `private_temp_dir` の後始末: `<prefix>_<数字>_<数字>` の形で、更新が 1 時間より前のディレクトリを消す（失敗は無視）。
+fn sweep_stale_private_dirs(root: &Path, prefix: &str) {
+    const STALE: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    let head = format!("{prefix}_");
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        let Some(rest) = name.strip_prefix(&head) else { continue };
+        // `<pid>_<連番>` の形のものだけ（同じ接頭辞で始まる別の名前のディレクトリは消さない。`import[rs]` は接頭辞にクレートの名前を含むので、別のクレートの接頭辞の先頭が重なることがある）
+        let mut parts = rest.split('_');
+        let is_ours = matches!((parts.next(), parts.next(), parts.next()), (Some(a), Some(b), None)
+            if !a.is_empty() && !b.is_empty() && a.bytes().all(|c| c.is_ascii_digit()) && b.bytes().all(|c| c.is_ascii_digit()));
+        if !is_ours {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.elapsed().ok())
+            .is_some_and(|age| age > STALE);
+        if old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// Load a `.arc` file and return `(module_name, source_text)`.
 ///
 /// If the file is v1, the embedded native data is placed in the
@@ -251,7 +303,9 @@ fn compile_native(
     let fn_names: Vec<&str> = exports.iter().map(|e| e.name.as_str()).collect();
     eprintln!("NativeLib(clang): compiling {} function(s): {}", fn_names.len(), fn_names.join(", "));
 
-    let tmp_dir  = std::env::temp_dir();
+    // ⚠ このプロセスだけの作業ディレクトリ（同時に走る `--compile` が同じ名前を書き合わないように・`private_temp_dir`）
+    let tmp_dir  = private_temp_dir("ar_native_module")
+        .map_err(|e| format!("cannot create a temp dir: {e}"))?;
     let ll_path  = tmp_dir.join("ar_native_module.ll");
     let ext      = native_lib_ext();
     let dll_path = tmp_dir.join(format!("ar_native_module.{ext}"));
@@ -268,13 +322,12 @@ fn compile_native(
     }
 
     let result = invoke_clang(&ll_path, &dll_path);
-    let _ = std::fs::remove_file(&ll_path);
-    result?;
-
-    let dll_bytes = std::fs::read(&dll_path)
-        .map_err(|e| format!("cannot read compiled DLL: {e}"))?;
-    let _ = std::fs::remove_file(&dll_path);
-    Ok((NativePayload::Dll(dll_bytes), exports))
+    let dll_bytes = result.and_then(|()| {
+        std::fs::read(&dll_path).map_err(|e| format!("cannot read compiled DLL: {e}"))
+    });
+    // clang の中間・出力ごと消す（読み込んでいないので消せる）
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    Ok((NativePayload::Dll(dll_bytes?), exports))
 }
 
 /// Invoke `clang -O3 -shared` to compile `ll_path` → `dll_path`.
@@ -419,5 +472,38 @@ mod tests {
         assert_eq!(std::fs::read(&b).unwrap(), bytes);
         let _ = std::fs::remove_file(&a);
         let _ = std::fs::remove_file(&b);
+    }
+}
+
+#[cfg(test)]
+mod private_temp_dir_tests {
+    use super::{private_temp_dir, sweep_stale_private_dirs};
+
+    /// 呼ぶたびに別のディレクトリ（同じプロセスの中でも取り合わない）
+    #[test]
+    fn each_call_gets_its_own_dir() {
+        let a = private_temp_dir("ar_ptd_test").unwrap();
+        let b = private_temp_dir("ar_ptd_test").unwrap();
+        assert_ne!(a, b);
+        assert!(a.is_dir() && b.is_dir());
+        let _ = std::fs::remove_dir_all(&a);
+        let _ = std::fs::remove_dir_all(&b);
+    }
+
+    /// 後始末は `<prefix>_<数字>_<数字>` の形で古いものだけを消す（新しいもの・別の名前は残す）
+    #[test]
+    fn sweep_removes_only_stale_dirs_of_the_same_shape() {
+        let root = std::env::temp_dir().join(format!("ar_ptd_sweep_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let fresh = root.join("ar_x_1_0");
+        let other = root.join("ar_x_foo");
+        std::fs::create_dir_all(&fresh).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        sweep_stale_private_dirs(&root, "ar_x");
+        // 作ったばかりなので古くない
+        assert!(fresh.is_dir());
+        assert!(other.is_dir());
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

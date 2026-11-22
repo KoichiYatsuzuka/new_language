@@ -14,6 +14,6 @@ pub mod rs_loader;
 pub mod stub_gen;
 
 pub use module_compiler::{
-    compile, load_tlc, materialize_native_lib, native_lib_ext, take_native_bytes,
+    compile, load_tlc, materialize_native_lib, native_lib_ext, private_temp_dir, take_native_bytes,
     NativePayload,
 };

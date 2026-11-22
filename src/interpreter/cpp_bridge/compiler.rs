@@ -80,7 +80,18 @@ pub fn find_msvc_vcvarsall(extra_paths: &[String]) -> Option<MsvcPaths> {
 /// `rust_src` を cdylib としてコンパイルし、生の DLL バイト列を返す。
 /// `extra_link_dirs` は `-L` フラグとして渡される（`cpp-lib` がスタティックライブラリを探すために使用）。
 pub fn compile_wrapper(rust_src: &str, extra_link_dirs: &[PathBuf]) -> Result<Vec<u8>, String> {
-    let tmp_dir = std::env::temp_dir();
+    // ⚠ このプロセスだけの作業ディレクトリでビルドする。rustc は出力の隣に中間のオブジェクトも置くので、固定の名前の
+    //   ファイルを一時ディレクトリの直下に置くと、同時に走る arrow.exe どうしがリンクで取り合って落ちた
+    //   （`LNK1104` / `couldn't read _tl_cpp_bridge.rs`・gate_speed_plan.md 2-1）。
+    let tmp_dir = crate::partial_compiler::private_temp_dir("ar_cpp_bridge")
+        .map_err(|e| format!("CppImport: cannot create a temp dir: {e}"))?;
+    let result = compile_wrapper_in(&tmp_dir, rust_src, extra_link_dirs);
+    // 読み込む前のバイト列を返すので、作業ディレクトリは丸ごと消せる
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    result
+}
+
+fn compile_wrapper_in(tmp_dir: &Path, rust_src: &str, extra_link_dirs: &[PathBuf]) -> Result<Vec<u8>, String> {
     let rs_path = tmp_dir.join(TMP_RS_NAME);
     let ext = crate::partial_compiler::native_lib_ext();
     let dll_path = tmp_dir.join(format!("{TMP_DLL_STEM}.{ext}"));

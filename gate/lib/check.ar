@@ -1,0 +1,23 @@
+# check.ar — gate/ のテストが結果を確かめるためのモジュール（gate/README.md の 2 節・gate_speed_plan.md D-15）。
+#
+# 合わなければ GateCheckFailed を raise する。ランナーはこの例外で止まったものを「確かめ落ち」と表示し、
+# ほかの誤りで止まったもの（「異常終了」）と分ける。
+# ⚠ このモジュールが壊れると全テストが落ちる。壊れ方で黙って通らないことは gate/check/ のテスト が確かめる。
+
+class GateCheckFailed(Error):
+    fn __init__(mut self, message: str) -> None:
+        self.message = message
+
+# `actual == expected` でなければ止める。説明・期待・実際の値（repr）を文面に入れる。
+fn check_eq(let actual: Any, let expected: Any, let what: str) -> None:
+    if not (actual == expected):
+        raise GateCheckFailed(what + ": expected " + repr(expected) + ", got " + repr(actual))
+
+# `cond` が偽なら止める。
+fn check(let cond: bool, let what: str) -> None:
+    if not cond:
+        raise GateCheckFailed(what)
+
+# 必ず止める（ここに来たら誤り、という場所に置く）。⚠ `try` の中には置かない（README の 2.1）。
+fn fail(let what: str) -> None:
+    raise GateCheckFailed(what)

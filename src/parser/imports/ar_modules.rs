@@ -229,7 +229,7 @@ impl Parser {
             ) {
                 // 改行の違い（CRLF / LF）だけなら同じソースとみなす。`core.autocrlf=true` の作業ツリーは
                 // `.ar` を CRLF で書き出し、`.arc` は LF のまま追跡されるので、比べると毎回「古い」になり、
-                // 黙ってソースの解釈に落ちていた（`bench_ab_native` が `sum_fixed` で 199 秒・gate_speed_plan.md 1-2）。
+                // 黙ってソースの解釈に落ちていた（例題 examples/bench/bench_ab_native.ar が毎回タイムアウトしていた・gate_speed_plan.md 1-2）。
                 // 字句解析は行末の CRLF と LF を同じに扱い、行の番号も変わらない。⚠ 違いが出るのは複数行の文字列
                 // リテラル（`"""…"""`）の中だけで、`\r` がそのまま値に入る。改行だけが違うのは git の書き出しの差なので、
                 // `.arc` の側（コンパイルしたときのソース）を使う。
