@@ -45,8 +45,7 @@ fn error_heads(let errs: list[Any]) -> list[Any]:
         if e is None:
             out.append(None)
         else:
-            let lines = str(e).split("
-")
+            let lines = str(e).split("\n")
             out.append(lines[0] + " ... " + lines[len(lines) - 1])
     return out
 
@@ -70,7 +69,11 @@ try:
 except:
     emit([str("caught: an async task raised an error")])
 
-emit([str("error_list:"), str(error_heads(mng2.error_list))])
+# ⚠ 写すときに直した: 3 つ目のタスク（block_return 99）は、2 つ目の誤りで止める前に終わるか中断されるかが
+#   スレッドの順で決まる（並列のゲートの負荷で実際に揺れた）。決まる 2 つだけを照らし、3 つ目はどちらかであることを見る。
+let heads2 = error_heads(mng2.error_list)
+emit([str("error_list[:2]:"), str([heads2[0], heads2[1]])])
+emit([str("third is None or aborted:"), str(heads2[2] is None or str(heads2[2]) == "AsyncError: task aborted ... AsyncError: task aborted")])
 
 # ── raise_immediately=False: collect all errors manually ──────────────────────
 emit([str("")])
@@ -105,7 +108,8 @@ check_output([
     "",
     "=== raise_immediately (error propagated via try/except) ===",
     "caught: an async task raised an error",
-    "error_list: [None, 'Traceback (most recent call last): ... RuntimeError: SimulatedError: something went wrong', 'AsyncError: task aborted ... AsyncError: task aborted']",
+    "error_list[:2]: [None, 'Traceback (most recent call last): ... RuntimeError: SimulatedError: something went wrong']",
+    "third is None or aborted: True",
     "",
     "=== raise_immediately=False (check errors afterward) ===",
     "results: [2, None]",
