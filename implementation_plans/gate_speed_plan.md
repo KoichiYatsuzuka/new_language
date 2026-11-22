@@ -522,7 +522,25 @@
 
 ### フェーズ 5: ゲートを `gate/` へ切り替える
 
-- **5-1** D-12 の条件を全体で確かめる（`gate/` と `examples/` の覆う範囲の比較）。足りないところを書き足す。
+- **5-1（済・2026-11-23）** D-12 の条件を全体で確かめる（`gate/` と `examples/` の覆う範囲の比較）。足りないところを書き足す。
+  - 構文: `syntax_cov -Pairs` を `examples/`（既定の範囲・`archived` だけを除く 797 件）と `gate/` で取り、文脈の表の
+    マス・親 > 子の組・`UNCOVERED`・`NESTED-GAP` を比べた（比べる道具は文脈の表と組の表を読み、例題にあって
+    `gate/` に無いものを出す）。初めは次が足りなかった:
+    - マス 2 つ: 最上位の `BreakPoint`（`basics/debug_demo`・デバッガの golden として `gate/debugger/debug_demo` を
+      足した）、関数の中の `Slice`。
+    - `NESTED-GAP` の `Const`（入れ子の関数の中の `const`）。
+    - 組 9 つ（`Call>Block` / `Const>Float` / `Expr>BinOp` / `If>Attr` / `If>AttrAssign` / `If>While` / `Static>Call` /
+      `Subscript>Cast` / `While>UnaryOp`）。出どころは 9 カテゴリの外: `examples/alias.ar`（`examples/` の直下）、GUI の
+      `apps/spider_*` / `interop/cs_form_app`、`bench/speed_modes/`、`practical_examples/`。
+    - ⇒ `examples/` の直下の `alias.ar` / `alias_error.ar` を `gate/lang/alias/` に写し（4-1 / 4-2 で漏れていた）、
+      残りは `gate/lang/syntax/context_forms.ar` に 1 回ずつ書いた（結果は `check_eq` で確かめる）。
+    - 直した後: 例題のマス 295 個・組 575 個が全部 `gate/` にある（`gate/` はマス 298・組 579）。`UNCOVERED` も
+      `NESTED-GAP` も例題より増えていない（`DebugLet` / `DebugVar` が無いのは例題と同じ）。
+  - 禁止の形: 例題の `_error` / `_errors` 291 件（`archived` / `practical_examples` を除く全部）が出す誤りの段階と種類
+    88 通りが、全部 `gate/` の期待にある（`gate/` は 91 通り）。
+  - ⚠ 見つけた別件: デバッガで最上位の行を 1 行進めると、同じ行で 2 回止まる（`debug_demo` で 8 → 10 → 10 → 11 → 11）。
+    golden は今の動きのまま記録した。
+  - 結果: `gate/` の 746 件が合格。REPL 2 件・デバッガ 7 件が一致。
 - **5-2** 誤りの種類の網を足す: `TypeErrorKind` の全種類（約 85）に、期待を持つテストが `gate/` に 1 件以上あること。
   届かない種類は理由つきの一覧に載せる（黙って外さない）。足りなければ exit 1（`type_obligations` と同じ形の網）。
 - **5-3** `scan_examples` / `force_gate` の対象を `gate/` にし、期待との照合（3-4）を加えて、まとめて走らせる入口

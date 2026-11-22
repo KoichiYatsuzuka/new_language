@@ -1,0 +1,78 @@
+# context_forms.ar — examples/ の 9 カテゴリの外（GUI の apps / speed_modes / practical_examples）にしか無かった
+# 構文の形と文脈を、gate/ でも 1 回ずつ書く（gate_speed_plan.md 5-1・D-12 の syntax_cov の比較で足りなかったもの）。
+#
+# 足したもの（syntax_cov の文脈の表のマスと、親 > 子の組）:
+#   Slice@fn / NESTED-GAP の Const（入れ子の関数の中の const）/ Const>Float / Expr>BinOp / If>Attr / If>AttrAssign /
+#   If>While / Static>Call / Subscript>Cast / While>UnaryOp
+from ...lib.check import check, check_eq
+
+# ── 関数の中のスライス（Slice@fn）─────────────────────────────────
+fn middle(let xs: list[int]) -> list[int]:
+    return xs[1:3]
+
+check_eq(middle([10, 20, 30, 40]), [20, 30], "slice in a function")
+
+# ── 入れ子の関数の中の const（NESTED-GAP の Const）─────────────────
+fn outer_with_const() -> int:
+    fn inner() -> int:
+        const K = 4
+        return K * 2
+    return inner() + 1
+
+check_eq(outer_with_const(), 9, "const in a nested function")
+
+# ── float の const（Const>Float）──────────────────────────────────
+const RATE = 1.5
+check_eq(RATE * 2.0, 3.0, "float const")
+
+# ── 2 項演算だけの文（Expr>BinOp）: 値は捨てられ、左右の式は評価される ─
+mut calls = 0
+fn bump() -> int:
+    calls += 1
+    return calls
+
+bump() + bump()
+check_eq(calls, 2, "a binary-operation statement evaluates both sides")
+
+# ── if の条件が属性・if の中の属性への代入・if の中の while ─────────────
+class Flag:
+    mut enabled: bool
+    mut count: int
+
+mut f = Flag(True, 0)
+if f.enabled:                       # If>Attr
+    f.count = 1                # If>AttrAssign
+    mut n = 0
+    while n < 3:               # If>While
+        n += 1
+        f.count += n
+check_eq(f.count, 7, "attribute condition, attribute assignment and while inside if")
+
+# ── 関数の static を呼び出しで初めにする（Static>Call）─────────────────
+fn make_start() -> int:
+    return 100
+
+fn next_id() -> int:
+    static mut current = make_start()
+    current += 1
+    return current
+
+check_eq(next_id(), 101, "static initialised by a call (first)")
+check_eq(next_id(), 102, "static initialised by a call (kept)")
+
+# ── 添字がキャスト（Subscript>Cast）──────────────────────────────────
+new_type Idx: int
+let xs = [5, 6, 7]
+let at = Idx(2)
+check_eq(xs[at => int], 7, "a cast (new_type -> int) as the subscript")
+let names: dict[Idx, str] = {Idx(1): "a"}
+check_eq(names[1 => Idx], "a", "a cast (int -> new_type) as the subscript")
+
+# ── while の条件が単項演算（While>UnaryOp）─────────────────────────────
+mut done = False
+mut steps = 0
+while not done:
+    steps += 1
+    if steps == 4:
+        done = True
+check_eq(steps, 4, "while not ...")
