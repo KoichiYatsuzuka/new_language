@@ -554,9 +554,22 @@
     - `UnexpandedMemberDecorator`: 展開が漏れたときだけの守り。
   - 結果: `GATE-KINDS: 91 kinds, 87 covered, 4 unreachable, 0 missing`。正の対照: 範囲を `gate/lang/kinds` に狭めると
     71 種類が `MISSING` で exit 1、存在しない種類の期待は `UNKNOWN` で exit 1。
-- **5-3** `scan_examples` / `force_gate` の対象を `gate/` にし、期待との照合（3-4）を加えて、まとめて走らせる入口
+- **5-3（済・2026-11-23）** `scan_examples` / `force_gate` の対象を `gate/` にし、期待との照合（3-4）を加えて、まとめて走らせる入口
   （`scripts/gates_every_time.ps1`）を作る。`test_build_gate` → 実行 1 回 → 判定。1 つでも落ちたら exit 1。
   `examples/` は「毎回」の対象に入れない（D-16）。
+  - `gate_judge.ps1` に `Invoke-GateSuite` を足した。`gate/` を決まった引数（全部のテスト・名前の順・作業ディレクトリは
+    ファイルのディレクトリ・60 秒・猶予 0）で走らせる。`gate_expect` / `scan_examples` / `force_gate` /
+    `gates_every_time` がどれもこれを呼ぶので保存のキーが揃い、1 回走らせれば残りは読むだけになる（4 本続けて走らせ、
+    2 本目からは `reused 762` になることを見た）。
+  - `scan_examples` / `force_gate` の既定の対象を `gate/` にした。`-Root examples` で今までの例題の形（作業ディレクトリ・
+    9 カテゴリ / 再帰・時間切れ・猶予もそのまま）。どちらも落ちたものがあれば exit 1 を返すようにした（以前は一覧を
+    出すだけで exit 0）。
+  - `gates_every_time.ps1`: `test_build_gate` → `gate/` を 1 回 → 期待との照合・`VmForceError`・`gate_kinds`。最後の行は
+    `GATES-EVERY-TIME: OK` / `FAILED (…)`。段ごとの時間も出す。
+  - 結果: `-Fresh` で 33.2 秒（`test_build_gate` 0.7・実行 29.3・判定 3.2）、保存した結果を読むときは 3.4 秒。
+    正の対照: わざと落ちるテストを置くと `FAILED (gate_expect 1)` で exit 1、消すと OK に戻った。
+  - `scan_examples -Root examples` は、この環境で例題そのものが落ちる `event_external_handler`（`import[rs] libm`）の
+    1 件で exit 1 になる（5-4 で扱う）。
 - **5-4** リリースの手順（`scripts/release.ps1`）に `examples/` の確かめを足す（D-16）。正常の例題は exit 0、`_error` は
   exit が 0 でないこと。落ちたらリリースを止める。skill `release` に手順を書く。正の対照として、わざと壊した例題で
   止まることを見る（リリースそのものは走らせず、確かめの部分だけを呼ぶ）。

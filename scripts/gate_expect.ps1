@@ -25,9 +25,14 @@ $rootDir = (Resolve-Path $Root).Path
 . (Join-Path $PSScriptRoot 'gate_run.ps1')
 . (Join-Path $PSScriptRoot 'gate_judge.ps1')
 
-$files = @(Get-GateTestFiles $rootDir | Sort-Object FullName)
-$res = Invoke-GateRun -Exe $Exe -Root $rootDir -Files @($files | ForEach-Object { $_.FullName }) -WorkDir file `
-    -TimeoutSec $TimeoutSec -Jobs $Jobs -Fresh:$Fresh
+if ($PSBoundParameters.ContainsKey('TimeoutSec')) {
+    # 時間切れを変えると保存のキーが変わる（ほかのゲートと結果を共有しない）
+    $files = @(Get-GateTestFiles $rootDir | Sort-Object FullName)
+    $res = Invoke-GateRun -Exe $Exe -Root $rootDir -Files @($files | ForEach-Object { $_.FullName }) -WorkDir file `
+        -TimeoutSec $TimeoutSec -Jobs $Jobs -Fresh:$Fresh
+} else {
+    $res = Invoke-GateSuite -Exe $Exe -Root $rootDir -Jobs $Jobs -Fresh:$Fresh   # 5-3: ほかのゲートと同じ引数
+}
 $pass = 0; $fail = 0
 foreach ($r in $res) {
     $v = Test-GateResult $r

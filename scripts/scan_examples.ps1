@@ -5,12 +5,12 @@
 #   - System.Diagnostics.Process を直接使う（Start-Process -PassThru の ExitCode は当てにならない）
 #   - 失敗した例題の stderr 末尾を 1 行に畳んで表示する
 #
-# 使い方: .\scripts\scan_examples.ps1
-#   ./scripts/scan_examples.ps1 -Root gate   # gate/ のテスト（禁止の形 `_error` を除く）を対象にする（作業ディレクトリはファイルのディレクトリ）
+# 使い方: .\scripts\scan_examples.ps1             # gate/ のテスト（禁止の形 `_error` を除く・gate_speed_plan.md 5-3）
+#   ./scripts/scan_examples.ps1 -Root examples   # 利用者向けの例題（9 カテゴリ）。リリースの確かめ（release.ps1・D-16）
+#   ⚠ 1 つでも FAIL / TIMEOUT があれば exit 1（5-3 から。以前は一覧を出すだけで exit 0 だった）。
 #
 # ⚠ 実行は共通ランナー（gate_run.ps1）が行い、ここは保存した結果から判定するだけ（gate_speed_plan.md 3-3）。
 #   結果は target/gate_results/ に残り、同じ exe・同じファイルなら次は実行せずに読む（読んだことを表示する。-Fresh で実行し直す）。
-#   ⚠ examples/ を対象にするときの作業ディレクトリは**リポジトリ直下**のまま（3-3 で古い実装と同じ判定になることを確かめた）。
 param([string]$Exe = '', [int]$TimeoutSec = 45, [switch]$SkipTestBuild, [string]$Root = '', [switch]$Fresh, [int]$Jobs = 0)
 
 
@@ -53,22 +53,27 @@ $categoryDirs = @('basics','collections','classes','typing','exceptions','async'
 . (Join-Path $PSScriptRoot 'gate_run.ps1')
 . (Join-Path $PSScriptRoot 'gate_judge.ps1')
 
-if ($Root) {
-    # gate/ の正常系（禁止の形は gate_expect.ps1 が照らす・3-4）
-    $rootDir = (Resolve-Path $Root).Path
-    $examples = @(Get-GateTestFiles $rootDir | Where-Object { $_.BaseName -notmatch '_error$' } | Sort-Object Name)
-    $workDir = 'file'
+# 対象（gate_speed_plan.md 5-3）: 既定は gate/。`-Root examples` で今までの例題の走査（9 カテゴリ・D-16）。
+if (-not $Root) { $Root = Join-Path $repo 'gate' }
+$rootDir = (Resolve-Path $Root).Path.TrimEnd('\')
+$examplesMode = ($rootDir -eq (Join-Path $repo 'examples'))
+
+if (-not $examplesMode) {
+    # gate/ の正常系（禁止の形は gate_expect.ps1 が照らす・3-4）。走らせるのは全部（ほかのゲートと保存を共有するため・
+    # Invoke-GateSuite）で、ここで出すのは `_error` でないものの FAIL / TIMEOUT だけ。
+    if ($PSBoundParameters.ContainsKey('TimeoutSec')) { Write-Host 'scan_examples: -TimeoutSec is ignored for gate/ (fixed 60s, shared with the other gates)' -ForegroundColor DarkGray }
+    $all = Invoke-GateSuite -Exe $Exe -Root $rootDir -Jobs $Jobs -Fresh:$Fresh
+    $res = @($all | Where-Object { [IO.Path]::GetFileNameWithoutExtension($_.File) -notmatch '_error$' } | Sort-Object { Split-Path -Leaf $_.File })
 } else {
-    $rootDir = Join-Path $repo 'examples'
     $examples = @($categoryDirs | ForEach-Object { Get-ChildItem "$repo\examples\$_\*.ar" -ErrorAction SilentlyContinue } | Where-Object {
         $n = $_.BaseName
         -not ($n -match '_error' -or $n -match '__errors' -or $skip -contains $n)
     } | Sort-Object Name)
-    $workDir = $repo
+    # ⚠ examples/ の木の指紋から、実行のたびに書き換わる大きなもの・対象外のディレクトリを除く（速さのため）
+    # ⚠ 作業ディレクトリは**リポジトリ直下**のまま（3-3 で古い実装と同じ判定になることを確かめた）。
+    $res = Invoke-GateRun -Exe $Exe -Root $rootDir -Files @($examples | ForEach-Object { $_.FullName }) -WorkDir $repo `
+        -TimeoutSec $TimeoutSec -Jobs $Jobs -Fresh:$Fresh -TreeExclude '^(DxLib|archived|practical_examples)\\'
 }
-
-# ⚠ examples/ の木の指紋から、実行のたびに書き換わる大きなもの・対象外のディレクトリを除く（速さのため）
-$res = Invoke-GateRun -Exe $Exe -Root $rootDir -Files @($examples | ForEach-Object { $_.FullName }) -WorkDir $workDir `
-    -TimeoutSec $TimeoutSec -Jobs $Jobs -Fresh:$Fresh -TreeExclude '^(DxLib|archived|practical_examples)\\'
-$null = Write-GateScanReport $res
+$fails = Write-GateScanReport $res
 Write-Host "SCAN-DONE"
+if ($fails -gt 0) { exit 1 } else { exit 0 }

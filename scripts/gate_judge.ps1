@@ -58,6 +58,16 @@ function Get-GateTestFiles([string]$Root) {
     })
 }
 
+# gate/ のテストを**決まった引数で**走らせる（gate_speed_plan.md 5-3）。gate_expect / scan_examples / force_gate /
+# gates_every_time はどれもこれを呼ぶので、保存のキー（ファイルの並び・作業ディレクトリ・時間切れ・猶予・指紋）が揃い、
+# 1 回走らせれば残りは保存した結果を読むだけになる。⚠ 引数を変えるとキーが変わる（別々に走る）。
+#   gate/ には窓を出すテストが無い（D-10）ので猶予（GraceSec）は 0、時間切れは 60 秒。gate_run.ps1 を先に dot-source すること。
+function Invoke-GateSuite([string]$Exe, [string]$Root, [int]$Jobs = 0, [switch]$Fresh) {
+    $rootDir = (Resolve-Path $Root).Path
+    $files = @(Get-GateTestFiles $rootDir | Sort-Object FullName | ForEach-Object { $_.FullName })
+    return Invoke-GateRun -Exe $Exe -Root $rootDir -Files $files -WorkDir file -TimeoutSec 60 -GraceSec 0 -Jobs $Jobs -Fresh:$Fresh
+}
+
 # ── 期待との照合（gate/README.md 3 節・gate_speed_plan.md D-14 / 3-4）──────────────────────────────
 
 $script:GateStages = @('parse', 'expand', 'static', 'warning', 'runtime')
