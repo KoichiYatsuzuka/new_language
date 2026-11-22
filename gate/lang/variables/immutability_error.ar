@@ -11,7 +11,8 @@ fn append_to_let() -> None:
 
 fn assign_const() -> None:
     const K = 3
-    K = 4                                  # expect: static AssignToImmutable（局所の const も AssignToImmutable・3-1 で確かめた）
+    # 局所の const への代入は AssignToImmutable になる（AssignToConst ではない・3-1 で確かめた）
+    K = 4                                  # expect: static AssignToImmutable
 
 fn write_after_freeze() -> None:
     mut ys: list[int] = [1]

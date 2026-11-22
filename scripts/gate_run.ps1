@@ -19,8 +19,8 @@
 #
 # 使い方:
 #   . (Join-Path $PSScriptRoot 'gate_run.ps1')
-#   $res = Invoke-GateRun -Exe $exe -Root $root -Files $files [-WorkDir file|<dir>] [-ExtraEnv @{K='v'}] [-TimeoutSec 60] [-Jobs 1] [-Fresh]
-#   foreach ($r in $res) { $r.Rel; $r.Exit; $r.TimedOut; Read-GateText $r.OutPath; Read-GateDiag $r.DiagPath }
+#   $res = Invoke-GateRun -Exe $exe -Root $root -Files $files [-WorkDir file|<dir>] [-ExtraEnv @{K='v'}] [-TimeoutSec 60] [-GraceSec 0] [-Jobs 1] [-Fresh]
+#   foreach ($r in $res) { $r.Rel; $r.Exit; $r.TimedOut; $r.Closed; Read-GateText $r.OutPath; Read-GateDiag $r.DiagPath }
 # ⚠ このファイルは日本語コメントを含むので UTF-8 BOM 付きで保存すること（PS5.1 は BOM 無しを ANSI で読む）。
 
 function Get-GateStringHash([string]$Text) {
@@ -59,7 +59,8 @@ function Read-GateText([string]$Path) {
 function Read-GateDiag([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return $null }
     $text = Read-GateText $Path
-    return @($text -split "`n" | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_ | ConvertFrom-Json })
+    # ⚠ `,` を付けて配列のまま返す（空の配列をそのまま return すると PowerShell が $null に崩し、「ファイルが無い」と区別できない）
+    return ,@($text -split "`n" | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_ | ConvertFrom-Json })
 }
 
 function Start-GateProcess($Exe, $File, $WorkDir, $ExtraEnv, $Out, $Err, $Diag) {
@@ -85,6 +86,9 @@ function Invoke-GateRun {
         [hashtable]$ExtraEnv = @{},
         [int]$TimeoutSec = 60,
         [int]$Jobs = 1,
+        # タイムアウトした後、窓を閉じる要求（CloseMainWindow）を送って自分で終わるのを待つ秒数（今の force_gate の GUI の例題・
+        # 0 なら待たずに止める）。待つ間に終われば closed=1（終了処理まで確かめた）、終わらなければ止めて timeout=1。
+        [int]$GraceSec = 0,
         [string]$TreeExclude = '',
         [switch]$Fresh,
         [string]$ResultsRoot = ''
@@ -95,7 +99,7 @@ function Invoke-GateRun {
     $files = @($Files | ForEach-Object { (Resolve-Path -LiteralPath $_).Path })
     $rels = @($files | ForEach-Object { if ($_.StartsWith($rootFull + '\')) { $_.Substring($rootFull.Length + 1) } else { $_ } })
     $envText = (($ExtraEnv.Keys | Sort-Object | ForEach-Object { "$_=$($ExtraEnv[$_])" }) -join ';')
-    $key = Get-GateStringHash ((Get-GateTreeFingerprint $rootFull $TreeExclude) + "`n" + ($rels -join "`n") + "`n" + $envText + "`n" + $WorkDir + "`n" + $TimeoutSec)
+    $key = Get-GateStringHash ((Get-GateTreeFingerprint $rootFull $TreeExclude) + "`n" + ($rels -join "`n") + "`n" + $envText + "`n" + $WorkDir + "`n" + $TimeoutSec + "`n" + $GraceSec)
     $dir = Join-Path (Join-Path $ResultsRoot (Get-GateExeHash $Exe)) $key
     $index = Join-Path $dir 'index.csv'
 
@@ -120,21 +124,34 @@ function Invoke-GateRun {
                 $stem = Join-Path $dir ('{0:D4}' -f $i)
                 $wd = if ($WorkDir -eq 'file') { Split-Path -Parent $files[$next] } else { $WorkDir }
                 $p = Start-GateProcess $Exe $files[$next] $wd $ExtraEnv "$stem.out" "$stem.err" "$stem.diag"
-                $running.Add([pscustomobject]@{ I = $i; Rel = $rels[$next]; P = $p; Sw = [Diagnostics.Stopwatch]::StartNew() })
+                $running.Add([pscustomobject]@{ I = $i; Rel = $rels[$next]; P = $p; Sw = [Diagnostics.Stopwatch]::StartNew(); Grace = $false; NextClose = 0.0 })
                 $next++
             }
             [Threading.Thread]::Sleep(10)
             foreach ($r in $running.ToArray()) {
                 $done = $r.P.HasExited
-                $timedOut = (-not $done) -and ($r.Sw.Elapsed.TotalSeconds -gt $TimeoutSec)
-                if ($timedOut) {
+                $timedOut = $false
+                if ((-not $done) -and ($r.Sw.Elapsed.TotalSeconds -gt $TimeoutSec)) {
+                    if ($r.Sw.Elapsed.TotalSeconds -le ($TimeoutSec + $GraceSec)) {
+                        # 猶予の間: 子（cmd の下の arrow.exe）に窓を閉じる要求を送り続ける（1 秒に 1 回）
+                        if ($r.Sw.Elapsed.TotalSeconds -ge $r.NextClose) {
+                            $r.NextClose = $r.Sw.Elapsed.TotalSeconds + 1
+                            if (-not $r.Grace) { $r.Grace = $true }
+                            foreach ($c in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$($r.P.Id)" -ErrorAction SilentlyContinue)) {
+                                try { $null = ([Diagnostics.Process]::GetProcessById([int]$c.ProcessId)).CloseMainWindow() } catch {}
+                            }
+                        }
+                        continue
+                    }
                     & taskkill /T /F /PID $r.P.Id *> $null
                     $null = $r.P.WaitForExit(5000)
+                    $timedOut = $true
                 }
                 if ($done -or $timedOut) {
                     $null = $running.Remove($r)
                     $exit = if ($timedOut) { '' } else { [string]$r.P.ExitCode }
-                    $rows.Add([pscustomobject]@{ i = $r.I; rel = $r.Rel; exit = $exit; timeout = [int][bool]$timedOut; ms = [int]$r.Sw.Elapsed.TotalMilliseconds })
+                    $rows.Add([pscustomobject]@{ i = $r.I; rel = $r.Rel; exit = $exit; timeout = [int][bool]$timedOut
+                        closed = [int]($done -and $r.Grace); ms = [int]$r.Sw.Elapsed.TotalMilliseconds })
                 }
             }
         }
@@ -155,7 +172,7 @@ function ConvertTo-GateResults($Rows, [string]$Dir, [string[]]$Files) {
         [pscustomobject]@{
             File = $Files[$i - 1]; Rel = $row.rel
             Exit = $(if ($row.exit -eq '') { $null } else { [int]$row.exit })
-            TimedOut = ([int]$row.timeout -ne 0); Ms = [int]$row.ms
+            TimedOut = ([int]$row.timeout -ne 0); Closed = ([int]$row.closed -ne 0); Ms = [int]$row.ms
             OutPath = "$stem.out"; ErrPath = "$stem.err"; DiagPath = "$stem.diag"
         }
     }
