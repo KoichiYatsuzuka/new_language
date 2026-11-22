@@ -1,0 +1,145 @@
+# js_proc_values.ar — import[js-proc] で JS の値を型スタブの宣言どおりに受け渡す（ffi_value_exchange_plan.md 2-3）
+#
+# 以前は次のように黙って違う値になるか、正しいコードが落ちていた（実測・2-3 の直前）:
+#   - `-> float` の関数が `2.0` を返す → FfiTypeError（JS の 2.0 は整数値として届き、float と照合していた）
+#   - `-> list[float]` が `[1.0, 2.5]` を返す → `[1, 2.5]`（コンテナの戻り値は型スタブの型が読まれず照合されなかった）
+#   - NaN / -Infinity → 0.0、int64 に入らない整数 → 0、関数・BigInt → 文字列
+#   - JS のオブジェクト → `"k=v"` の文字列のリスト、dict / tuple / set の引数 → JS に null
+# 今は宣言型で数値を寄せ（int ↔ float・要素へ再帰）、運べない値は TypeError（`except` で捕まえられる）。
+# 5-2 から dict / tuple / set / bytes と JS のオブジェクト・Map・Set・Buffer はコピーで運ぶ。
+# 宣言と食い違う値は FfiTypeError（js_proc_container_return_error.ar）。
+#
+# ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
+# 実行には Node.js が要る（型は js_probe.ars、実装は js_probe.js）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/js_proc_values.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[js-proc] js_probe as jp
+import[cpp-dll] test_modules.ffi_probe as fp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    emit([str(label + " OK")])
+
+# ── 数値は宣言型で寄せる ──────────────────────────────────────────────────────
+let wf = jp.whole_float()
+check("float declared, JS returns 2.0", wf is float and wf == 2.0)
+check("float declared, JS returns 2.5", jp.half() == 2.5)
+let fl = jp.floats()
+check("list[float]: integral elements become float", fl[0] is float and fl[0] == 1.0 and fl[1] == 2.5)
+check("list[int]", jp.ints() == [1, 2, 3])
+check("list[list[int]]", jp.nested() == [[1, 2], [3]])
+let nan = jp.not_a_number()
+check("NaN stays NaN", nan != nan)
+check("-Infinity stays -Infinity", jp.infinite() < -1.0e308)
+
+# ── 引数 ──────────────────────────────────────────────────────────────────────
+check("list argument", jp.type_of([1, 2]) == "array")
+check("list length in JS", jp.count([1, 2, 3]) == 3)
+check("float argument", (jp.echo(2.5) mustbe float) == 2.5)
+check("string round trip", (jp.echo("日本語") mustbe str) == "日本語")
+check("string from JS", jp.utf8() == "日本語")
+check("undefined is None", jp.nothing() is None)
+
+# ── コンテナはコピーで運ぶ（5-2。以前は TypeError、その前は "k=v" / null）──────────────────
+let o = jp.obj()
+check("plain object -> dict[str, ...]", o is dict and len(o mustbe dict[str, Any]) == 2)   # expect: warning MustBeElemTypeUnchecked
+check("Map -> dict", jp.map_obj() == {1: "one", 2: "two"})
+check("Set -> set (equal elements merged)", jp.set_obj() == {1, 2, 3})
+check("Buffer -> bytes", jp.buf() == "hi".encode())
+let p = jp.pair()
+check("array -> declared tuple (elements coerced)", p is tuple and p == (1, 2.0))
+check("dict -> object", jp.sum_values({"a": 1, "b": 2}) == 3)
+check("dict with int keys -> Map", jp.kind({1: "x"}) == "Map:1")
+check("tuple -> array", jp.kind((1, 2, 3)) == "array:3")
+check("set -> Set", jp.kind({1, 2}) == "Set:2")
+check("bytes -> Buffer", jp.kind("abc".encode()) == "bytes:3")
+
+# ── 運べない値は TypeError（以前は "k=v" / 文字列 / null）───────────────────────
+fn rejected(let label: str, let what: str) -> None:
+    emit([str(label + " TypeError OK: " + what)])
+
+class Point:
+    mut x: int
+
+mut n = 0
+try:
+    let f = jp.fn_value()
+    emit([str("unreachable:"), str(f)])
+except TypeError as e:
+    n += 1
+    rejected("function return", e.message)
+try:
+    let b = jp.big_int()
+    emit([str("unreachable:"), str(b)])
+except TypeError as e:
+    n += 1
+    rejected("BigInt return", e.message)
+try:
+    let d = jp.instance()
+    emit([str("unreachable:"), str(d)])
+except TypeError as e:
+    n += 1
+    rejected("class instance return", e.message)
+try:
+    let t = jp.type_of(Point(1))
+    emit([str("unreachable:"), str(t)])
+except TypeError as e:
+    n += 1
+    rejected("Arrow instance argument", e.message)
+# Ptr は別プロセスでは意味が無い（D-5）。⚠ 実行には ffi_probe.dll も要る
+try:
+    let t = jp.type_of(fp.fp_handle_new())
+    emit([str("unreachable:"), str(t)])
+except TypeError as e:
+    n += 1
+    rejected("Ptr argument", e.message)
+check("all 5 rejected", n == 5)
+
+# ── 関数の中・ループの中から ──────────────────────────────────────────────────
+fn total(let k: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < k:
+        acc += jp.whole_float()
+        i += 1
+    return acc
+
+check("float results in a loop", total(3) == 6.0)
+
+# ── 出力を照らす ──
+check_output([
+    "float declared, JS returns 2.0 OK",
+    "float declared, JS returns 2.5 OK",
+    "list[float]: integral elements become float OK",
+    "list[int] OK",
+    "list[list[int]] OK",
+    "NaN stays NaN OK",
+    "-Infinity stays -Infinity OK",
+    "list argument OK",
+    "list length in JS OK",
+    "float argument OK",
+    "string round trip OK",
+    "string from JS OK",
+    "undefined is None OK",
+    "plain object -> dict[str, ...] OK",
+    "Map -> dict OK",
+    "Set -> set (equal elements merged) OK",
+    "Buffer -> bytes OK",
+    "array -> declared tuple (elements coerced) OK",
+    "dict -> object OK",
+    "dict with int keys -> Map OK",
+    "tuple -> array OK",
+    "set -> Set OK",
+    "bytes -> Buffer OK",
+    "function return TypeError OK: JS function 'js_probe.fn_value' returned (or its result contains) a JS function, which cannot cross the js-proc bridge",
+    "BigInt return TypeError OK: JS function 'js_probe.big_int' returned (or its result contains) a JS bigint, which cannot cross the js-proc bridge",
+    "class instance return TypeError OK: JS function 'js_probe.instance' returned (or its result contains) a JS object of class Date, which cannot cross the js-proc bridge",
+    "Arrow instance argument TypeError OK: argument 1 of JS function 'js_probe.type_of' is (or contains) a 'Point', which cannot cross the js-proc bridge",
+    "Ptr argument TypeError OK: argument 1 of JS function 'js_probe.type_of' is (or contains) a Ptr, which has no meaning in another process (copy what it points to with to_list() / to_bytes())",
+    "all 5 rejected OK",
+    "float results in a loop OK",
+    "",
+], "js_proc_values_warning")

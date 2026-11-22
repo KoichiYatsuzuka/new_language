@@ -1,0 +1,138 @@
+# cs_proc_values.ar — import[cs-proc] で C# の値を宣言どおりの型で受け渡す（ffi_value_exchange_plan.md 2-1）
+#
+# 以前のブリッジは戻り値の型を見ずにタグだけで読んでいて、次のように黙って違う値になっていた:
+#   - C# のオブジェクトを返すメソッド（`Person make_person(..)`）→ 整数（C# 側のハンドル番号）
+#   - `char` / `byte` / `short` / `ushort` / `ulong` の戻り値 → 整数（ホストがオブジェクトとして控えた番号）
+#   - `string?` の null → 型スタブは `str` なのに `None`（`str` の変数に `None` が入る）
+#   - `long?` の引数 → C# 側で変換に失敗
+# 今は型スタブの宣言で読む。`string?` / `Person?` / `long?` は `Option[...]`（C# の nullable 注釈を読む）、
+# クラスは `CsObject`、`ulong` の 2^63 以上は OverflowError、`object` で宣言された値のうち中身のクラスが
+# 分からないもの・null にならないはずの戻り値の null は TypeError。
+# コレクションと bytes は 5-2 からコピーで受け渡す（cs_proc_collections.ar）。デリゲートなどを受け渡すメソッドは静的エラー
+# （cs_proc_unsupported_signature_error.ar）。
+#
+# ⚠ ゲートの多くは exit code しか見ないので、期待値と違えば raise する。
+# 非 ASCII の文字列の受け渡しは cs_proc_utf8.ar（2-2）。
+#
+# 実行には examples/interop/cs_probe/cs_probe.exe と cs_probe.dll が要る（build_cs_probe.ps1）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/cs_proc_values.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[cs-proc] cs_probe as cp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    emit([str(label + " OK")])
+
+# ── クラスの戻り値は CsObject（以前は整数）────────────────────────────────────
+let p = cp.Probe.make_person("bob")
+check("make_person is a C# object", p.get_name() == "bob")
+check("method on it", p.hello() == "I am bob")
+let q = p.older(5)
+check("object returned by an instance method", q.get_name() == "bob+")
+check("pass it back to C#", cp.Probe.describe(q) == "bob+")
+check("type test on a C# object", p is Person)
+
+# ── nullable 注釈（`string?` / `Person?` / `long?`）は Option[...] ───────────────
+check("string? with a value", (cp.Probe.maybe(True) mustbe str) == "yes")
+check("string? null is None", cp.Probe.maybe(False) is None)
+check("long? with a value", (cp.Probe.maybe_num(True) mustbe int) == 7)
+check("long? null is None", cp.Probe.maybe_num(False) is None)
+let found = cp.Probe.find("amy")
+match found:
+    case None:
+        raise ValueError("find(amy) returned None")
+    case _:
+        check("Person? with a value", (found mustbe Person).get_name() == "amy")
+check("Person? null is None", cp.Probe.find("nobody") is None)
+check("instance method returning Person?", p.best_friend() is None)
+check("Person? argument: None", cp.Probe.describe_opt(None) == "none")
+check("Person? argument: object", cp.Probe.describe_opt(p) == "bob")
+check("long? argument: None", cp.Probe.add_opt(1, None) == 101)
+check("long? argument: value", cp.Probe.add_opt(1, 2) == 3)
+
+# ── 小さな値型は値のまま（以前はハンドル番号）──────────────────────────────────
+check("char return", cp.Probe.initial("abc") == "a")
+check("char argument", cp.Probe.twice("z") == "zz")
+check("byte return", cp.Probe.low_byte(300) == 44)
+check("short return", cp.Probe.neg_short() == -12)
+check("ushort return", cp.Probe.big_ushort() == 65000)
+check("ulong return", cp.Probe.small_ulong() == 9)
+mut overflow = False
+try:
+    let big = cp.Probe.huge_ulong()
+    emit([str("unreachable:"), str(big)])
+except OverflowError as e:
+    overflow = True
+    emit([str("ulong 2^64-1: OverflowError: " + e.message)])
+check("ulong >= 2^63 is OverflowError", overflow)
+
+# ── object で宣言された値 ─────────────────────────────────────────────────────
+check("object holding a string", (cp.Probe.any_str() mustbe str) == "object string")
+mut unknown = False
+try:
+    let o = cp.Probe.any_obj()
+    emit([str("unreachable:"), str(o)])
+except TypeError as e:
+    unknown = True
+    emit([str("object of an unknown class: TypeError: " + e.message)])
+check("object of an unknown class is TypeError", unknown)
+
+# ── null にならないはずの戻り値の null ────────────────────────────────────────
+mut broken = False
+try:
+    let s = cp.Probe.broken_contract()
+    emit([str("unreachable:"), str(s)])
+except TypeError as e:
+    broken = True
+    emit([str("null from a non-nullable string: TypeError: " + e.message)])
+check("null for `string` is TypeError", broken)
+
+# ── 関数の中・ループの中から（同じ呼び出し点を何度も通る）──────────────────────
+fn names(let n: int) -> str:
+    mut out = ""
+    mut i = 0
+    while i < n:
+        let who = cp.Probe.make_person("p" + str(i))
+        out = out + who.get_name()
+        i += 1
+    return out
+
+check("objects in a loop", names(3) == "p0p1p2")
+
+# ── 出力を照らす ──
+check_output([
+    "make_person is a C# object OK",
+    "method on it OK",
+    "object returned by an instance method OK",
+    "pass it back to C# OK",
+    "type test on a C# object OK",
+    "string? with a value OK",
+    "string? null is None OK",
+    "long? with a value OK",
+    "long? null is None OK",
+    "Person? with a value OK",
+    "Person? null is None OK",
+    "instance method returning Person? OK",
+    "Person? argument: None OK",
+    "Person? argument: object OK",
+    "long? argument: None OK",
+    "long? argument: value OK",
+    "char return OK",
+    "char argument OK",
+    "byte return OK",
+    "short return OK",
+    "ushort return OK",
+    "ulong return OK",
+    "ulong 2^64-1: OverflowError: C# method 'Probe.huge_ulong' returned 18446744073709551615, which does not fit in int",
+    "ulong >= 2^63 is OverflowError OK",
+    "object holding a string OK",
+    "object of an unknown class: TypeError: C# method 'Probe.any_obj' returned an object whose class Arrow does not know (it is declared `object`; return a class of this assembly instead)",
+    "object of an unknown class is TypeError OK",
+    "null from a non-nullable string: TypeError: C# method 'Probe.broken_contract' returned null, but its return type is `str`, not `Option[str]` (declare it nullable in C#, e.g. `string?`)",
+    "null for `string` is TypeError OK",
+    "objects in a loop OK",
+    "",
+], "cs_proc_values")

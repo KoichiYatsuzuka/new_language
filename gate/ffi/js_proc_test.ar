@@ -1,0 +1,63 @@
+# js_proc_test.ar — import[js-proc] を使って Node.js の path モジュールと
+# 同じディレクトリの JS モジュール（js_text.js）を呼び出すテスト
+#
+#   モジュール "path"    → Node.js 組み込み（型は path.ars）
+#   モジュール "js_text" → js_text.js（型は js_text.ars）
+#
+# ⚠ js-proc の型は `.ars` からだけ分かる。`.ars` が無い import はエラー
+#   （editor_import_resolution_plan.md 1-2）。以前は VS Code 拡張の out_debug/analysis.js を
+#   呼んでいたが、その JS は拡張から削除されていて、実行時に AttributeError になっていた。
+
+# ── テスト 1: Node.js 組み込み path モジュール ────────────────────────────────
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/js_proc_test.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[js-proc] path as js_path
+
+emit([str("=== path module ===")])
+let base: str = js_path.basename("C:/Users/test/file.ar")
+emit([str("basename:"), str(base)])
+
+let ext: str = js_path.extname("file.ar")
+emit([str("extname:"), str(ext)])
+
+let joined: str = js_path.join("examples", "test", "file.ar")
+emit([str("join:"), str(joined)])
+
+# ── テスト 2: 同じディレクトリの JS モジュールの文字列処理関数 ─────────────
+import[js-proc] js_text as analysis
+
+emit([str("")])
+emit([str("=== analysis module ===")])
+
+let stripped: str = analysis.stripComment("let x: int = 42  # this is a comment")
+emit([str("stripComment:"), str(stripped)])
+
+let cleaned: str = analysis.cleanTypeAnnotation("  List[int]  ")
+emit([str("cleanTypeAnnotation:"), str(cleaned)])
+
+# ⚠ 以前ここは `List[str]`（大文字）だった。Arrow の型は小文字の `list` なので
+#   `List` という型は存在せず、`[str]` は黙って捨てられて `NamedInstance("List")` に
+#   なっていた（右辺が js 由来の `Any` なので照合も素通り）。タスク 9.7 で露見した。
+let parts: list[str] = analysis.splitComma("int, str, bool")
+emit([str("splitComma:"), str(parts)])
+
+emit([str("")])
+emit([str("done.")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== path module ===",
+    "basename: file.ar",
+    "extname: .ar",
+    "join: examples\\test\\file.ar",
+    "",
+    "=== analysis module ===",
+    "stripComment: let x: int = 42",
+    "cleanTypeAnnotation: List[int]",
+    "splitComma: ['int', 'str', 'bool']",
+    "",
+    "done.",
+    "",
+], "js_proc_test")
