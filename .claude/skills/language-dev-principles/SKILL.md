@@ -120,13 +120,16 @@ Phase R（AST 解決層）＋ Phase V（バイトコード VM）の系列（#1�
 
 | 触った所 | 主検査 |
 |---|---|
+| **どこでも（言語を変えたら毎回）** | **`gates_every_time.ps1`**（`gate/` のテストを 1 回走らせ、期待との照合・`VmForceError`・誤りの種類の網を判定する） |
 | VM コンパイラ（生成コードが変わりうる） | `compare_bytecode.ps1`（byte-identical） |
 | 解釈側（`eval_*` / `exec_*`） | `compare_outputs.ps1`（bytecode は自明に一致してしまう） |
 | ネイティブ codegen | `dump_native_ir.ps1` の **IR byte-identical**（最強） |
 | VM の適格範囲 | `tw_stats.ps1`（ツリーウォークが定義文だけか） |
 | 対話 REPL / デバッガ | `repl_session.ps1` / `debug_session.ps1`（**stdin を与えるのはこれだけ**） |
 | 識別子の改名・削除 | `stale_doc_refs.ps1`（**必ず**。作っただけでは守られない） |
-| 意味論そのもの | `compare_python_impl.ps1`（参照実装との突き合わせ） |
+| 意味論そのもの | `gate/` の正常系（結果を**テストのコードの中で**確かめる・`gate/README.md` 2 節）と禁止の形（期待した誤りまで照らす・3 節）。新しい文法・禁止には `gate/` にもテストを書く。⚠ `compare_python_impl.ps1`（参照実装との突き合わせ）は凍結中（2026-11-23・`impl_python` を更新していないため） |
+| 静的な誤りの種類を足した | `gate_kinds.ps1`（全部の種類に `gate/` の期待があるか。無ければ `gate/lang/kinds/` に足すか、届かない理由を一覧に書く） |
+| 利用者向けの例題（`examples/`） | `check_examples.ps1`（「毎回」の対象ではない。リリースのときに `release.ps1` が呼ぶ） |
 
 ⚠ **ゲートは「緑だと報告された」ではなく「自分で走らせて緑」を確かめる。**
 ⚠ **release バイナリを見る**（`cargo build` の debug だけ見て「直った」と判断しない）。

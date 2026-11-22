@@ -75,10 +75,14 @@ python -m impl_python examples/basics/control_flow.ar
 
 | Script | What it checks | Run it when |
 |---|---|---|
-| `test_build_gate.ps1` | **`cargo test`（debug）がビルドできるか**（`cargo test --no-run`）と、**評価コア**（`cargo check --no-default-features`・`target/nodefault`）がビルドできるか | **毎回**（`scan_examples` / `force_gate` が前段で自動実行。`-SkipTestBuild` で飛ばせる） |
-| `scan_examples.ps1` | 全例題が失敗しないか（タイムアウト付き） | **毎回** |
-| `force_gate.ps1` | VM に載らない構文が無いか（`VmForceError` 0 件） | **毎回** |
-| `compare_python_impl.ps1` | 参照実装 `impl_python` との stdout 差分 | **毎回**（意味論を守る唯一の網） |
+| **`gates_every_time.ps1`** | **「毎回」のゲートの入口**: `test_build_gate` → `gate/` のテストを 1 回だけ走らせる（並列・約 30 秒）→ 判定（下の `gate_expect` / `force_gate` / `gate_kinds` と同じ）。1 つでも落ちたら exit 1。最後の行は `GATES-EVERY-TIME: OK` | **毎回**（言語を変えたら必ず） |
+| `test_build_gate.ps1` | **`cargo test`（debug）がビルドできるか**（`cargo test --no-run`）と、**評価コア**（`cargo check --no-default-features`・`target/nodefault`）がビルドできるか | **毎回**（`gates_every_time` / `scan_examples` / `force_gate` が前段で自動実行。`-SkipTestBuild` で飛ばせる） |
+| `gate_expect.ps1` | `gate/` のテストを照らす: 正常系は exit 0 で診断 0 件（結果はテストのコードの中で確かめる）、禁止の形（`_error`）は**期待した行で期待した段階・種類の誤りが出て、ほかの誤りが出ない**こと | **毎回**（`gates_every_time` に含む） |
+| `scan_examples.ps1` | `gate/` の正常系が失敗しないか（タイムアウト付き）。`-Root examples` で利用者向けの例題 | **毎回**（`gates_every_time` の判定が含む） |
+| `force_gate.ps1` | VM に載らない構文が無いか（`VmForceError` 0 件）。既定は `gate/`、`-Root examples` で例題（GUI を含む） | **毎回**（`gates_every_time` に含む） |
+| `gate_kinds.ps1` | 静的な誤りと警告の**全部の種類**（`TypeErrorKind` / `TypeWarningKind`）に、`gate/` で期待を持つテストがあるか。届かない種類は理由つきの一覧 | **毎回**（`gates_every_time` に含む）。**種類を足したら**テストを足す |
+| `check_examples.ps1` | 利用者向けの例題（`examples/` の 9 カテゴリ）: 正常の例題は exit 0、`_error` は exit が 0 でない | **リリースのとき**（`release.ps1` が版を上げる前に呼ぶ）。例題を直したとき |
+| `compare_python_impl.ps1` | 参照実装 `impl_python` との stdout 差分 | **凍結中**（2026-11-23・`impl_python` の更新を止めているため。理由はスクリプトの先頭） |
 | `stale_doc_refs.ps1` | コメント中の識別子が src に実在するか | **識別子を改名・削除したら必ず** |
 | `hash_eq_identity.ps1` | 同一性で扱う型の一覧がハッシュ側と等値側で一致するか | **`Value` に種別を足した / ハッシュ・等値を触ったとき**（ずれると「入れたのに引けない辞書」になる）|
 | `compare_bytecode.ps1 -A <base.exe>` | 2 バイナリのバイトコードが同一か | **VM コンパイラ**を触ったとき（「挙動不変」の主張はこれ） |
@@ -86,31 +90,27 @@ python -m impl_python examples/basics/control_flow.ar
 | `compare_import_paths.ps1 -A <base.exe>` | import 系 13 例題の出力が同一か | **import / FFI** を触ったとき（他ゲートの対象外を埋める） |
 | `dump_native_ir.ps1 -OutDir <dir>` | 生成 LLVM IR が byte-identical か | **ネイティブ codegen** を触ったとき（最強の検査） |
 | `check_native_ir_abi.ps1` | 例題の .arc の元を全部コンパイルし直し、生成 IR の**直接呼び出し（`@X_impl` / `@X_fast`）が定義と同じ型か**・**DLL が埋め込まれたか** | **ネイティブ codegen の呼び出し規約・適格判定**を触ったとき（型の違う直接呼び出しは clang が通し、実行時にごみを読む） |
-| `repl_session.ps1` | 対話 REPL の golden | **REPL / 最上位実行**を触ったとき |
-| `debug_session.ps1` | デバッガのステッピングの golden | **デバッガ / 行テーブル**を触ったとき |
-| `tw_stats.ps1` | ツリーウォークが定義文だけかの内訳 | **VM の適格範囲**を触ったとき |
-| `syntax_cov.ps1` | **例題が一度も書いていない構文**（`NESTED-GAP`） | **新しい構文・文脈**を扱うとき |
+| `repl_session.ps1` | 対話 REPL の golden（`gate/repl/` の `.in` / `.out` の対を全部） | **REPL / 最上位実行**を触ったとき |
+| `debug_session.ps1` | デバッガのステッピングの golden（`gate/debugger/`） | **デバッガ / 行テーブル**を触ったとき |
+| `tw_stats.ps1` | ツリーウォークが定義文だけかの内訳（`gate/`） | **VM の適格範囲**を触ったとき |
+| `syntax_cov.ps1` | **`gate/` が一度も書いていない構文**（`NESTED-GAP`）。`-Root examples` で例題 | **新しい構文・文脈**を扱うとき |
 | `type_obligations.ps1` | **型義務 94 件のどれで型検査が走っているか**（`STATIC`/`RUNTIME`/`NONE`）。退行すると exit 1 | **型検査を触ったとき**（`syntax_cov` が構文、こちらが型義務の網の目） |
 | `compare_wasm_frontend.ps1` | VS Code 拡張の wasm フロントエンドが `arrow.exe` と**同じ診断**を出すか（全例題・import 先を含む。exe は `AR_CHECK_ONLY=1` で実行しない） | **lexer / parser / type_check / import の処理を触ったとき**（拡張だけ解釈がずれるのを防ぐ唯一の網） |
-| `compare_tm_grammar.ps1` | VS Code 拡張の **TextMate 文法**が lexer と**同じ範囲を文字列・コメント**とするか（全例題＋`vscode-extension/test_fixtures/`。前の行から文字列を持ち越す `SPILL` 0 件）と、文法のキーワード一覧が `src/lexer/keyword.rs` と一致するか。括弧の対応付けは文法の判定だけで決まる | **`arrow.tmLanguage.json` を触ったとき**と、**lexer の文字列・コメント・キーワードを触ったとき** |
+| `compare_tm_grammar.ps1` | VS Code 拡張の **TextMate 文法**が lexer と**同じ範囲を文字列・コメント**とするか（`gate/` の全部＋`vscode-extension/test_fixtures/`。`-Root examples` で例題。前の行から文字列を持ち越す `SPILL` 0 件）と、文法のキーワード一覧が `src/lexer/keyword.rs` と一致するか。括弧の対応付けは文法の判定だけで決まる | **`arrow.tmLanguage.json` を触ったとき**と、**lexer の文字列・コメント・キーワードを触ったとき** |
 | `check_ptr_protocol.ps1` | `PtrProtocol` の C ヘッダ・C# の写しを実際にコンパイルし、Arrow（Rust）の写しと**同じ並び**か（大きさ・欄の位置・flags） | **`bridge/ptr_protocol/` か `value/ptr.rs` の `PtrProtocolRaw` を触ったとき**（MSVC と dotnet が要る） |
 | `generate-codebase-map.ps1` | `codebase-map` skill のファイル木を再生成 | **ファイルを作成・移動・削除したら必ず** |
 
-⚠ **ゲートのテストを `gate/` へ移している途中**（[gate_speed_plan.md](implementation_plans/gate_speed_plan.md)）。`examples/` は利用者向けの
-見本、`gate/` はゲート専用のテスト（正常系は結果をコードの中で確かめ、禁止の形は `# expect:` で期待した誤りまで照らす・
-[gate/README.md](gate/README.md)）。フェーズ 5 で切り替えるまで、上のゲートはまだ `examples/` を見ている。
-
-⚠⚠ **例題ゲートが見ていない場所がある**（タスク 9.3・意図的）。
-`scan_examples` / `compare_outputs` / `compare_bytecode` / `compare_python_impl` は
-`$categoryDirs` の 9 カテゴリ（`basics` `collections` `classes` `typing` `exceptions`
-`async` `bench` `apps` `interop`）だけを走査し、**`examples/archived/` と
-`examples/practical_examples/` は対象外**。
-`force_gate` と `compare_wasm_frontend` は `-Recurse` で全部舐めるが、
-どちらも「例題が**成功する**か」は見ていない（バイトコード化の可否／2 実装の診断の一致）。
-⇒ **この 2 ディレクトリは壊れていても全ゲートが緑になる。**
-実測（2026-09-18）で `archived/` は 72 件中 53 件が失敗する。
-⚠ **新しい検査の影響を測るときは母集団を 9 カテゴリに限ること**（7.5 でここを踏んだ）。
-理由と現状は各ディレクトリの `README.md`。
+⚠⚠ **ゲートが見るのは `gate/`、`examples/` ではない**（2026-11-23・[gate_speed_plan.md](implementation_plans/gate_speed_plan.md) フェーズ 5）。
+`examples/` は利用者向けの見本で、`gate/` はゲート専用のテスト（[gate/README.md](gate/README.md)）。
+- 正常系は結果を**テストのコードの中で**確かめる（`gate/lib/check.ar` の `check_eq` / `emit` + `check_output`。違えば
+  `GateCheckFailed`）。禁止の形（`_error.ar`）は行末の `# expect: <段階> <種類>` で**期待した誤りまで**照らす。
+- 新しい文法・新しい禁止を足したら、`examples/` の見本に加えて `gate/` にもテストを書く（`regulations.md`）。
+- `examples/` は**リリースのときだけ**確かめる（`check_examples.ps1`・exit の 0 / 非 0 だけ）。⇒ 例題が壊れても「毎回」の
+  ゲートは緑のまま。例題を直したら `check_examples.ps1` を走らせる。
+- ⚠ まだ `examples/` を見ているもの: A/B 系（`compare_outputs` / `compare_bytecode` / `compare_import_paths`・フェーズ 6）と
+  `compare_wasm_frontend`（フェーズ 7）。`examples/archived/` と `examples/practical_examples/` はどのゲートも成功を見ない
+  （壊れていてよい・各ディレクトリの `README.md`）。
+- ⚠ **新しい検査の影響を `examples/` で測るときは母集団を 9 カテゴリに限ること**（7.5 でここを踏んだ）。
 
 ⚠ A/B 系（`-A`）は **「直前のタスクのコミット」からビルドしたバイナリ**を基準にすること。
 ⚠ `compare_outputs` / `compare_import_paths` は cpp-lib の中継 DLL のキャッシュ（`examples/**/ar_*`）を **exe ごとに分けて**比べ、
@@ -122,7 +122,7 @@ python -m impl_python examples/basics/control_flow.ar
 `storage_operands` は `cfg(debug_assertions)` なので **release には存在せず**、
 `Op` の登録を忘れても**全ゲートが緑のまま `cargo test` だけがビルド不能**になる
 （`15aa677` で 73 コミット・`c06254f`/`8c61d07` で 8 コミット見逃した）。
-⇒ **`test_build_gate.ps1` が前段でこれを止める**（`scan_examples` / `force_gate` が自動で呼ぶ）。
+⇒ **`test_build_gate.ps1` が前段でこれを止める**（`gates_every_time` / `scan_examples` / `force_gate` が自動で呼ぶ）。
 ⚠ **`cargo test --release` は網にならない**（強制点がコンパイルされない）。
 テストの**合否**まで見たいときは `--release` を付けずに `cargo test` を走らせること。
 

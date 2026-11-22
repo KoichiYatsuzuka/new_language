@@ -63,6 +63,14 @@ line in the traceback. In rewriting walkers (`template_subst`), carry the span o
 2. **Examples** — `examples/<category>/feature.ar` demonstrating the syntax; if an error pattern
    was implemented, also `feature_error.ar`. Categories: `basics/`, `typing/`, `classes/`,
    `collections/`, `exceptions/`, `async/`, `interop/`, `apps/`, `bench/`.
+   ⚠ `examples/` is for users; **the gates do not run it** (only `check_examples.ps1` at release time).
+2b. **Gate tests** (`gate/README.md`) — `gate/lang/<theme>/feature.ar` that **checks the results in the
+   code** (`from ...lib.check import check_eq` → `check_eq(actual, expected, "what")`, or `emit` +
+   `check_output`), and for each forbidden form `gate/lang/<theme>/feature_error.ar` with
+   `# expect: <stage> <kind>` at the end of the line that must fail (stage: `parse` / `expand` /
+   `static` / `warning` / `runtime`; kind: the `TypeErrorKind` name, the exception class, or `-`
+   plus a `"fragment"` for parse errors). A new `TypeErrorKind` needs a `gate/` test that expects it
+   (`gate_kinds.ps1` fails otherwise).
 3. **VS Code extension** (`vscode-extension/`) — **most of this is now automatic.**
 
    The extension analyses `.ar` files with `crates/arrow-frontend` compiled to wasm, and
@@ -101,5 +109,6 @@ line in the traceback. In rewriting walkers (`template_subst`), carry the span o
 
 ## Step 3 — Verify
 
+- `./scripts/gates_every_time.ps1` (PowerShell) — `GATES-EVERY-TIME: OK` with the new `gate/` tests passing.
 - `cargo run -- -src examples/<category>/feature.ar` and the `_error` variant.
 - `python -m impl_python examples/<category>/feature.ar` for the Python mirror.

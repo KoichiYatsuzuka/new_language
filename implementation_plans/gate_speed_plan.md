@@ -601,9 +601,21 @@
     - `compare_tm_grammar`: `gate/` の `.ar` を全部（補助を含む）と `vscode-extension/test_fixtures/`。
   - 結果: `syntax_cov` 801 件（`Stmt` 42 / 43・`Expr` 31 / 32・`NESTED-GAP` 10 件で例題と同じ）、`tw_stats` 762 件が
     全部走り、ツリーウォークに落ちるのは定義文だけ、`compare_tm_grammar` 838 件で `SPILL` 0・キーワードの一覧が一致。
-- **5-7** 文書を直す: CLAUDE.md のゲートの表と注意書き（「例題ゲートが見ていない場所」の節を含む）、`regulations.md`、
+- **5-7（済・2026-11-23）** 文書を直す: CLAUDE.md のゲートの表と注意書き（「例題ゲートが見ていない場所」の節を含む）、`regulations.md`、
   skill `language-dev-principles` / `vm-pitfalls` / `add-syntax`、`BYTECODE_VM_PLAN.md` のスクリプトの表。
   `generate-codebase-map.ps1` を走らせる。
+  - CLAUDE.md: 表の先頭に `gates_every_time.ps1` を置き、`gate_expect` / `gate_kinds` / `check_examples` の行を足した。
+    `compare_python_impl` は「凍結中」、`scan_examples` / `force_gate` / `syntax_cov` / `tw_stats` / `compare_tm_grammar` /
+    `repl_session` / `debug_session` は対象を `gate/` に書き換えた。「移している途中」と「例題ゲートが見ていない場所」の
+    2 つの注意書きは、「ゲートが見るのは `gate/`」の 1 つにまとめた（まだ `examples/` を見る A/B 系と
+    `compare_wasm_frontend` も書いた）。
+  - `regulations.md`: 「毎回」は `gate/` だけ・例題はリリースのとき・種類を足したら `gate/` のテストも、を足した。
+  - skill: `language-dev-principles` の「触った場所 → 見るゲート」の表に毎回の入口・種類の網・例題の行を足し、
+    「意味論そのもの」を `gate/` に書き換えた。`add-syntax` に `gate/` のテストを書く手順（2b）と確かめ方を足した。
+    `vm-pitfalls` の「非再帰のグロブ」の項に、`gate/` の対象の決まりが 1 か所（`Get-GateTestFiles`）であることを足した。
+  - `BYTECODE_VM_PLAN.md` のスクリプトの表: 新しい 5 本（入口・ランナーと判定・照合・種類の網・例題の確かめ）の行を
+    足し、既存の 6 本の対象を書き換えた（当時の計測の記録は書き換えていない）。
+  - `generate-codebase-map.ps1` を走らせた。`stale_doc_refs` は OK。
 - **5-8** 切り替えた後の時間を測り、1-1 と比べて 5 節の表を置き換える。
 
 ### フェーズ 6: A/B 系

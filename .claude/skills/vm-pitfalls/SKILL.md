@@ -299,6 +299,12 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   ⇒ サブディレクトリに例題を置いたら、**どのゲートが実際に拾うかを確かめる**こと。
   #74 では [compare_import_paths.ps1](../../../scripts/compare_import_paths.ps1) へ明示登録した
   （ついでに `import_py_search_path.ar` 等が**どのゲートにも入っていなかった**ことも判明した）。
+  ⚠ **2026-11-23 から「毎回」のゲートは `gate/` を見る**（`gates_every_time.ps1`・gate_speed_plan.md フェーズ 5）。
+  `gate/` の対象の決まりは 1 か所（`gate_judge.ps1` の `Get-GateTestFiles`: 再帰する。`lib/`・`*_mods/`・`debugger/`、
+  `ffi/` と `modules/` のサブディレクトリ（名前が `_tests` で終わるものは除く）は補助として走らせない）。
+  ⇒ `gate/` に新しいディレクトリを作ったら、`gate_expect.ps1` の件数が増えたことで拾われたかを確かめる。
+  上の非再帰の話は、まだ `examples/` を見る A/B 系（`compare_outputs` など・フェーズ 6）と `scan_examples -Root examples` /
+  `check_examples` に残る。
 
 - **⚠⚠ 「clippy 増分 0」は緑の証明ではない**（#65）。受け入れ済みの baseline
   （当時 51 件）の中に **`replacing text with itself`** があり、それは
