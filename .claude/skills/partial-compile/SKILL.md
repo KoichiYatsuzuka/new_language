@@ -546,7 +546,9 @@ iterator's snapshot (`NativeIter::Items`) instead of cloning it.
 **Handle runs (copy_alloc_speed_plan.md 7-20).** A `for` (statement or expression) starts with `CB_ITER_BEGIN`
 (field 87, `emit_for_begin`) instead of `iter_from`. For the types that are copied when the loop starts (list / tuple /
 str / dict keys / fixed_list — the VM also iterates over that copy) it pushes **every element to the arena** at once
-(`push_value`, so `None` / bools / small ints get their fixed handles) and writes the address and count of the handle
+(`push_run`: `fixed_handle` gives `None` / bools / small ints their fixed handles, the rest are written straight into
+the arena's spare capacity — list elements by `write_clone`, which clones instances / strs / numbers in place, 7-21)
+and writes the address and count of the handle
 array (`NativeIter::Run`, alive until `iter_drop`) into a `[2 x i64]` scratch; the header (`emit_for_next`) then reads
 `run[i]` per round with no callback. Only when the slot holds a save point (body pushes, nothing kept) does the run path
 call `CB_ARENA_COMPACT(0, save)` first. Other iterables (set, generators, `__iter__`) return count -1 and keep the

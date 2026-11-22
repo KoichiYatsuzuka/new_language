@@ -123,6 +123,19 @@ fn int_cache_handle(n: i64) -> i64 {
     3 + n
 }
 
+/// アリーナへ積まずに決まったハンドルで表す値（`None`・真偽値・小さい整数）のハンドル。ほかの値は `None`。
+/// 値を積むところ（[`NativeCallState::push_value`]・[`push_handle`]・`ar_iter_begin` の並び）はこれ 1 つで決める。
+#[inline(always)]
+fn fixed_handle(v: &Value) -> Option<i64> {
+    match v {
+        Value::None => Some(TL_NONE),
+        Value::Bool(true) => Some(TL_TRUE),
+        Value::Bool(false) => Some(TL_FALSE),
+        Value::Int(n) if *n >= 0 && *n < INT_CACHE_END => Some(int_cache_handle(*n)),
+        _ => None,
+    }
+}
+
 // ── Consolidated thread-local state ─────────────────────────────────────────
 //
 // All previously separate thread_local! variables are combined here so that
@@ -211,17 +224,12 @@ impl NativeCallState {
     /// Small integers (0..256), booleans and None return cached handles without arena push.
     #[inline]
     fn push_value(&mut self, v: Value) -> i64 {
-        match &v {
-            Value::None => TL_NONE,
-            Value::Bool(true) => TL_TRUE,
-            Value::Bool(false) => TL_FALSE,
-            Value::Int(n) if *n >= 0 && *n < INT_CACHE_END => int_cache_handle(*n),
-            _ => {
-                let h = self.arena.len() as i64;
-                self.arena.push(v);
-                h
-            }
+        if let Some(h) = fixed_handle(&v) {
+            return h;
         }
+        let h = self.arena.len() as i64;
+        self.arena.push(v);
+        h
     }
 
 }
@@ -355,18 +363,15 @@ pub fn abort_native_call(is_outermost: bool) {
 
 /// 値をアリーナにプッシュしてハンドルを返す（小整数・真偽値はキャッシュ済みハンドルを返す）。
 pub fn push_handle(v: Value) -> i64 {
-    match &v {
-        Value::None => TL_NONE,
-        Value::Bool(true) => TL_TRUE,
-        Value::Bool(false) => TL_FALSE,
-        Value::Int(n) if *n >= 0 && *n < INT_CACHE_END => int_cache_handle(*n),
-        _ => with_state(|s| {
-            let mut st = s.borrow_mut();
-            let h = st.arena.len() as i64;
-            st.arena.push(v);
-            h
-        }),
+    if let Some(h) = fixed_handle(&v) {
+        return h;
     }
+    with_state(|s| {
+        let mut st = s.borrow_mut();
+        let h = st.arena.len() as i64;
+        st.arena.push(v);
+        h
+    })
 }
 
 /// 値をアリーナに**常に新規スロット**としてプッシュしてハンドルを返す（cpp-bridge write-back 用）。

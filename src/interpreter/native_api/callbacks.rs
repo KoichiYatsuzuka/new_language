@@ -917,8 +917,9 @@ const RUN_SLACK: usize = 1024;
 /// 読むだけで、要素を取るコールバックを呼ばない。写さない型は `out[1] = -1`（field 84 で 1 つずつ）。
 /// 失敗したら `TL_NONE`（エラーは積んである）と 0 個の並び（生成コードのループは 1 周もしない）。
 /// - 要素は `iter_from` の写しと同じ値（リストの要素の参照を 1 つずつ足す）で、ハンドルは `push_value` と同じ（`None`・
-///   真偽値・小さい整数は決まったハンドル）。⚠ 積んだ欄はループの保存点より下にある（生成コードは保存点をこの呼び出しの
-///   後に取る）ので、周ごとの巻き戻しでは消えない。消えるのはループの外の巻き戻し（呼ぶ側の生成コード・呼び出しの出口）
+///   真偽値・小さい整数は決まったハンドル）。積み方は [`push_run`]（7-21）。⚠ 積んだ欄はループの保存点より下にある
+///   （生成コードは保存点をこの呼び出しの後に取る）ので、周ごとの巻き戻しでは消えない。消えるのはループの外の巻き戻し
+///   （呼ぶ側の生成コード・呼び出しの出口）
 /// - 並びは表の `NativeIter::Run` が持ち、`iter_drop` まで書き換えない（表が伸びても並びの番地は動かない）
 /// - ⚠ 以前（7-15）は入口で要素を `Vec` へ写し、周ごとに `iter_next_at` が写しから取り出して積んでいた（1 周に 1 回の
 ///   コールバック・k1 の約 2 割）
@@ -932,40 +933,94 @@ extern "C" fn ar_iter_begin(obj_h: i64, out: *mut i64) -> i64 {
         (st.error.is_some(), st.clone_value(obj_h))
     });
     if has_err { return TL_NONE; }
-    let run = |n: usize, items: &mut dyn Iterator<Item = Value>, out: &mut [i64]| {
-        with_state(|s| {
-            let mut st = s.borrow_mut();
-            // アリーナは 1 回だけ、ちょうど要る大きさ（と本体の一時値の分）に伸ばす。⚠ 1 つずつ積むと倍々に伸び、伸ばす途中の
-            // 確保と余りの分だけ最大の量が増えた（10 万要素の k5 で、写しの `Vec` だけだった以前より 約 6 MB）
-            if st.arena.capacity() - st.arena.len() < n + RUN_SLACK {
-                st.arena.reserve_exact(n + RUN_SLACK);
-            }
-            let mut hs: Vec<i64> = Vec::with_capacity(n);
-            hs.extend(items.map(|v| st.push_value(v)));
-            // 並びの番地は `Vec` を表へ移しても変わらない（中身の確保は動かない）
-            out[0] = hs.as_ptr() as i64;
-            out[1] = hs.len() as i64;
-            let idx = st.iter_table.len();
-            st.iter_table.push(NativeIter::Run(hs));
-            -((idx as i64) + 2)
-        })
-    };
-    match &obj {
+    let hs = match &obj {
         // リストは写しの `Vec` を作らずに要素の参照を足して積む（ほかの型は `iter_from` と同じ写しから）
         Value::List(l) => {
             let l = l.borrow();
-            run(l.len(), &mut l.iter().cloned(), out)
+            with_state(|s| push_run(&mut s.borrow_mut(), l.len(), l.iter(), write_clone))
         }
         _ => match snapshot_items(&obj) {
-            Some(items) => run(items.len(), &mut items.into_iter(), out),
-            None => match protocol_iter(obj, "iter_begin") {
-                Some(g) => {
-                    out[1] = -1;
-                    push_iter(NativeIter::Gen(g))
-                }
-                None => TL_NONE,
-            },
+            Some(items) => with_state(|s| {
+                push_run(&mut s.borrow_mut(), items.len(), items.into_iter(), |v, slot| {
+                    slot.write(v);
+                })
+            }),
+            None => {
+                return match protocol_iter(obj, "iter_begin") {
+                    Some(g) => {
+                        out[1] = -1;
+                        push_iter(NativeIter::Gen(g))
+                    }
+                    None => TL_NONE,
+                };
+            }
         },
+    };
+    // 並びの番地は `Vec` を表へ移しても変わらない（中身の確保は動かない）
+    out[0] = hs.as_ptr() as i64;
+    out[1] = hs.len() as i64;
+    push_iter(NativeIter::Run(hs))
+}
+
+/// [`ar_iter_begin`] の並びを作る: `n` 個の要素 `items` を積み、ハンドルの並びを返す（ハンドルは `push_value` と同じ・
+/// [`fixed_handle`]）。要素はアリーナの空き欄へ直接書く（copy_alloc_speed_plan.md 7-21）。
+/// - アリーナは 1 回だけ、ちょうど要る大きさ（と本体の一時値の分）に伸ばす。⚠ 1 つずつ積むと倍々に伸び、伸ばす途中の
+///   確保と余りの分だけ最大の量が増えた（10 万要素の k5 で、写しの `Vec` だけだった以前より 約 6 MB・7-20）
+/// - ⚠ `n` は `items` の個数（空き欄をこの数で確保する。超えて空き欄が尽きたら添字の検査で止まる）。`write` は
+///   アリーナに触らないこと（空き欄を借りている）
+/// - ⚠ 以前（7-20）は `&mut dyn Iterator` から `push_value` で 1 つずつ積んでいた。`next()` がメモリ経由で返した要素を
+///   16 バイトずつ読み直す命令（要素の種類の 1 バイトとポインタの 8 バイトを別々に書いた直後なので、書いた値を読みへ
+///   直接渡せない）で待ち、k1 の 18%（ほぼ全部がその 1 命令）を占めていた
+#[inline(always)]
+fn push_run<T: std::borrow::Borrow<Value>>(
+    st: &mut NativeCallState,
+    n: usize,
+    items: impl Iterator<Item = T>,
+    write: impl Fn(T, &mut std::mem::MaybeUninit<Value>),
+) -> Vec<i64> {
+    if st.arena.capacity() - st.arena.len() < n + RUN_SLACK {
+        st.arena.reserve_exact(n + RUN_SLACK);
+    }
+    let base = st.arena.len();
+    let spare = st.arena.spare_capacity_mut();
+    let mut k = 0usize;
+    let hs: Vec<i64> = items
+        .map(|v| match fixed_handle(v.borrow()) {
+            Some(h) => h,
+            None => {
+                write(v, &mut spare[k]);
+                k += 1;
+                (base + k - 1) as i64
+            }
+        })
+        .collect();
+    // SAFETY: 空き欄の先頭 `k` 個は上で書いた（途中で止まったら書いた値は捨てられずに残るだけで、未初期化は読まない）
+    unsafe { st.arena.set_len(base + k) };
+    hs
+}
+
+/// リストの要素の複製を空き欄 `slot` へ書く（[`ar_iter_begin`]）。よく出る種類はその場で複製して直接書く
+/// （同じ値・`Value::clone` と同じ意味）。
+/// ⚠ 複製を一時の値にしてから写すと、LLVM が一時の置き場へ 1〜8 バイトずつ書いて 16 バイトで読み直す形にし、
+///   7-20 と同じ待ちが出た（試作で k1 の 11% がその 1 命令）。`Value::clone`（derive）も結果をメモリ経由で返す。
+#[inline(always)]
+fn write_clone(v: &Value, slot: &mut std::mem::MaybeUninit<Value>) {
+    match v {
+        Value::Instance(rc) => {
+            slot.write(Value::Instance(rc.clone()));
+        }
+        Value::Str(s) => {
+            slot.write(Value::Str(s.clone()));
+        }
+        Value::Float(f) => {
+            slot.write(Value::Float(*f));
+        }
+        Value::Int(n) => {
+            slot.write(Value::Int(*n));
+        }
+        _ => {
+            slot.write(v.clone());
+        }
     }
 }
 
@@ -3235,6 +3290,76 @@ mod tests {
         assert_eq!(out, [0, 0]);
         assert!(take_error().is_some_and(|e| e.contains("earlier")));
         super::abort_native_call(outermost);
+    }
+
+    /// 並びの積み方（`push_run`・copy_alloc_speed_plan.md 7-21）: 空き欄へ直接書く種類（インスタンス・文字列・float・
+    /// 整数）も、`Value::clone` で写す種類（リスト）も、決まったハンドル（`None`・真偽値・小さい整数）を挟んで順に
+    /// 新しい欄へ入り、アリーナの長さは積んだ数だけ伸びる。要素は同じもの（`Rc` は参照の数が 1 つ増え、欄を捨てると戻る）。
+    /// 写しから積む型（タプル）は写しの要素を動かして積む。
+    #[test]
+    fn iter_begin_writes_each_kind_into_its_own_slot() {
+        use crate::interpreter::value::{alloc_class_id, ClassValue, InstanceData};
+        let cls = Rc::new(ClassValue::synthetic("Item", alloc_class_id()));
+        let inst = Rc::new(RefCell::new(InstanceData::new_empty(cls, 0)));
+        let s: Rc<str> = Rc::from("text");
+        let inner = Rc::new(RefCell::new(vec![Value::Int(1)]));
+        let items = vec![
+            Value::Instance(inst.clone()),
+            Value::None,
+            Value::Str(s.clone()),
+            Value::Bool(false),
+            Value::Float(2.5),
+            Value::Int(255),
+            Value::Int(256),
+            Value::Int(-1),
+            Value::List(inner.clone()),
+            Value::Bool(true),
+        ];
+        let lh = push_handle(Value::List(Rc::new(RefCell::new(items.clone()))));
+        let len = || with_state(|s| s.borrow().arena.len());
+        let (inst_rc, str_rc, list_rc) = (Rc::strong_count(&inst), Rc::strong_count(&s), Rc::strong_count(&inner));
+        let before = len() as i64;
+        let mut out = [7i64, 7];
+        let it = ar_iter_begin(lh, out.as_mut_ptr());
+        assert!(it <= -2 && out[1] == 10, "{it} {out:?}");
+        // SAFETY: 並びは `iter_drop` まで動かない
+        let run = unsafe { std::slice::from_raw_parts(out[0] as *const i64, 10) }.to_vec();
+        let b = before;
+        assert_eq!(
+            run,
+            [b, TL_NONE, b + 1, TL_FALSE, b + 2, int_cache_handle(255), b + 3, b + 4, b + 5, TL_TRUE],
+            "fixed handles in between, the others in new slots in order"
+        );
+        assert_eq!(len() as i64, before + 6, "the arena grows by the pushed elements only");
+        assert!(matches!(clone_value_at(run[0]), Value::Instance(ref r) if Rc::ptr_eq(r, &inst)));
+        assert!(matches!(clone_value_at(run[2]), Value::Str(ref r) if Rc::ptr_eq(r, &s)));
+        assert!(matches!(clone_value_at(run[4]), Value::Float(f) if f == 2.5));
+        assert!(matches!(clone_value_at(run[6]), Value::Int(256)));
+        assert!(matches!(clone_value_at(run[7]), Value::Int(-1)));
+        assert!(matches!(clone_value_at(run[8]), Value::List(ref r) if Rc::ptr_eq(r, &inner)));
+        // 参照の数は並びの分だけ 1 つ増える（`clone_value_at` の写しはもう捨ててある）
+        assert_eq!(Rc::strong_count(&inst), inst_rc + 1);
+        assert_eq!(Rc::strong_count(&s), str_rc + 1);
+        assert_eq!(Rc::strong_count(&inner), list_rc + 1);
+        ar_iter_drop(it);
+        // 欄を捨てると戻る
+        with_state(|st| st.borrow_mut().arena.truncate(before as usize));
+        assert_eq!(Rc::strong_count(&inst), inst_rc);
+        assert_eq!(Rc::strong_count(&s), str_rc);
+        assert_eq!(Rc::strong_count(&inner), list_rc);
+        // 写しから積む型（タプル）: 同じハンドルの並びになる
+        let th = push_handle(Value::Tuple(Rc::new(crate::interpreter::TupleData::new(items))));
+        let before = len() as i64;
+        let it = ar_iter_begin(th, out.as_mut_ptr());
+        assert!(it <= -2 && out[1] == 10, "{it} {out:?}");
+        let run = unsafe { std::slice::from_raw_parts(out[0] as *const i64, 10) }.to_vec();
+        let b = before;
+        assert_eq!(run, [b, TL_NONE, b + 1, TL_FALSE, b + 2, int_cache_handle(255), b + 3, b + 4, b + 5, TL_TRUE]);
+        assert_eq!(len() as i64, before + 6);
+        assert!(matches!(clone_value_at(run[0]), Value::Instance(ref r) if Rc::ptr_eq(r, &inst)));
+        assert!(matches!(clone_value_at(run[8]), Value::List(ref r) if Rc::ptr_eq(r, &inner)));
+        ar_iter_drop(it);
+        assert!(take_error().is_none());
     }
 
     /// ガードが外れたときの戻り値の開け方（field 80・7-5）: 宣言の型の値だけを開け、違う型は黙って変換せずに TypeError。

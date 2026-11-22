@@ -149,3 +149,63 @@ fn empty_loop(let vs: list[V]) -> int:
     for v in vs:
         n += 1
     return n
+
+# 7-21: 積み方の違う種類が並ぶリスト。空き欄へその場で複製を書く種類（インスタンス・文字列・float・整数）、
+# `Value::clone` で写す種類（リスト）、決まったハンドル（None・真偽値・小さい整数）が混ざっても、要素ごとに別の欄へ順に入る
+fn int_kinds(let xs: list[int]) -> str:
+    mut out = ""
+    for x in xs:
+        out = out + str(x) + ","
+    return out
+
+fn float_kinds(let xs: list[float]) -> float:
+    mut s = 0.0
+    mut w = 1.0
+    for x in xs:
+        s += x * w
+        w = w * 10.0
+    return s
+
+fn str_kinds(let xs: list[str]) -> str:
+    mut out = ""
+    for x in xs:
+        out = out + x + "|"
+    return out
+
+fn bool_kinds(let xs: list[bool]) -> str:
+    mut out = ""
+    for x in xs:
+        if x:
+            out = out + "T"
+        else:
+            out = out + "F"
+    return out
+
+fn list_kinds(let xs: list[list[int]]) -> int:
+    mut s = 0
+    for x in xs:
+        s = s * 10 + len(x)
+    return s
+
+fn maybe_v(let xs: list[Option[V]]) -> float:
+    mut s = 0.0
+    for x in xs:
+        s = s * 10.0
+        if x is V:
+            s = s + x.x
+    return s
+
+fn tuple_kinds(let t: tuple[int, int, int]) -> str:
+    mut out = ""
+    for x in t:
+        out = out + str(x) + ","
+    return out
+
+# 要素はループに入ったときに参照を足してある: 1 周目でリストを空にしても、後の周の文字列は残っている
+fn strs_after_clear(mut xs: list[str]) -> str:
+    mut out = ""
+    for x in xs:
+        while len(xs) > 0:
+            xs.pop()
+        out = out + x
+    return out + str(len(xs))
