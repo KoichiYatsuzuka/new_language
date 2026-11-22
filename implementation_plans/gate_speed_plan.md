@@ -588,7 +588,10 @@
     `-Allow event_external_handler` で `724 ok, 0 failed, 1 allowed`。正の対照: 落ちる正常の例題・exit 0 で終わる
     `_error` の例題を一時的に足すと 2 件とも `FAILED`、書き間違えた `-Allow` の名前も止まって exit 1。`release.ps1` は
     ASCII だけのまま構文が読めることを確かめた（リリースそのものは走らせていない）。
-- **5-5** `compare_python_impl` を凍結する（D-9）。スクリプトの先頭に凍結の理由と日付を書く。
+- **5-5（済・2026-11-23）** `compare_python_impl` を凍結する（D-9）。スクリプトの先頭に凍結の理由と日付を書く。
+  - 先頭に、凍結の日付・理由（`impl_python` の更新を止めている・4-1 の実測で 202 件中 95 件しか一致しない）・代わりの網
+    （`gate/` の D-15 / D-14・入口は `gates_every_time.ps1`）・残す理由（再開するときに方針を決め直す）を書いた。
+    CLAUDE.md の表の書き換えは 5-7。
 - **5-6** 全例題を再帰で舐めるゲート（`syntax_cov` / `tw_stats` / `compare_tm_grammar`）の対象を
   `gate/` にする（`compare_wasm_frontend` はフェーズ 7）。
 - **5-7** 文書を直す: CLAUDE.md のゲートの表と注意書き（「例題ゲートが見ていない場所」の節を含む）、`regulations.md`、
