@@ -1,0 +1,24 @@
+# rs_unsupported_signature_error.ar — 今の Arrow から呼べない Rust の関数・メソッドは静的エラー（負例・2-5）
+#
+# 以前はこうした関数・メソッドは import 時に**黙って消え**、使うと「そんな名前は無い」という誤りになっていた
+# （型スタブにも載らないので理由が分からない）。今は理由を書いた印を付けて型スタブに載せ、使った箇所を
+# 静的エラーにする（`TypeErrorKind::FfiUnsupported`）。
+# ⚠ 5-4 から `Vec<String>`・数値の slice・`Vec<u8>` の引数は受け渡せる（rs_collections.ar）。
+#
+# 6 種類: ジェネリック・`&mut` の引数・タプルの戻り値・Arrow から作れない構造体の構築・`self` の無い関連関数・
+# `self` を消費するメソッド。どれも実行前に止まる。
+#
+# 実行には cargo が要る（rs_crates/ffi_probe_rs）。対になる正例: rs_values.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/rs_unsupported_signature_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+import[rs] ffi_probe_rs as fp
+
+let same = fp.ident(1)   # expect: static FfiUnsupported
+mut k = 1
+fp.bump(k)   # expect: static FfiUnsupported
+let pr = fp.pair()   # expect: static FfiUnsupported
+let sealed = fp.Sealed()   # expect: static FfiUnsupported
+let c = fp.Counter(1)
+let zero = fp.Counter.zero()   # expect: static FfiUnsupported
+let taken = c.into_n()   # expect: static FfiUnsupported

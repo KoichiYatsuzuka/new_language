@@ -1,0 +1,112 @@
+# rs_struct.ar — demonstrate Rust struct support via import[rs].
+#
+# `vec2` is a local crate under examples/interop/rs_crates/vec2/.
+# ar_config.json must list "examples/interop/rs_crates" in rust.crates_path.
+#
+# What is proved here:
+#   - `pub struct Vec2 { pub x: f64, pub y: f64 }` becomes a Arrow class
+#   - `pub fn new(x, y) -> Self`   maps to __init__
+#   - `pub fn length(&self)`       maps to an instance method
+#   - `pub fn dot(&self, ox, oy)`  maps to an instance method with extra args
+#   - `pub fn scale(&mut self, f)` maps to a mutable instance method
+#   - `pub x: f64`                 cached as field `v.x` on the HV instance
+#   - `get_x(self)` / `set_x(mut self, val)` generated as explicit accessors
+#   - `pub fn distance(...)`       maps to a free function
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/rs_struct.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[rs] vec2
+
+# ── Construction ──────────────────────────────────────────────────────────────
+
+let v = vec2.Vec2(3.0, 4.0)
+
+emit([str("=== Rust struct: Vec2 ===")])
+emit([str("v.x ="), str(v.x), str("  v.y ="), str(v.y)])   # fields cached by __init__
+
+# ── Instance methods ──────────────────────────────────────────────────────────
+
+let L = v.length()
+emit([str("length() ="), str(L)])             # 5.0  (sqrt(9+16))
+
+let lsq = v.length_sq()
+emit([str("length_sq() ="), str(lsq)])        # 25.0
+
+let d = v.dot(1.0, 0.0)
+emit([str("dot((1,0)) ="), str(d)])           # 3.0
+
+# ── Mutable method: scale ─────────────────────────────────────────────────────
+
+mut v2 = vec2.Vec2(1.0, 2.0)
+v2.scale(3.0)
+emit([str("after scale(3): get_x()="), str(v2.get_x()), str(" get_y()="), str(v2.get_y())])  # 3.0, 6.0
+
+# ── Mutable method: normalize ─────────────────────────────────────────────────
+
+mut v3 = vec2.Vec2(3.0, 4.0)
+v3.normalize()
+let nx = v3.get_x()
+let ny = v3.get_y()
+emit([str("after normalize: ("), str(nx), str(","), str(ny), str(")")])   # (0.6, 0.8)
+emit([str("length after normalize ="), str(v3.length())])  # 1.0
+
+# ── Explicit field setters ────────────────────────────────────────────────────
+
+mut v4 = vec2.Vec2(0.0, 0.0)
+v4.set_x(5.0)
+v4.set_y(12.0)
+emit([str("after set_x(5), set_y(12): length ="), str(v4.length())])  # 13.0
+
+# ── Free function ─────────────────────────────────────────────────────────────
+
+let dist = vec2.distance(0.0, 0.0, 3.0, 4.0)
+emit([str("distance(0,0 → 3,4) ="), str(dist)])   # 5.0
+
+# ── Methods that return a struct ─────────────────────────────────────────────
+#
+# `add` and `scaled` each return a new Vec2 instance.
+# The DLL extracts the result's fields, then calls cb_call_fn(Vec2_class, [x,y])
+# which triggers Vec2.__init__ natively — a full round-trip through the HV
+# interpreter and back into the DLL arena.
+
+let v5 = vec2.Vec2(1.0, 2.0)
+let v6 = v5.add(4.0, 5.0)          # returns new Vec2(5.0, 7.0)
+emit([str("v5.add(4,5): x ="), str(v6.get_x()), str(" y ="), str(v6.get_y())])   # 5.0, 7.0
+emit([str("v6 length ="), str(v6.length())])                             # sqrt(74) ≈ 8.602
+
+let v7 = v5.scaled(3.0)            # returns new Vec2(3.0, 6.0)
+emit([str("v5.scaled(3): x ="), str(v7.get_x()), str(" y ="), str(v7.get_y())])  # 3.0, 6.0
+
+# Original v5 is unchanged
+emit([str("v5 unchanged: x ="), str(v5.get_x()), str(" y ="), str(v5.get_y())])  # 1.0, 2.0
+
+# Chain: (v5 + (1,0)).scaled(2) = Vec2(2,2) * 2 = Vec2(4,4)
+let v8 = v5.add(1.0, 0.0).scaled(2.0)
+emit([str("chain add+scaled: x ="), str(v8.get_x()), str(" y ="), str(v8.get_y())])  # 4.0, 4.0
+
+# ── Explicit drop ─────────────────────────────────────────────────────────────
+
+v2.drop()
+emit([str("v2 dropped (arena entry freed)")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== Rust struct: Vec2 ===",
+    "v.x = 3.0   v.y = 4.0",
+    "length() = 5.0",
+    "length_sq() = 25.0",
+    "dot((1,0)) = 3.0",
+    "after scale(3): get_x()= 3.0  get_y()= 6.0",
+    "after normalize: ( 0.6 , 0.8 )",
+    "length after normalize = 1.0",
+    "after set_x(5), set_y(12): length = 13.0",
+    "distance(0,0 → 3,4) = 5.0",
+    "v5.add(4,5): x = 5.0  y = 7.0",
+    "v6 length = 8.602325267042627",
+    "v5.scaled(3): x = 3.0  y = 6.0",
+    "v5 unchanged: x = 1.0  y = 2.0",
+    "chain add+scaled: x = 4.0  y = 4.0",
+    "v2 dropped (arena entry freed)",
+    "",
+], "rs_struct")

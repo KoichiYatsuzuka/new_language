@@ -1,0 +1,34 @@
+# py_exception_args.ar — Python で定義した例外の args / str(e) を CPython で動かして Arrow で受ける
+#
+# Python のクラスが組み込みの例外を継承したときの args と str(e)（CPython の BaseException の規則）:
+#   - super().__init__(..) に渡したものが args になる（RangeError）
+#   - __init__ を書かなければ、作るときの引数がそのまま args（Missing）
+#   - __init__ が super().__init__ を呼ばなくても、作るときの引数が args（Coded・BaseException.__new__）
+# Arrow の `except Exception as mut e` も Python で定義した例外を捕まえる（値は CPython の物なので `mut` で受ける・D-11）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_exception_args.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_exception_args as p
+
+for line in p.describe_all():
+    emit([str(line)])
+# RangeError: str=1-9 args=('1-9',)
+# Missing: str=('name', 2) args=('name', 2)
+# Coded: str=7 args=(7,)
+
+try:
+    p.fail()
+except LookupError as mut e:
+    emit([str("not reached")])
+except Exception as mut e:
+    emit([str("Arrow caught:"), str(e)])            # Arrow caught: 3-4
+
+# ── 出力を照らす ──
+check_output([
+    "RangeError: str=1-9 args=('1-9',)",
+    "Missing: str=('name', 2) args=('name', 2)",
+    "Coded: str=7 args=(7,)",
+    "Arrow caught: 3-4",
+    "",
+], "py_exception_args")

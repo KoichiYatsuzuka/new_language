@@ -1,0 +1,67 @@
+# py_class_factory.ar — 関数の中でクラスを作る Python のコード（デコレータ・クラスのファクトリ）
+#
+# 関数の中のクラスは CPython が作る。関数の中でクラスを作って使い切る関数（count_by など）も、Python の中でデコレータを
+# 掛けたクラス（@add_greeting class Person）も Arrow から使える（デコレータがメンバーを足すことがあるので、そのクラスの
+# メンバーは静的に「無い」と言わない）。
+# ⚠ Arrow の関数の中の class は構文の誤り（classes/class_in_function_error.ar）。
+# ⚠ インスタンスは CPython の物なので `mut` で持つ（D-3）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_class_factory.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_class_factory as f
+
+# ── ① ファクトリを Python の中で使い切る ────────────────────────────────
+#     Counter は関数の引数 step（3）を閉包として捕まえ、最上位の Base を継承する。
+mut step = 3
+mut times = 4
+emit([str(f.count_by(step, times))])
+# base 12
+
+# ── ② メソッドがクラス自身を名前で引く ──────────────────────────────────
+mut n = 5
+emit([str(f.chain_length(n))])
+# 5
+
+# ── ③ if / else の中のクラス ────────────────────────────────────────────
+mut yes = True
+mut no = False
+emit([str(f.pick(yes))])
+# yes
+emit([str(f.pick(no))])
+# no
+
+# ── ④ メソッドが関数のローカルのリストを書き換える（同じリストを指す） ──
+mut values = [1, 2, 3]
+emit([str(f.collect(values => py_list[int]))])
+# 3
+
+# ── ⑤ Python の中でデコレータを掛けたクラス ──────────────────────────────
+#     Person は add_greeting が返した派生クラス（greet が足されている）。
+mut name = "ann"
+mut p = f.Person(name)
+emit([str(p.name)])
+# ann
+emit([str(p.greet())])
+# hello from ann
+
+# ── ⑥ 引数を取るデコレータ（tagged_with("v1")）───────────────────────────
+mut r = f.Release()
+emit([str(r.tag())])
+# v1
+emit([str(r.ok)])
+# True
+
+# ── 出力を照らす ──
+check_output([
+    "base 12",
+    "5",
+    "yes",
+    "no",
+    "3",
+    "ann",
+    "hello from ann",
+    "v1",
+    "True",
+    "",
+], "py_class_factory")

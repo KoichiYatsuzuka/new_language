@@ -1,0 +1,24 @@
+# py_except_tuple.ar — Python の except (A, B): を使う関数を Arrow から呼ぶ
+#
+# 組で複数の型を捕まえる形。要素には修飾名（h.ConfigError）も書ける。CPython が実行する。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_except_tuple.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_except_tuple as t
+
+emit([str(t.parse("12")), str(t.parse("x"))])      # 12 -1
+emit([str(t.classify(1))])                    # KeyError in the tuple
+emit([str(t.classify(2))])                    # IndexError in the tuple
+emit([str(t.classify(3))])                    # MissingKey in the tuple
+emit([str(t.classify(4))])                    # RuntimeError fell through
+
+# ── 出力を照らす ──
+check_output([
+    "12 -1",
+    "KeyError in the tuple",
+    "IndexError in the tuple",
+    "MissingKey in the tuple",
+    "RuntimeError fell through",
+    "",
+], "py_except_tuple")

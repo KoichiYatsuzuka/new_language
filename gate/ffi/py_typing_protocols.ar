@@ -1,0 +1,59 @@
+# py_typing_protocols.ar — 型スタブの `typing` / `collections.abc` の型は組み込みの protocol（pandas_import_plan.md の 6-8）
+#
+# Python の関数の注釈の `Sequence[int]` / `Iterable[str]` / `Mapping[str, int]` / `SupportsIndex` / `Iterator[int]` は、Arrow の
+# 組み込みの protocol として読む。構造で照合するので、タプル・`py_list` / `py_dict`・それを満たす Python の物を渡せ、要素の型も
+# 静的に検査される（`py_typing_protocols_error.ar`）。戻り値も protocol の型（`for v in m.countdown(3)` の `v` は `int`）。
+# 抽象クラスを基底に書いた Python のクラス（`class Bag(Sequence)`）は名目でも満たす（抽象クラスが足すメソッドは型スタブに
+# 現れない）。
+# `@overload` の形は引数の型も見て選ぶ（`m.pick(3)` は `int`・`m.pick("s")` は `str`・CPython の型の検査器と同じ）。
+# ⚠ 以前は `typing.py` の `class SupportsIndex(Protocol)` をただのクラスとして写したので、`m.at(1)` が `expects
+#   'm.SupportsIndex' but got 'int'` の偽の静的な誤りだった。`Sequence[int]` などは `Any`（何も検査しない）だった。
+#
+# 期待される出力:
+#   30 20
+#   6 3 3
+#   a-b x-y
+#   2 3
+#   6
+#   True True True
+#   3 s
+#   ok
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_typing_protocols.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_typing_protocols as m
+
+emit([str(m.at(2)), str(m.at(True))])
+
+mut b = m.bag()
+mut pl = [1, 2] => py_list[int]
+emit([str(m.total(b)), str(m.total((1, 2))), str(m.total(pl))])
+emit([str(m.joined(("a", "b"))), str(m.joined(["x", "y"] => py_list[str]))])
+
+mut t = m.table()
+mut pd = {"k": 3} => py_dict[str, int]
+emit([str(m.lookup(t, "bb")), str(m.lookup(pd, "k"))])
+
+mut s = 0
+for v in m.countdown(3):
+    s += v
+emit([str(s)])
+emit([str(b is Sequence), str(t is Mapping), str(pl is Sequence)])
+let n: int = m.pick(3)
+let w: str = m.pick("s")
+emit([str(n), str(w)])
+emit([str("ok")])
+
+# ── 出力を照らす ──
+check_output([
+    "30 20",
+    "6 3 3",
+    "a-b x-y",
+    "2 3",
+    "6",
+    "True True True",
+    "3 s",
+    "ok",
+    "",
+], "py_typing_protocols")

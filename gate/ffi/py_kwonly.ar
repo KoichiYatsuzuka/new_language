@@ -1,0 +1,54 @@
+# py_kwonly.ar — キーワード専用引数（bare `*`）・位置専用引数（`/`）を持つ Python の関数を Arrow から呼ぶ
+#
+# `def f(a, *, b)` の `*` より後ろはキーワードでしか渡せない。Arrow の型スタブには「位置渡し禁止」を表す印が無いので、
+# 静的には通り、位置で渡すと CPython が `TypeError` にする（②）。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_kwonly.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_kwonly as m
+
+mut a = 1
+mut b = 2
+mut c = 3
+
+# ── ① キーワードで渡す（Python と同じ書き方） ────────────────────────────
+emit([str(m.f(a, b=b))])
+# 12
+
+# ── ② 位置で渡す（CPython の TypeError） ────────────────────────────────
+try:
+    emit([str(m.f(a, b))])
+except TypeError as e:
+    emit([str("TypeError:"), str(e)])
+# TypeError: f() takes 1 positional argument but 2 were given
+
+# ── ③ キーワード専用が 2 個 ─────────────────────────────────────────────
+emit([str(m.g(a, b=b, c=c))])
+# 6
+
+# ── ④ bare `*` だけ（位置引数なし） ─────────────────────────────────────
+mut n = 5
+emit([str(m.only_kw(b=n))])
+# 6
+
+# ── ⑤ `/` と `*` の併用（`/` の前は位置で、`*` の後はキーワードで渡す） ────
+emit([str(m.both_markers(a, b, c=c))])
+# 123
+
+# ── ⑥ `__init__` の bare `*` ────────────────────────────────────────────
+mut p = m.Point(a, y=b)
+emit([str(p.total())])
+# 3
+
+# ── 出力を照らす ──
+check_output([
+    "12",
+    "TypeError: f() takes 1 positional argument but 2 were given",
+    "6",
+    "6",
+    "123",
+    "3",
+    "",
+], "py_kwonly")

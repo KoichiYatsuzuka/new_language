@@ -1,0 +1,57 @@
+# py_module_types.ar — Python のモジュールのクラスはモジュールの名前で型として書ける
+#
+# 対になる誤りの例: py_module_types_error.ar
+#
+# `test_modules/py_module_types_zoo.py` の `Dog` は `test_modules.py_module_types_zoo.Dog` という型。
+# import の別名（`z.Dog`）と `from ... import` した素の名前のどちらでも、`is` / `mustbe` / 型注釈に書ける。
+# 派生は基底の型で受けられ（`fn describe(mut a: z.Animal)` に `z.Puppy()`）、`is` は CPython の `isinstance`。
+# 別のモジュールのクラスを継承したクラス（kennel の `Corgi(zoo.Dog)`）も基底の型で受けられる。
+# 別のモジュールの同名クラス（kennel の `Dog`）は別の型。
+# ⚠ インスタンスは CPython の物なので `mut` で受ける（D-3）。
+# ⚠ ほかのモジュールの基底へは、そのモジュールもプログラムが import しているときだけたどれる（型の表はモジュールごと）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_module_types.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_module_types_zoo as z
+import[py] test_modules.py_module_types_kennel as k
+from test_modules.py_module_types_zoo import[py] Puppy
+
+# ── ① is: 自分のクラスと、その基底 ──────────────────────────────────────
+mut p = z.Puppy()
+emit([str(p is z.Puppy), str(p is z.Dog), str(p is z.Animal)])            # True True True
+emit([str(z.Animal() is z.Dog)])                                 # False（基底は派生ではない）
+emit([str(p is Puppy)])                                          # True（from import した素の名前）
+
+# ── ② 型注釈・mustbe: 派生を基底の型で受ける ────────────────────────────
+fn describe(mut a: z.Animal) -> str:
+    return a.kind()
+
+mut d: z.Dog = z.Puppy()
+emit([str(describe(d))])                                         # puppy
+mut m = p mustbe z.Dog
+emit([str(m is z.Puppy)])                                        # True
+
+# ── ③ 別のモジュールのクラスを継承する（kennel.Corgi は zoo.Dog の派生）──
+mut c = k.Corgi()
+emit([str(c is k.Corgi), str(c is z.Dog), str(c is z.Animal)])            # True True True
+emit([str(describe(c))])                                         # corgi
+
+# ── ④ 別のモジュールの同名クラスは別の型 ───────────────────────────────
+mut kd = k.Dog()
+emit([str(kd is k.Dog), str(kd is z.Dog), str(p is k.Dog)])               # True False False
+emit([str(kd.kind())])                                           # kennel dog
+
+# ── 出力を照らす ──
+check_output([
+    "True True True",
+    "False",
+    "True",
+    "puppy",
+    "True",
+    "True True True",
+    "corgi",
+    "True False False",
+    "kennel dog",
+    "",
+], "py_module_types")

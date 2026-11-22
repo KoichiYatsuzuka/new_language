@@ -1,0 +1,77 @@
+# py_shared_objects.ar — Python のコードの中は参照を共有する（CPython で実行する）
+#
+# CPython のコードの中では、フィールド・辞書・`append`・`xs[i] = v`・名前への代入・内包を通っても同じ物で、別名から
+# 書き換えた結果が見える（親子の参照も作れる）。`__eq__` / `__hash__` を書いていないクラスのインスタンスの `==` / `hash`
+# は同一性（別々の `P(1)` は等しくなく、辞書のキーとしても別）。
+# Arrow の束縛に入れた Python のインスタンスも写さずに共有する（CPython の物・`mut` で受ける・D-3）。
+# ⚠ Arrow のクラスは今までどおり格納で写し、中身で比べる。
+#
+# sh.run() / sh.run2() の出力（CPython）:
+#   1 list alias: 2
+#   1 dict alias: 3
+#   2 registry: 11
+#   3 field is: True list is: True
+#   4 eq: False False True
+#   5 dict keys: 2 2 in: False
+#   6 parent: True root 1
+#   6 renamed: renamed
+#   7 local alias: 5 True
+#   8 comprehension: 9 True
+#   8 dict list: [1, 2]
+#   9 key lookup: v True False
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_shared_objects.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_shared_objects as sh
+
+sh.run()
+sh.run2()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow のクラスは今のまま（写す・中身で比べる）
+class Pt:
+    mut x: int
+
+let a = Pt(1)
+mut pts: list[Pt] = []
+pts.append(a)
+check(pts[0] == a and Pt(1) == Pt(1) and not (pts[0] === a), "Arrow classes copy and compare by contents")
+
+# Arrow の束縛に入れた Python のインスタンスは共有される（写さない）
+mut reg = sh.Registry()
+mut item = reg.register(sh.P(10))
+item.x = 11
+check(reg.items[0].x == 11, "a Python object bound in Arrow is shared, not copied")
+
+# Python のクラスの既定の == は同一性
+mut p = sh.P(1)
+check(p == p and not (sh.P(1) == sh.P(1)), "Python classes compare by identity")
+emit([str("arrow side ok")])
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "arrow side ok",
+    "",
+], "py_shared_objects")
+check_text(py_output(), [
+    "1 list alias: 2",
+    "1 dict alias: 3",
+    "2 registry: 11",
+    "3 field is: True list is: True",
+    "4 eq: False False True",
+    "5 dict keys: 2 2 in: False",
+    "6 parent: True root 1",
+    "6 renamed: renamed",
+    "7 local alias: 5 True",
+    "8 comprehension: 9 True",
+    "8 dict list: [1, 2]",
+    "9 key lookup: v True False",
+    "",
+], "py_shared_objects (python side)")

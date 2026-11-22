@@ -1,0 +1,35 @@
+# py_class_body_names.ar — クラス本体の名前を参照するクラス属性を持つ Python のクラス（CPython で実行する）
+#
+# Python のクラス本体は 1 つの名前空間で、`x = property(getx, setx)` / `DOUBLE = LIMIT * 2` /
+# `table = {"get": get_c}` のように先に定義したメソッドやクラス属性を素の名前で引ける。メソッドの別名
+# （`current = get_c` / `__repr__ = __str__`）・`name = lambda self: ..` も使える。
+#
+# cb.run() の出力（CPython）:
+#   10 20 [0, 1] 100 1
+#   5 5 5 T
+#   15 degrees Celsius
+#   too hot
+#   Temperature(15) Temperature(15) [Temperature(15)]
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_class_body_names.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_class_body_names as cb
+
+cb.run()
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "",
+], "py_class_body_names")
+check_text(py_output(), [
+    "10 20 [0, 1] 100 1",
+    "5 5 5 T",
+    "15 degrees Celsius",
+    "too hot",
+    "Temperature(15) Temperature(15) [Temperature(15)]",
+    "",
+], "py_class_body_names (python side)")

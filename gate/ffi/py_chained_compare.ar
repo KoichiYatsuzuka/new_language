@@ -1,0 +1,115 @@
+# py_chained_compare.ar — Python の連鎖比較（`a < b < c`）を使う関数を Arrow から呼ぶ
+#
+# 連鎖比較は CPython が実行するので、短絡（`a < f() < c` で左が偽なら `c` を評価しない）・中間の評価回数（1 回）・
+# 評価順序・同一性（`a is b is c`）は CPython と同じ。⑧〜⑫ は条件式・内包・`while` の中の連鎖比較。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_chained_compare.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_chained_compare as m
+
+mut x = 5
+
+# ── ① 基本形 ────────────────────────────────────────────────────────────
+emit([str(m.simple(x))])
+# True
+mut big = 50
+emit([str(m.simple(big))])
+# False
+
+# ── ② 3 段の連鎖 ────────────────────────────────────────────────────────
+mut y = 20
+emit([str(m.triple(x, y))])
+# True
+
+# ── ③ 演算子が混ざってもよい ────────────────────────────────────────────
+emit([str(m.mixed_ops(x))])
+# True
+mut a = 1
+emit([str(m.eq_chain(a, a, a))])
+# True
+mut b = 2
+emit([str(m.eq_chain(a, a, b))])
+# False
+
+# ── ④ 他の演算子との組み合わせ ──────────────────────────────────────────
+mut xs = [5]
+emit([str(m.with_in(x, xs => py_list[int]))])
+# True
+
+# ── ⑤ 連鎖でない比較も同じ経路（`is not` の特別扱いを壊していないこと） ──
+emit([str(m.is_chain(x))])
+# True
+
+# ── ⑥ 条件式としての利用 ────────────────────────────────────────────────
+emit([str(m.guard(x))])
+# out      （1 < 5 < 5 は偽）
+mut nine = 9
+emit([str(m.guard(nine))])
+# out
+
+# ── ⑦ ★短絡は CPython と一致する ───────────────────────────────────────
+#     `100 < 5` が偽なので右側の `side_len()` は評価されない ⇒ 呼び出し回数 0。
+emit([str(m.short_circuit(x))])
+# (False, 0)
+
+# ── ⑧ ★中間オペランドは 1 回だけ評価される（D6） ────────────────────────
+emit([str(m.middle_once())])
+# (True, 1)
+emit([str(m.four_operands())])
+# (True, 2)      中間が 2 つ、どちらも 1 回
+emit([str(m.early_false())])
+# (False, 1)     先頭の比較が偽 ⇒ その先は評価されない
+emit([str(m.eval_order())])
+# (True, 'abc')  ★先頭にも副作用がある形。左→右の順を守る
+
+# ── ⑨ `while` の条件 — **毎周回**評価される ─────────────────────────────
+#     持ち上げていたら 1 回で終わってしまう位置。
+emit([str(m.in_while())])
+# (3, 4)
+
+# ── ⑩ `and` / `or` の右辺 — 短絡したら評価されない ──────────────────────
+emit([str(m.in_and_rhs())])
+# (False, 0)
+emit([str(m.in_or_rhs())])
+# (True, 0)
+
+# ── ⑪ 三項の**選ばれない腕** ────────────────────────────────────────────
+emit([str(m.in_ternary())])
+# ('hit', 0)
+
+# ── ⑫ 内包表記の条件 — **要素ごとに 1 回** ──────────────────────────────
+emit([str(m.in_comprehension())])
+# ([1, 2], 3)
+
+# ── ⑬ ★同一性が動かないこと ────────────────────────────────────────────
+#     一時変数へ退避しても `is` の結果は変わらない（呼び出し結果の束縛は複製しない）。
+emit([str(m.is_identity())])
+# True
+
+# ── 出力を照らす ──
+check_output([
+    "True",
+    "False",
+    "True",
+    "True",
+    "True",
+    "False",
+    "True",
+    "True",
+    "out",
+    "out",
+    "(False, 0)",
+    "(True, 1)",
+    "(True, 2)",
+    "(False, 1)",
+    "(True, 'abc')",
+    "(3, 4)",
+    "(False, 0)",
+    "(True, 0)",
+    "('hit', 0)",
+    "([1, 2], 3)",
+    "True",
+    "",
+], "py_chained_compare")

@@ -1,0 +1,17 @@
+# py_protocol_classes_error.ar — Python の protocol を満たさない物は静的な誤り（pandas_import_plan.md の 6-9）
+#
+# `SupportsRead[str]` は `read(n) -> str` を要求する。何も持たない `Nothing` は渡せない。戻り値の型も型引数で決まる
+# （`take` の戻り値は `str`）。
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   argument 0 of 'test_modules.py_protocol_classes.take' expects 'test_modules.py_protocol_classes.SupportsRead[str]' but got 'test_modules.py_protocol_classes.Nothing'
+#   'n' is declared 'int' but initialized with 'str'
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_protocol_classes_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+import[py] test_modules.py_protocol_classes as m
+
+mut z = m.nothing()
+print(m.take(z, 1))   # expect: static CallArgTypeMismatch
+mut r = m.reader()
+let n: int = m.take(r, 2)   # expect: static VarTypeMismatch

@@ -1,0 +1,55 @@
+# py_int_classes.ar — import[py] の Python のクラスを Arrow から使う（正例・ffi_value_exchange_plan.md 7-27）
+#
+# 型を付けるのは**注釈・スタブファイル（.pyi）があるもの**と、**コンストラクタの戻り値**だけ（利用者の決定）:
+#   - `pc.Counter(10)` の型は `pc.Counter`（`__init__` の戻り値）。メソッド・属性はそのクラスの表で静的に検査する
+#   - 注釈のあるメソッドの戻り値・属性（`self.value: int`・`label: str`・`@property -> int`）はその型
+#   - 注釈の無いもの（`self.step`・`describe()`・`untyped(x)`）は `Any`（使うには明示のダウンキャストが要る）
+#   - 同じファイルの基底クラスのメンバーも持つ。`is` / `mustbe pc.Counter` は Python の isinstance と同じ判定
+# ⚠ 7-27 より前はコンストラクタの値が `Any` で、属性もメソッドも静的エラー、`mustbe pc.Counter` も実行時に失敗した。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 対になる負例: py_int_classes_error.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_int_classes.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] py_int_classes as pc
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    emit([str(label + " OK")])
+
+mut c = pc.Counter(10)
+check("an annotated method returns its type", c.bump() == 11)
+check("an annotated attribute", c.value == 11)
+check("a class attribute", c.label == "counter")
+check("a property", c.count == 1)
+check("an annotated list attribute", (c.history => list[int]) == [11])
+# 注釈の無いものは Any: 明示のダウンキャストで使う
+check("an unannotated method is Any", (c.describe() mustbe str) == "counter=11")
+check("an unannotated attribute is Any", (c.step mustbe int) == 1)
+mut loud = pc.LoudCounter(1)
+check("a base class in the same file", loud.bump() == 2 and loud.shout() == "COUNTER=2")
+check("is: the class and its base (isinstance)", loud is pc.LoudCounter and loud is pc.Counter and not (c is pc.LoudCounter))
+mut made = pc.make_counter(5)
+check("a function annotated with the class", made.bump() == 6)
+mut anything: Any = loud
+mut back = anything mustbe pc.Counter
+check("mustbe a Python class", back.value == 2)
+
+# ── 出力を照らす ──
+check_output([
+    "an annotated method returns its type OK",
+    "an annotated attribute OK",
+    "a class attribute OK",
+    "a property OK",
+    "an annotated list attribute OK",
+    "an unannotated method is Any OK",
+    "an unannotated attribute is Any OK",
+    "a base class in the same file OK",
+    "is: the class and its base (isinstance) OK",
+    "a function annotated with the class OK",
+    "mustbe a Python class OK",
+    "",
+], "py_int_classes")

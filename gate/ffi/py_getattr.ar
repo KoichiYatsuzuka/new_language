@@ -1,0 +1,41 @@
+# py_getattr.ar — getattr / hasattr / setattr を使う Python のコードと、Arrow の getattr / hasattr / setattr
+#
+# 対になる誤りの例: py_getattr_error.ar
+#
+# 名前（文字列）で属性を読み書きする。読み書きは `o.name` / `o.name = v` と同じ経路なので、
+# アクセス指定・`let` のインスタンスへの書き込みの禁止などの規則がそのまま効く。
+#   - getattr(o, name, default) は AttributeError のときだけ default を返す
+#   - hasattr は AttributeError だけを偽にする（ほかの誤りはそのまま上げる）
+# ⚠ Arrow のクラスはフィールドを本体で宣言するので、宣言していない名前は setattr でも作れない。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_getattr.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_getattr as m
+
+emit([str("=== 1. inside Python code ===")])
+emit([str(m.run())])                          # ([True, False, True], 'started;unknown pause;stopped;')
+mut h = m.Handler()
+emit([str(m.rename(h, "reset"))])             # ('reset', True, False)
+
+emit([str("=== 2. from Arrow ===")])
+class Box:
+    mut v: int
+
+mut b = Box(1)
+emit([str(getattr(b, "v")), str(getattr(b, "w", 0))])       # 1 0
+emit([str(hasattr(b, "v")), str(hasattr(b, "w"))])          # True False
+setattr(b, "v", 9)
+emit([str(b.v)])                                       # 9
+
+# ── 出力を照らす ──
+check_output([
+    "=== 1. inside Python code ===",
+    "([True, False, True], 'started;unknown pause;stopped;')",
+    "('reset', True, False)",
+    "=== 2. from Arrow ===",
+    "1 0",
+    "True False",
+    "9",
+    "",
+], "py_getattr")

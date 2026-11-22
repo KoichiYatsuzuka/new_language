@@ -1,0 +1,92 @@
+# py_ternary.ar — Python の三項演算子（`a if cond else b`）を使う関数を Arrow から呼ぶ
+#
+# 三項演算子は CPython が実行する（選ばれた腕しか評価しない・⑨ で副作用の回数まで確かめる・腕の型が違ってもよい）。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_ternary.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_ternary as m
+
+mut t = True
+mut f = False
+
+# ── ① 素朴な三項式 ──────────────────────────────────────────────────────
+mut a = 5
+emit([str(m.sign(a))])
+# pos
+mut b = -5
+emit([str(m.sign(b))])
+# nonpos
+
+# ── ② 入れ子（括弧つき） ────────────────────────────────────────────────
+mut z = 0
+emit([str(m.nested(z))])
+# zero
+emit([str(m.nested(a))])
+# pos
+emit([str(m.nested(b))])
+# neg
+
+# ── ③ 括弧なしの連鎖（右結合＝ elif 相当） ──────────────────────────────
+mut k2 = 2
+emit([str(m.chain(k2))])
+# b
+mut k9 = 9
+emit([str(m.chain(k9))])
+# z
+
+# ── ④ 代入の右辺 ────────────────────────────────────────────────────────
+emit([str(m.in_assign(t))])
+# 1
+emit([str(m.in_assign(f))])
+# 2
+
+# ── ⑤ 呼び出し引数の中 ──────────────────────────────────────────────────
+emit([str(m.in_arg(t))])
+# 3
+emit([str(m.in_arg(f))])
+# 4
+
+# ── ⑥ リスト要素 / dict の値 ────────────────────────────────────────────
+emit([str(m.in_list(t))])
+# [1, 3]
+emit([str(m.in_dict(t))])
+# {'k': 10}
+
+# ── ⑦ while の条件式の中 ────────────────────────────────────────────────
+mut n = 3
+emit([str(m.in_cond(n))])
+# 3
+
+# ── ⑧ 腕の型が違う ──────────────────────────────────────────────────────
+emit([str(m.mixed(t))])
+# 1
+emit([str(m.mixed(f))])
+# one
+
+# ── ⑨ ★遅延評価: 選ばれた腕しか評価されない（CALLS が 1 件だけ） ────────
+emit([str(m.lazy(t))])
+# T:1
+
+# ── 出力を照らす ──
+check_output([
+    "pos",
+    "nonpos",
+    "zero",
+    "pos",
+    "neg",
+    "b",
+    "z",
+    "1",
+    "2",
+    "3",
+    "4",
+    "[1, 3]",
+    "{'k': 10}",
+    "3",
+    "1",
+    "one",
+    "T:1",
+    "",
+], "py_ternary")

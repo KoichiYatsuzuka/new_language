@@ -1,0 +1,47 @@
+# py_file_methods.ar — Python のファイルのメソッド（CPython の open で開いたファイル）
+#
+# Python のコードの open（`open(path, "w")` / `open(path)`）は CPython の open:
+#   - `readline(size)` / `readlines()` / `writelines(xs)` / `close()` / `flush()` / `tell()` / `for line in f`
+#     / `iter(f.readline, "")` / 属性 `closed` / `name` / `mode`
+#   - `read()` は終わりで `""`（`read(n)` は n 文字）、`write(s)` は書いた文字の数を返す、`"rb"` は `bytes`
+#   - 閉じたファイルは `ValueError: I/O operation on closed file.`、`"a"` で読むと `OSError: not readable`
+# ⚠ Arrow の `open(path, FileOpenMode.read, ..)` で開いたファイルは Arrow のファイル（終わりの `read()` は `EOFError`・
+#   basics/file_lines.ar）。
+#
+# pf.run(..) の出力（CPython）:
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_file_methods.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_file_methods as pf
+
+pf.run("_tmp_py_file_methods.txt")
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "",
+], "py_file_methods")
+check_text(py_output(), [
+    "6 27 False w True",
+    "True",
+    "'alpha\\n' 'bet' 'a\\n'",
+    "['γάμμα\\n', 'delta']",
+    "'' '' []",
+    "0 alpha",
+    "1 beta",
+    "'γάμμα\\n'",
+    "['alpha', 'beta', 'γάμμα', 'delta'] True",
+    "'alp' 'ha\\nb' 7",
+    "delta",
+    "read I/O operation on closed file.",
+    "readline I/O operation on closed file.",
+    "iterate I/O operation on closed file.",
+    "OSError not readable",
+    "write() argument must be str, not int",
+    "5",
+    "b'ab\\n' b'cd' b''",
+    "",
+], "py_file_methods (python side)")

@@ -1,0 +1,36 @@
+# py_property_typed.ar — Python の property を Arrow から読んだ値の型
+#
+# 型スタブは property を getter の戻り値の注釈の型の属性として読む。Arrow から `s.celsius` を読むと `float`、
+# `s.readings` は `py_list[int]`（CPython の list のまま・D-12）になり、そのまま演算・反復できる。
+# 注釈の無い getter（`raw`）は今までどおり `Any`（演算する前に `mustbe` などで型を確かめる）。
+# 対になる誤りの例: py_property_typed_error.ar（`float` の property を `str` の変数へ束縛する）
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_property_typed.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_property_typed as pt
+
+mut s = pt.Sensor(21.5, [3, 4, 5] => py_list[int])
+let c: float = s.celsius
+emit([str(c * 2.0)])
+s.celsius = 30.0
+emit([str(s.celsius + 0.5)])
+
+mut total = 0
+for v in s.readings:
+    total = total + v
+emit([str(total)])
+emit([str(s.label.upper())])
+
+let r = s.raw mustbe float
+emit([str(r)])
+
+# ── 出力を照らす ──
+check_output([
+    "43.0",
+    "30.5",
+    "12",
+    "SENSOR",
+    "30.0",
+    "",
+], "py_property_typed")

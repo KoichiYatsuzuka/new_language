@@ -1,0 +1,48 @@
+# py_with.ar — Python の `with` 文を使うモジュールを CPython で動かす
+#
+# `with` は CPython が実行するので、`__enter__` の戻り値の束縛・`__exit__` の呼び出し（例外のときも）・ファイルの close は
+# CPython と同じ。Python の `open` は Python の文字列のモード（`"w"`）で開く。書いたファイルは Arrow の `open` で読む。
+#
+# ⚠ 一時ファイルは `examples/**/_tmp_*.txt`（`.gitignore` 済みの慣習）に置く。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_with.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_with as m
+
+mut mr = FileOpenMode.read
+
+# ── ① 基本形（`with` を抜けると閉じる） ─────────────────────────────────
+mut p = "_tmp_with_a.txt"
+emit([str(m.write_hello(p))])
+mut f1 = open("_tmp_with_a.txt", mr)
+emit([str(f1.read())])
+# written
+# hello
+
+# ── ② 複数アイテム（`with a as x, b as y:`） ───────────────────────────
+mut q = "_tmp_with_b.txt"
+emit([str(m.write_two(p, q))])
+mut f2 = open("_tmp_with_b.txt", mr)
+emit([str(f2.read())])
+# written2
+# B
+
+# ── ③ `as` なし ─────────────────────────────────────────────────────────
+emit([str(m.no_binding(p))])
+# no-as
+
+# ── ④ `__enter__` / `__exit__` を持つクラス（例外のときも `__exit__` が走る） ─
+emit([str(m.with_hooks())])
+# ['enter', 'token', 'exit:ok', 'enter', 'exit:ValueError']
+
+# ── 出力を照らす ──
+check_output([
+    "written",
+    "hello",
+    "written2",
+    "B",
+    "no-as",
+    "['enter', 'token', 'exit:ok', 'enter', 'exit:ValueError']",
+    "",
+], "py_with")

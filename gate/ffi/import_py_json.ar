@@ -1,0 +1,20 @@
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/import_py_json.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] json
+
+let data = json.dumps({"key": "value", "num": 42} => py_dict[str, Any])
+emit([str(data)])
+
+mut parsed = json.loads(data)
+emit([str(parsed["key"])])
+emit([str(parsed["num"])])
+
+# ── 出力を照らす ──
+check_output([
+    "{\"key\": \"value\", \"num\": 42}",
+    "value",
+    "42",
+    "",
+], "import_py_json")

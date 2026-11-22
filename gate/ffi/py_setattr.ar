@@ -1,0 +1,77 @@
+# py_setattr.ar — `__setattr__` / `__delattr__` を持つ Python のクラスを CPython で動かし、Arrow から代入する
+#
+# `__setattr__` は `o.x = v`・`setattr(o, "x", v)`・`o.x += v`・`__init__` の中の `self.x = ..`・Arrow からの代入
+# （CPython の `setattr`・2-9）のどれでもまず呼ばれ、基底のものも受け継ぐ。上書きを飛ばして本当に入れるのは
+# `object.__setattr__(self, k, v)` / `super().__setattr__(k, v)`。`__delattr__` / `object.__delattr__` も同じ。
+# ⚠ Arrow のクラスは `__setattr__` / `__delattr__` を定義できない（`classes/setattr_hook_error.ar`）。
+#
+# m.run() / m.errors() の出力（CPython）:
+#   1 log: ['x=1', 'x=2', 'x=3', 'x=7'] 7
+#   2 frozen: 5
+#   2 bypass: 6
+#   3 swallow: False
+#   4 derived: ['n', 'n', 'n'] 2
+#   4 upper: ['n', 'n'] HI
+#   4 child: 10
+#   5 property: ['_c', 'celsius', '_c'] 30
+#   6 cached: 8 8 True
+#   7 delattr: ['x', 'y'] False False
+#   E frozen_set: AttributeError Frozen is read-only: v
+#   E frozen_setattr: AttributeError Frozen is read-only: v
+#   E frozen_del: AttributeError Frozen cannot delete: v
+#   E bad_name: TypeError attribute name must be string, not 'int'
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_setattr.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_setattr as m
+
+m.run()
+m.errors()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow から代入しても Python のクラスの `__setattr__` を通る
+mut lg = m.Logged()
+lg.x = 10
+check(repr(lg.log) == "['x=1', 'x=10']", "assignment from Arrow goes through __setattr__")
+# 宣言していない名前も書ける（上書きが受ける。ここでは何も入れない）
+mut sw = m.Swallow()
+sw.anything = 5
+check(not hasattr(sw, "anything"), "__setattr__ receives undeclared names")
+# 上書きが拒めば Arrow の側でも誤り
+mut fz = m.Frozen(1)
+try:
+    fz.v = 2
+    check(False, "Frozen accepted an assignment")
+except AttributeError as e:
+    check(str(e) == "Frozen is read-only: v", "Frozen rejects")
+emit([str("arrow side ok")])
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "arrow side ok",
+    "",
+], "py_setattr")
+check_text(py_output(), [
+    "1 log: ['x=1', 'x=2', 'x=3', 'x=7'] 7",
+    "2 frozen: 5",
+    "2 bypass: 6",
+    "3 swallow: False",
+    "4 derived: ['n', 'n', 'n'] 2",
+    "4 upper: ['n', 'n'] HI",
+    "4 child: 10",
+    "5 property: ['_c', 'celsius', '_c'] 30",
+    "6 cached: 8 8 True",
+    "7 delattr: ['x', 'y'] False False",
+    "E frozen_set: AttributeError Frozen is read-only: v",
+    "E frozen_setattr: AttributeError Frozen is read-only: v",
+    "E frozen_del: AttributeError Frozen cannot delete: v",
+    "E bad_name: TypeError attribute name must be string, not 'int'",
+    "",
+], "py_setattr (python side)")

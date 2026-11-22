@@ -1,0 +1,21 @@
+# py_int_cast_required_runtime_error.ar — 型で分からない所で Arrow の list を Python へ渡すと実行時の TypeError
+# （pandas_import_plan.md の D-12・2-11）
+#
+# `apply(f, x)` は注釈の無い Python の関数で、Arrow の関数 `pair` を呼ぶ。`pair` が返す Arrow の list は Python へ渡る値だが、
+# 呼ばれるのは Python の中なので静的には分からない。境界で TypeError（`=> py_list[int]` で返せと言う）になる。
+# 対になる正例: `pair_ok` は `=> py_list[int]` で返すので通る。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_int_cast_required_runtime_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: runtime TypeError "cannot pass an Arrow list to Python as is"
+import[py] py_int_callbacks as pc
+
+fn pair_ok(let x: int) -> py_list[int]:
+    return [x, x] => py_list[int]
+
+fn pair(let x: int) -> list[int]:
+    return [x, x]
+
+mut good = pc.apply(pair_ok, 3)
+print("with a cast:", good)
+mut bad = pc.apply(pair, 3)
+print("unreachable:", bad)

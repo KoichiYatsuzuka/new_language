@@ -1,0 +1,81 @@
+# py_classvar.ar — Python のクラス変数（全インスタンスで共有する可変の属性）を Arrow から読み書きする
+#
+# Python のクラス属性は**可変・全インスタンス共有**。`m.Counter.count = 100` は CPython の `setattr`（2-9）。
+# インスタンスの `self.x = ...` はクラス属性を隠すインスタンス属性を新しく作る（⑦: `self.count` は 99、
+# `Counter.count` は 102 のまま）。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_classvar.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_classvar as m
+
+# ── ① クラス経由の読み取り ──────────────────────────────────────────────
+emit([str(m.Counter.count)])
+# 0
+emit([str(m.Counter.label)])
+# c
+
+# ── ② ドライバ側からクラス変数を書き換える ──────────────────────────────
+m.Counter.count = 100
+emit([str(m.Counter.count)])
+# 100
+
+# ── ③ メソッド内からクラス経由で読み書き（全インスタンスで共有） ────────
+mut a = m.Counter(1)
+mut b = m.Counter(2)
+emit([str(a.bump())])
+# 101
+emit([str(b.bump())])
+# 102
+emit([str(a.read())])
+# 102
+emit([str(m.Counter.count)])
+# 102
+
+# ── ④ `self` 経由の読み取りはクラス変数に落ちる ─────────────────────────
+emit([str(a.via_self())])
+# 102
+
+# ── ⑤ 可変オブジェクトのクラス変数は中身が共有される ────────────────────
+mut x = 7
+emit([str(a.push(x))])
+# [7]
+mut y = 8
+emit([str(b.push(y))])
+# [7, 8]
+emit([str(m.Counter.items)])
+# [7, 8]
+
+# ── ⑥ 注釈つきクラス変数 ────────────────────────────────────────────────
+emit([str(m.Typed.n)])
+# 5
+mut t = m.Typed()
+emit([str(t.get())])
+# 5
+
+# ── ⑦ `self.x = ...` はクラス属性を隠すインスタンス属性を作る ──────────────
+emit([str(a.shadow())])
+# (99, 102)
+emit([str(m.Counter.count)])
+# 102
+
+# ── 出力を照らす ──
+check_output([
+    "0",
+    "c",
+    "100",
+    "101",
+    "102",
+    "102",
+    "102",
+    "102",
+    "[7]",
+    "[7, 8]",
+    "[7, 8]",
+    "5",
+    "5",
+    "(99, 102)",
+    "102",
+    "",
+], "py_classvar")

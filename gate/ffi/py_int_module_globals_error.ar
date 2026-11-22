@@ -1,0 +1,10 @@
+# import[py] のモジュールの、注釈のある大域変数の型で静的に誤りを見つける（pandas_import_plan.md の 1-4）
+#
+# 正しい形は py_int_module_globals.ar。以前は大域変数がどれも `Any` で、型の合わない受け方も実行するまで分からなかった。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_int_module_globals_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+import[py] py_int_module_globals as gm
+
+let n: str = gm.count                   # int を str で受ける   # expect: static VarTypeMismatch
+let t: int = gm.label                   # str を int で受ける   # expect: static VarTypeMismatch

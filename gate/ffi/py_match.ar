@@ -1,0 +1,51 @@
+# py_match.ar — Python の `match` 文を使う関数を Arrow から呼ぶ
+#
+# `match` は CPython が実行する（当たった 1 本だけ走る・どれにも当たらず `_` も無ければ何もしない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_match.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_match as m
+
+# ── ① 整数リテラル ──────────────────────────────────────────────────────
+mut a = 0
+mut b = 1
+mut c = 7
+emit([str(m.classify(a))])
+emit([str(m.classify(b))])
+emit([str(m.classify(c))])
+# zero
+# one
+# many
+
+# ── ② 文字列リテラル ────────────────────────────────────────────────────
+mut s = "b"
+mut t = "z"
+emit([str(m.word(s))])
+emit([str(m.word(t))])
+# B
+# ?
+
+# ── ③ シングルトン（None / True / False） ───────────────────────────────
+emit([str(m.singleton(None))])
+mut yes = True
+emit([str(m.singleton(yes))])
+# none
+# true
+
+# ── ④ `_` が無く、どれにも当たらない（何もしない） ──────────────────────
+emit([str(m.no_default(c))])
+# untouched
+
+# ── 出力を照らす ──
+check_output([
+    "zero",
+    "one",
+    "many",
+    "B",
+    "?",
+    "none",
+    "true",
+    "untouched",
+    "",
+], "py_match")

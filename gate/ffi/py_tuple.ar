@@ -1,0 +1,77 @@
+# py_tuple.ar — Python のタプル（リテラル・入れ子・アンパック・比較）を使う関数を Arrow から呼ぶ
+#
+# タプルは不変なので境界で Arrow のタプルに写す（要素の list などは CPython の物のまま `py_list`）。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_tuple.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_tuple as m
+
+# ── ① リテラル / 空 / 単要素 ────────────────────────────────────────────
+emit([str(m.literal())])
+# (1, 2, 3)
+emit([str(m.empty())])
+# ()
+emit([str(m.single())])
+# (1,)
+
+# ── ② 入れ子 / 型混在 ───────────────────────────────────────────────────
+emit([str(m.nested())])
+# ((1, 2), (3, 4))
+emit([str(m.mixed())])
+# (1, 'a', True, None)
+
+# ── ③ 要素が式 ──────────────────────────────────────────────────────────
+mut a = 1
+mut b = 3
+emit([str(m.from_exprs(a, b))])
+# (2, 6)
+
+# ── ④ 添字 / スライス / len / in / 反復 ─────────────────────────────────
+mut t = (1, 2, 3)
+emit([str(m.index(t))])
+# 2
+emit([str(m.slice_it(t))])
+# (2, 3)
+emit([str(m.length(t))])
+# 3
+mut two = 2
+emit([str(m.contains(t, two))])
+# True
+emit([str(m.iterate(t))])
+# 6
+
+# ── ⑤ デフォルト引数 / リスト要素 / 戻り値のペア ────────────────────────
+emit([str(m.as_default())])
+# (7, 8)
+emit([str(m.in_list())])
+# [(1, 2), (3, 4)]
+mut p = 7
+mut q = 8
+emit([str(m.as_return_pair(p, q))])
+# (7, 8)
+
+# ── ⑥ 等価比較は値で行われる（list と違ってタプルは正しい） ─────────────
+emit([str(m.compare())])
+# True
+
+# ── 出力を照らす ──
+check_output([
+    "(1, 2, 3)",
+    "()",
+    "(1,)",
+    "((1, 2), (3, 4))",
+    "(1, 'a', True, None)",
+    "(2, 6)",
+    "2",
+    "(2, 3)",
+    "3",
+    "True",
+    "6",
+    "(7, 8)",
+    "[(1, 2), (3, 4)]",
+    "(7, 8)",
+    "True",
+    "",
+], "py_tuple")

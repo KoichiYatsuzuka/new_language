@@ -1,0 +1,92 @@
+# py_inherit.ar — 継承する Python のクラス（単一・多段・多重・`super()`）を Arrow から使う
+#
+# 継承は CPython が実行する（`super()`・MRO）。型スタブは同じファイルの基底のメンバーを基底の基底までたどって持ち
+# （`c.show()` は `A` のメソッド）、派生を基底の型で受けられる（pandas_import_plan.md 3-1）。
+# ⚠ Arrow の `class` は今もクラスを継承できない（基底はトレイトだけ・`examples/classes/class_inherit_error.ar`）。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_inherit.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_inherit as m
+
+mut v = 5
+mut w = 2
+
+# ── ① 基底クラス単体 ────────────────────────────────────────────────────
+mut a = m.A(v)
+emit([str(a.show())])
+# A5
+
+# ── ② メソッドのオーバーライドと動的ディスパッチ ────────────────────────
+#     `show()` は基底 A の実装だが、その中の `self.label()` は B の実装に届く。
+mut b = m.B(v, w)
+emit([str(b.label())])
+# BA
+emit([str(b.show())])
+# BA5
+
+# ── ③ `super().__init__()` で基底のフィールドが初期化される ─────────────
+emit([str(b.v)])
+# 5
+emit([str(b.w)])
+# 2
+
+# ── ④ `super().method()` のチェーン ─────────────────────────────────────
+emit([str(b.show2())])
+# BA5/2
+
+# ── ⑤ 基底から引き継いだメソッド（B 自身のもの） ────────────────────────
+emit([str(b.extra())])
+# 10
+
+# ── ⑥ クラス変数の継承 ──────────────────────────────────────────────────
+emit([str(m.B.tag)])
+# A
+
+# ── ⑦ 3 段継承（C → B → A） ────────────────────────────────────────────
+mut c = m.C(v, w)
+emit([str(c.label())])
+# C
+emit([str(c.show())])
+# C5
+emit([str(c.extra())])
+# 10
+
+# ── ⑧ `super()` を使わず基底の `__init__` を明示的に呼ぶ古い書き方 ──────
+mut z = 4
+mut e = m.E(v, z)
+emit([str(e.sum())])
+# 9
+emit([str(e.show())])
+# A5
+
+# ── ⑨ 多重継承（メソッドは先に書いた基底が優先） ────────────────────────
+mut mm = m.Multi()
+emit([str(mm.own())])
+# own
+emit([str(mm.m1())])
+# m1
+emit([str(mm.m2())])
+# m2
+
+# ── 出力を照らす ──
+check_output([
+    "A5",
+    "BA",
+    "BA5",
+    "5",
+    "2",
+    "BA5/2",
+    "10",
+    "A",
+    "C",
+    "C5",
+    "10",
+    "9",
+    "A5",
+    "own",
+    "m1",
+    "m2",
+    "",
+], "py_inherit")

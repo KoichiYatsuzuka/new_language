@@ -1,0 +1,52 @@
+# py_subscript.ar — Python の添字・キーへの代入（`d[k] = v` / `xs[i] += v` / 入れ子の `box["k"][0] = v`）を使う関数を Arrow から呼ぶ
+#
+# 代入は CPython が実行する。Arrow から CPython の物の添字へ書くのは `py_int_values.ar`。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_subscript.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_subscript as m
+
+# ── ① dict のキー代入 / 読んで書き戻し ──────────────────────────────────
+emit([str(m.dict_set())])
+# {'a': 11, 'b': 5}
+
+# ── ② list の添字代入 ───────────────────────────────────────────────────
+emit([str(m.list_set())])
+# [99, 2, 3]
+
+# ── ③ 複合代入 `+=` / `*=` / `-=` ───────────────────────────────────────
+emit([str(m.aug_list())])
+# [1, 9, 9]
+emit([str(m.aug_dict())])
+# {'n': 6}
+
+# ── ④ 入れ子の添字代入 ──────────────────────────────────────────────────
+emit([str(m.nested())])
+# {'k': [42, 10]}
+
+# ── ⑤ 属性 + 添字（`self.data[i] += 1`） ────────────────────────────────
+mut h = m.Holder()
+mut i = 1
+emit([str(h.bump(i))])
+# [0, 1]
+emit([str(m.attr_and_index(h))])
+# [7, 1]
+
+# ── ⑥ ループの中で dict を組み立てる ────────────────────────────────────
+mut n = 3
+emit([str(m.in_loop(n))])
+# {0: 0, 1: 1, 2: 4}
+
+# ── 出力を照らす ──
+check_output([
+    "{'a': 11, 'b': 5}",
+    "[99, 2, 3]",
+    "[1, 9, 9]",
+    "{'n': 6}",
+    "{'k': [42, 10]}",
+    "[0, 1]",
+    "[7, 1]",
+    "{0: 0, 1: 1, 2: 4}",
+    "",
+], "py_subscript")

@@ -1,0 +1,50 @@
+# import[py]: CPython から見える参照の数が、CPython で同じ形を書いたときと同じになる（pandas_import_plan.md の D-5・タスク 1-1）
+#
+# Arrow の値の写し 1 つが CPython の参照 1 つを持ち、メソッド・関数の呼び出しは評価のスタックの参照を引き渡す
+# （CPython のバイトコードと同じ）。pandas は `sys.getrefcount(self)` で連鎖代入を見分けるので、変数への
+# `df["c"] = ..` と一時的な物への `df["a"][0] = ..` を CPython と同じく見分けられる。
+# ⚠ 以前は Arrow の束縛がいくつあっても CPython の参照は 1 つ（変数への代入が一時的な物への代入に見えた）。
+# 期待する数は CPython で同じ形を走らせて得る（py_int_refcount.py の `expected`）。版で変わる数は出さない。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_int_refcount.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] py_int_refcount as rc
+
+let want = rc.expected() => dict[str, int]
+mut got: dict[str, int] = {}
+
+mut p = rc.make()
+got["method_variable"] = p.count_self()
+got["method_temporary"] = rc.make().count_self()
+got["arg_variable"] = rc.count_arg(p)
+got["arg_temporary"] = rc.count_arg(rc.make())
+p["k"] = 1
+got["setitem_variable"] = rc.last_seen()
+rc.make()["k"] = 1
+got["setitem_temporary"] = rc.last_seen()
+mut q = p
+mut r = p
+mut xs: list[rc.Probe] = [p, p]
+got["arg_with_more_holders"] = rc.count_arg(p)
+
+let shapes = ["method_variable", "method_temporary", "arg_variable", "arg_temporary",
+              "setitem_variable", "setitem_temporary", "arg_with_more_holders"]
+for shape in shapes:
+    if got[shape] != want[shape]:
+        raise RuntimeError(shape + ": Arrow " + str(got[shape]) + ", CPython " + str(want[shape]))
+    emit([str(shape + ": same as CPython")])
+emit([str("the variable and the temporary differ by"), str(want["method_variable"] - want["method_temporary"])])
+
+# ── 出力を照らす ──
+check_output([
+    "method_variable: same as CPython",
+    "method_temporary: same as CPython",
+    "arg_variable: same as CPython",
+    "arg_temporary: same as CPython",
+    "setitem_variable: same as CPython",
+    "setitem_temporary: same as CPython",
+    "arg_with_more_holders: same as CPython",
+    "the variable and the temporary differ by 1",
+    "",
+], "py_int_refcount")

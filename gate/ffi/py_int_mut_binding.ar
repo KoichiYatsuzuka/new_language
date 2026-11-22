@@ -1,0 +1,41 @@
+# Python から受け取ったオブジェクトは `mut` で受ける（pandas_import_plan.md の D-3・タスク 1-2）
+#
+# CPython の物は写さずに参照を共有するので、ほかの参照（Python のコード・別の Arrow の変数）から中身が変わりうる。
+# Arrow の `let` の「変わらない」を保証できないので、`let` / `const` / `freeze` と `mut` でない関数の引数では受けられない
+# （誤りの形は py_int_mut_binding_error.ar・py_int_mut_binding_runtime_error.ar）。
+# 境界で Arrow の値に変わる物（int・str・dict など）は Arrow の値なので `let` で受けられる。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_int_mut_binding.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] py_int_refcount as rc
+
+fn count_self(mut p: rc.Probe) -> int:
+    return p.count_self()
+
+fn describe(mut x: Any) -> str:
+    return "got a Python object"
+
+mut p = rc.make()
+mut q = p
+emit([str("mut binding:"), str(count_self(p) > 0)])
+emit([str("Any parameter declared mut:"), str(describe(q))])
+mut probes: list[rc.Probe] = [p, q]
+emit([str("a list of Python objects bound with mut:"), str(len(probes))])
+mut make = rc.make
+emit([str("a Python function bound with mut:"), str(count_self(make()) > 0)])
+
+# Arrow の値に変わる物（int など・`=>` で写した物）は `let` で受けられる
+let n = rc.count_arg(p)
+let table = rc.expected() => dict[str, int]
+emit([str("converted values with let:"), str(n > 0), str(len(table) > 0)])
+
+# ── 出力を照らす ──
+check_output([
+    "mut binding: True",
+    "Any parameter declared mut: got a Python object",
+    "a list of Python objects bound with mut: 2",
+    "a Python function bound with mut: True",
+    "converted values with let: True True",
+    "",
+], "py_int_mut_binding")

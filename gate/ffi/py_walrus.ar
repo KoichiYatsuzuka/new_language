@@ -1,0 +1,46 @@
+# py_walrus.ar — Python の walrus 演算子 `:=` を使う関数を Arrow から呼ぶ
+#
+# walrus は CPython が実行する（右辺は 1 回だけ評価・⑥）。Arrow の list は `=> py_list[int]` で写して渡す。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_walrus.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_walrus as m
+
+# ── ① if の条件（最頻出の形） ───────────────────────────────────────────
+mut xs = [1, 2, 3]
+emit([str(m.in_if(xs => py_list[int]))])
+# 30
+
+# ── ② 束縛した名前を条件の外でも使う ────────────────────────────────────
+mut small = [1]
+emit([str(m.in_if(small => py_list[int]))])
+# 1
+
+# ── ③ return の中（同じ式で 2 回参照） ─────────────────────────────────
+mut x = 5
+emit([str(m.in_return(x))])
+# 12
+
+# ── ④ 呼び出し引数の中 ──────────────────────────────────────────────────
+emit([str(m.in_call(x))])
+# -4
+
+# ── ⑤ 代入の右辺 ────────────────────────────────────────────────────────
+emit([str(m.in_assign(x))])
+# (6, 12)
+
+# ── ⑥ ★右辺が 1 回だけ評価される（持ち上げの効果） ─────────────────────
+emit([str(m.once())])
+# (14, 1)
+
+# ── 出力を照らす ──
+check_output([
+    "30",
+    "1",
+    "12",
+    "-4",
+    "(6, 12)",
+    "(14, 1)",
+    "",
+], "py_walrus")

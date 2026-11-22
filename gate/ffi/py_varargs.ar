@@ -1,0 +1,84 @@
+# py_varargs.ar — `*args` / `**kwargs` を受ける Python の関数を Arrow から呼ぶ
+#
+# 型スタブは `*args` / `**kwargs` を持つ関数の引数を検査しない（位置引数の個数・キーワードの名前が開いている）。
+# 束縛は CPython が行う（余った位置引数はタプル・余ったキーワード引数は dict・1 個も無くても空）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_varargs.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_varargs as m
+
+mut a = 1
+mut b = 2
+mut c = 3
+
+# ── ① `*args` の基本 ────────────────────────────────────────────────────
+emit([str(m.va(a, b, c))])
+# [1, 2, 3]
+emit([str(m.va())])
+# []
+emit([str(m.va_len(a, b))])
+# 2
+emit([str(m.va_index(a, b))])
+# 1
+emit([str(m.va_sum(a, b, c))])
+# 6
+
+# ── ② 通常引数 + `*args` ────────────────────────────────────────────────
+emit([str(m.mixed(a, b, c))])
+# 6
+emit([str(m.mixed(a))])
+# 1
+
+# ── ③ `**kwargs` の基本 ─────────────────────────────────────────────────
+emit([str(m.kw(x=a, y=b))])
+# {'x': 1, 'y': 2}
+emit([str(m.kw())])
+# {}          ← 1 個も渡さなくても空 dict が束縛される
+emit([str(m.kw_len(x=a))])
+# 1
+mut k = "x"
+emit([str(m.kw_get(k, x=b))])
+# 2
+emit([str(m.kw_keys(x=a, y=b))])
+# ['x', 'y']
+
+# ── ④ 両方いっぺんに ────────────────────────────────────────────────────
+emit([str(m.both(a, b, c, z=a))])
+# (1, 5, {'z': 1})
+
+# ── ⑤ メソッドでも同じ ──────────────────────────────────────────────────
+mut o = m.C(a, b)
+emit([str(o.xs)])
+# [1, 2]
+emit([str(o.m(c))])
+# [1, 2, 3]
+emit([str(o.k(p=a))])
+# {'p': 1}
+
+# ── ⑥ `*args` の中身は tuple ─────────────────────────────────────────────
+#     Arrow の関数の可変長（`let ...: T`）はリスト。
+emit([str(m.raw(a, b))])
+# (1, 2)
+
+# ── 出力を照らす ──
+check_output([
+    "[1, 2, 3]",
+    "[]",
+    "2",
+    "1",
+    "6",
+    "6",
+    "1",
+    "{'x': 1, 'y': 2}",
+    "{}",
+    "1",
+    "2",
+    "['x', 'y']",
+    "(1, 5, {'z': 1})",
+    "[1, 2]",
+    "[1, 2, 3]",
+    "{'p': 1}",
+    "(1, 2)",
+    "",
+], "py_varargs")

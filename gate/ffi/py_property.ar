@@ -1,0 +1,57 @@
+# py_property.ar — Python の @property / @x.setter / @x.deleter / @Base.x.getter を CPython で動かし、Arrow から読み書きする
+#
+# 読み書きは CPython のディスクリプタのプロトコルで getter / setter に回る（Arrow からの `o.x` / `o.x = v` も CPython の
+# `getattr` / `setattr`）。pp.run() の出力（CPython）:
+#   25
+#   77.0
+#   212.0
+#   below absolute zero
+#   property 'fahrenheit' of 'Temperature' object has no setter
+#   property True
+#   True True
+#   0
+#   [1, 2] (2,)
+#   child of base
+#   base
+#   7 ['property']           ← `@logged @property`（property を包むデコレータ・タスク 6-6）
+#   Temperature in degrees Celsius. name of the base None None
+#                            ← getter の docstring が `__doc__`（setter のは使わない・getter を差し替えると付け直す・タスク 6-7）
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_property.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_property as pp
+
+pp.run()
+
+# Arrow からも Python のクラスの property を読み書きできる
+mut t = pp.Temperature(10)
+emit([str(t.celsius)])
+t.celsius = 30
+emit([str(t.fahrenheit)])
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "10",
+    "86.0",
+    "",
+], "py_property")
+check_text(py_output(), [
+    "25",
+    "77.0",
+    "212.0",
+    "below absolute zero",
+    "property 'fahrenheit' of 'Temperature' object has no setter",
+    "property True",
+    "True True",
+    "0",
+    "[1, 2] (2,)",
+    "child of base",
+    "base",
+    "7 ['property']",
+    "Temperature in degrees Celsius. name of the base None None",
+    "",
+], "py_property (python side)")

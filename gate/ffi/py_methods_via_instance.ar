@@ -1,0 +1,52 @@
+# py_methods_via_instance.ar — Python のクラスの静的メソッド・クラスメソッドをインスタンスから呼ぶ（known_bugs.md の #5）
+#
+# Python のクラスでは CPython と同じくインスタンスからも呼べる: `self.helper(x)` は静的メソッドを `self` を渡さずに呼び、
+# `self.make()` はクラスメソッドに `cls = type(self)`（派生クラスのインスタンスなら派生クラス）を渡す。
+# Arrow のコードから Python のインスタンス経由で呼ぶ形も通る（型検査は CPython のクラスに `StaticMethodOnInstance` を
+# 出さない・`type(made)` は CPython の `type`）。
+# ⚠ Arrow のクラスは今までどおりクラス経由だけ（`static method 'f' must be called on `C`, not an instance`）。
+#
+# m.run() の出力（CPython）:
+#   1 describe: s: 6 Shape/0 | q: 6 Square/4
+#   2 outside: 10 Square/4 Square m
+#   3 class: 14 Square/4 Square
+#   4 values: 8 Square Square/4
+#   5 function form: 101
+#   6 identity: True True False
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_methods_via_instance.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_methods_via_instance as m
+
+m.run()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow のコードからも Python のインスタンス経由で呼べる
+mut q = m.Square("arrow")
+check(str(q.double(21)) == "42", "static method through an instance from Arrow")
+check(str(q.kind()) == "Square/4", "class method through an instance gets type(obj)")
+mut made = q.make("x")
+check(str(type(made).__name__) == "Square", "class method makes the subclass")
+emit([str("arrow side ok")])
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "arrow side ok",
+    "",
+], "py_methods_via_instance")
+check_text(py_output(), [
+    "1 describe: s: 6 Shape/0 | q: 6 Square/4",
+    "2 outside: 10 Square/4 Square m",
+    "3 class: 14 Square/4 Square",
+    "4 values: 8 Square Square/4",
+    "5 function form: 101",
+    "6 identity: True True False",
+    "",
+], "py_methods_via_instance (python side)")

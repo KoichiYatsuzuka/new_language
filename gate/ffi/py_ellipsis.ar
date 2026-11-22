@@ -1,0 +1,61 @@
+# py_ellipsis.ar — `...`（Ellipsis）を使う Python のモジュールを CPython で動かす
+#
+# 文としての `...`（スタブ本体のプレースホルダ）は何もせず、値としての `...` は CPython の `Ellipsis`
+# （Arrow の `Ellipsis` と同じ値・py_ellipsis_value.ar）。
+# ⚠ 型を書いたスタブ本体（`def stub_typed(x: int) -> int: ...`）は CPython では `None` を返すので、
+#   戻り値の境界の検査が `FfiTypeError` にする（型スタブの注釈と違う値は通さない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_ellipsis.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_ellipsis as m
+
+# ── ① 関数のスタブ本体（戻り値は None） ────────────────────────────────
+emit([str(m.stub())])
+# None
+
+mut n = 5
+try:
+    emit([str(m.stub_typed(n))])
+except FfiTypeError:
+    emit([str("FfiTypeError: declared int, returned None")])
+# FfiTypeError: declared int, returned None
+
+# ── ② クラスの空本体 / メソッドのスタブ ────────────────────────────────
+mut c = m.C()
+emit([str("C ok")])
+# C ok
+
+mut d = m.D()
+emit([str(d.m())])
+# None
+
+# ── ③ `if` の枝のプレースホルダ ─────────────────────────────────────────
+emit([str(m.guarded(n))])
+# pos
+
+mut neg = -1
+emit([str(m.guarded(neg))])
+# neg
+
+# ── ④ ループ本体のプレースホルダ ────────────────────────────────────────
+mut xs = [1, 2]
+emit([str(m.loop_body(xs => py_list[int]))])
+# done
+
+# ── ⑤ 値位置の `...` は `Ellipsis` ────────────────────────────────────────
+emit([str(m.value_pos())])
+# Ellipsis
+
+# ── 出力を照らす ──
+check_output([
+    "None",
+    "FfiTypeError: declared int, returned None",
+    "C ok",
+    "None",
+    "pos",
+    "neg",
+    "done",
+    "Ellipsis",
+    "",
+], "py_ellipsis")

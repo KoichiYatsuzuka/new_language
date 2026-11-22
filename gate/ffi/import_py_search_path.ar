@@ -1,0 +1,57 @@
+# import_py_search_path.ar — `ar_config.json` の `python.search_paths` で見つけた Python のモジュールの型と呼び出し
+#
+# 2 つのことを同時に見ている:
+#
+# ① **`python.search_paths` 経由でモジュールの型を読めること**（#61 / #69）
+#    `cfg_probe.py` は `examples/interop/py_libs/` にあり、**この .ar のあるディレクトリには無い**。
+#    型スタブは構文解析の側の探索先（`parser/imports/cs_js_modules.rs::python_search_dirs`）で `cfg_probe.py` を
+#    見つけて作る。実行時の探索先（CPython の `sys.path`）は `import_py_int_search_path.ar` が見る。
+#
+# ② **Python の関数・メソッドを実際に呼べること**（#71）
+#    ⚠ この例題が無かったので、全ゲートが緑のまま 1 つも呼べない状態が続いたことがある
+#      （#56 の `parse_ar`・#68 の `enum` と同じ「例題が 1 本も無い」形の 5 度目）。
+#
+# ⚠ Python が書き換える list は `py_list` で渡す（Arrow の list をキャストして渡すと写しなので、書き換えは戻らない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/import_py_search_path.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] cfg_probe
+
+# ── ① モジュール属性（解決だけで読める） ──────────────────────────────────
+emit([str(cfg_probe.MARKER)])
+
+# ── ② 関数呼び出し ──────────────────────────────────────────────────────
+emit([str(cfg_probe.describe())])
+mut n = 7
+emit([str(cfg_probe.probe(n))])
+mut a = 5
+mut b = 10
+emit([str(cfg_probe.with_default(a, b))])
+
+# ⚠ **Python の値渡し規則**（deep copy しない）が保たれていること。
+#    Arrow の `let` パラメータは通常 copy されるが、`is_python` の関数では copy しない。
+#    ⇒ 呼び出し元の `lst` が変更されるのが正しい（CPython と同じ）。
+mut lst = [1, 2]
+emit([str(cfg_probe.mutate(lst => py_list[int]))])
+emit([str(lst)])
+
+# ── ② クラス（`self` を持つ経路） ────────────────────────────────────────
+#    ⚠ `self` も deep copy しない。`bump` の変更が `get` に見えるのが正しい。
+mut c = cfg_probe.Counter(3)
+mut by = 4
+emit([str(c.bump(by))])
+emit([str(c.get())])
+
+# ── 出力を照らす ──
+check_output([
+    "search_path_ok",
+    "cfg_probe from py_libs",
+    "22",
+    "15",
+    "3",
+    "[1, 2]",
+    "7",
+    "7",
+    "",
+], "import_py_search_path")

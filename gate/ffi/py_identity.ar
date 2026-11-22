@@ -1,0 +1,73 @@
+# py_identity.ar — Python の `is` / `is not` を使う関数を Arrow から呼ぶ
+#
+# `is` は CPython の同一性（Arrow の `===`・`x is int` の `is` は型の判定で別物）。`None` / `True` の判定、別名・別の物、
+# 計算で作った文字列や大きな int（インターンされないので `is` は偽・⑤）も CPython と同じ。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_identity.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_identity as m
+
+mut n = None
+mut v = 5
+
+# ── ① 最も多い用途: None 判定 ──────────────────────────────────────────
+emit([str(m.is_none(n))])
+# True
+emit([str(m.is_none(v))])
+# False
+emit([str(m.is_not_none(n))])
+# False
+emit([str(m.is_not_none(v))])
+# True
+emit([str(m.default_guard(n))])
+# default
+emit([str(m.default_guard(v))])
+# 5
+
+# ── ② 別名は同じオブジェクト / 別々に作ったものは違うオブジェクト ────────
+emit([str(m.alias())])
+# True
+emit([str(m.distinct())])
+# False
+emit([str(m.obj_alias())])
+# True
+
+# ── ③ True シングルトン ─────────────────────────────────────────────────
+mut t = True
+emit([str(m.is_true(t))])
+# True
+
+# ── ④ `and` との組み合わせ ──────────────────────────────────────────────
+emit([str(m.combined(n, v))])
+# True
+
+# ── ⑤ 計算で作った str / 256 を超える int は別の物（インターンされない） ──────
+#     CPython 自身が `SyntaxWarning: "is" with a literal` で警告する使い方の系列で、本来は `==` を使う場面。
+mut h = "h"
+mut i = "i"
+emit([str(m.computed_str(h, i))])
+# False
+mut a = 500
+mut b = 500
+emit([str(m.computed_int(a, b))])
+# False
+
+# ── 出力を照らす ──
+check_output([
+    "True",
+    "False",
+    "False",
+    "True",
+    "default",
+    "5",
+    "True",
+    "False",
+    "True",
+    "True",
+    "True",
+    "False",
+    "False",
+    "",
+], "py_identity")

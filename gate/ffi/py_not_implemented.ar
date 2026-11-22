@@ -1,0 +1,68 @@
+# py_not_implemented.ar — Python の NotImplemented と演算子の手順（CPython で実行する）
+#
+# 二項演算子は CPython と同じ手順で演算子メソッドを探す:
+#   1. 右が左の真の派生で反対側のメソッドを持てば右が先（`Base() + Derived()` は `Derived.__radd__`）
+#   2. 左の演算子メソッド（`a.__add__(b)`）
+#   3. それが無いか `NotImplemented` を返したら右の反対側のメソッド（`b.__radd__(a)`。比較は向きを入れ替えた
+#      `__gt__` など、`==` / `!=` は同じ名前）。左が組み込みの値（`5 + a`・`sum`）でも試す
+#   4. 全部駄目なら `==` / `!=` は同一性、ほかは CPython と同じ文言の `TypeError`
+# `!=` は `__ne__` が無ければ `__eq__` の反対。`NotImplemented` はクラス `NotImplementedType` の唯一の値。
+#
+# pn.run() の出力（CPython）:
+#   Money(400) Money(155) Money(155) Money(400) Meters(6) Meters(6)
+#   True False False False True True
+#   True True True
+#   a + 'x': TypeError: unsupported operand type(s) for +: 'Money' and 'str'
+#   'x' + a: TypeError: can only concatenate str (not "Money") to str
+#   a < 1: TypeError: '<' not supported between instances of 'Money' and 'int'
+#   1 >= a: TypeError: '>=' not supported between instances of 'int' and 'Money'
+#   Plain() * 2: TypeError: unsupported operand type(s) for *: 'Plain' and 'int'
+#   2 ** Plain(): TypeError: unsupported operand type(s) for ** or pow(): 'int' and 'Plain'
+#   Plain() // Plain(): TypeError: unsupported operand type(s) for //: 'Plain' and 'Plain'
+#   Derived.__radd__ Base.__add__
+#   True NotImplemented NotImplemented NotImplementedType
+#   True True True
+#
+# ⚠ Python の `NotImplemented` は Arrow の `NotImplemented` と同じ値（境界を越えても同じ物）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_not_implemented.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_not_implemented as pn
+
+pn.run()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow のソースからも同じ値
+let ni = NotImplemented
+check(ni === NotImplemented and repr(ni) == "NotImplemented", "the one NotImplemented")
+check(ni is object, "NotImplemented is an object")
+emit([str("arrow side ok")])
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "arrow side ok",
+    "",
+], "py_not_implemented")
+check_text(py_output(), [
+    "Money(400) Money(155) Money(155) Money(400) Meters(6) Meters(6)",
+    "True False False False True True",
+    "True True True",
+    "a + 'x': TypeError: unsupported operand type(s) for +: 'Money' and 'str'",
+    "'x' + a: TypeError: can only concatenate str (not \"Money\") to str",
+    "a < 1: TypeError: '<' not supported between instances of 'Money' and 'int'",
+    "1 >= a: TypeError: '>=' not supported between instances of 'int' and 'Money'",
+    "Plain() * 2: TypeError: unsupported operand type(s) for *: 'Plain' and 'int'",
+    "2 ** Plain(): TypeError: unsupported operand type(s) for ** or pow(): 'int' and 'Plain'",
+    "Plain() // Plain(): TypeError: unsupported operand type(s) for //: 'Plain' and 'Plain'",
+    "Derived.__radd__ Base.__add__",
+    "True NotImplemented NotImplemented NotImplementedType",
+    "True True True",
+    "",
+], "py_not_implemented (python side)")

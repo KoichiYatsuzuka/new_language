@@ -1,0 +1,76 @@
+# py_membership.ar — Python の `in` / `not in` を使う関数を Arrow から呼ぶ
+#
+# list / tuple / set は要素、dict はキー、str は部分文字列（CPython が実行する）。Arrow の list / dict / set は
+# `=> py_list[T]` などで写して渡す。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_membership.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_membership as m
+
+mut xs = [1, 2, 3]
+mut two = 2
+mut nine = 9
+
+# ── ① list ──────────────────────────────────────────────────────────────
+emit([str(m.in_list(two, xs => py_list[int]))])
+# True
+emit([str(m.in_list(nine, xs => py_list[int]))])
+# False
+emit([str(m.not_in_list(nine, xs => py_list[int]))])
+# True
+
+# ── ② dict はキーに対するメンバシップ ───────────────────────────────────
+mut d = {"a": 1}
+mut ka = "a"
+emit([str(m.in_dict(ka, d => py_dict[str, int]))])
+# True
+mut kz = "z"
+emit([str(m.in_dict(kz, d => py_dict[str, int]))])
+# False
+
+# ── ③ str は部分文字列 ──────────────────────────────────────────────────
+mut s = "hello"
+mut sub = "ell"
+emit([str(m.in_str(sub, s))])
+# True
+
+# ── ④ tuple / set ───────────────────────────────────────────────────────
+mut tup = (1, 2)
+mut one = 1
+emit([str(m.in_tuple(one, tup))])
+# True
+mut st = {1, 2, 3}
+emit([str(m.in_set(two, st => py_set[int]))])
+# True
+
+# ── ⑤ 条件式としての利用 ────────────────────────────────────────────────
+emit([str(m.guard(xs => py_list[int]))])
+# yes
+
+# ── ⑥ `and` と組み合わせる ──────────────────────────────────────────────
+mut ys = [9]
+emit([str(m.combined(two, xs => py_list[int], ys => py_list[int]))])
+# True
+
+# ── ⑦ ループ内フィルタ（典型的な用途） ──────────────────────────────────
+mut banned = [2]
+emit([str(m.filter_loop(xs => py_list[int], banned => py_list[int]))])
+# [1, 3]
+
+# ── 出力を照らす ──
+check_output([
+    "True",
+    "False",
+    "True",
+    "True",
+    "False",
+    "True",
+    "True",
+    "True",
+    "yes",
+    "True",
+    "[1, 3]",
+    "",
+], "py_membership")

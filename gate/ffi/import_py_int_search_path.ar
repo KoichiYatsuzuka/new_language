@@ -1,0 +1,24 @@
+# import_py_int_search_path.ar — `ar_config.json` の `python.search_paths` 経由で
+# Python モジュールを解決できることの検査（実行時の探索先・#61 / #69）。
+#
+# `cfg_probe.py` は `examples/interop/py_libs/` にあり、**この .ar のあるディレクトリには無い**。
+# `examples/interop/ar_config.json` の `"python": {"search_paths": ["py_libs"]}` を
+# 読み取って初めて import できる ⇒ **設定の読み取りが壊れるとこの例題が落ちる**。
+#
+# ⚠⚠ **#69 の遅延化を守っているのはこの例題**。Python の import は
+#   `Interpreter::python_search_dirs()`（`main.rs` が起点を覚え、**初回参照時に**祖先をウォークする）を
+#   実際に呼ぶ数少ない形で、遅延の初期化が壊れるとここが `ImportError` で落ちる（負の対照で確認済み）。
+# ⚠ 型の探索先（構文解析の側）と関数の呼び出しは `import_py_search_path.ar` が見る。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/import_py_int_search_path.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] cfg_probe
+
+emit([str(cfg_probe.MARKER)])
+
+# ── 出力を照らす ──
+check_output([
+    "search_path_ok",
+    "",
+], "import_py_int_search_path")

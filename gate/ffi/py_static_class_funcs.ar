@@ -1,0 +1,39 @@
+# py_static_class_funcs.ar — `staticmethod` / `classmethod` を関数として使う Python のクラス
+#
+# クラス本体の `f = staticmethod(f)` / `g = classmethod(f)`（デコレータを使わない書き方）は、先に定義したメソッドに
+# `@staticmethod` / `@classmethod` を付けたのと同じ。名前が違えば（`twice = staticmethod(double)`）その名前の静的メソッド
+# になり、元のメソッドは残る。型スタブもこの形を読む（`sc.Temp.to_f(0)` は 1 引数・pandas_import_plan.md 3-1）。
+# クラスメソッドは派生クラスから呼ぶと `cls` が派生クラス（`Hot.parse` は `Hot` を作る）。
+#
+# sc.run() の出力（CPython）:
+#   212.0 98.6
+#   Temp 25.0 25.0C = 77.0F
+#   Hot 40.0
+#   42 abab 8
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_static_class_funcs.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_static_class_funcs as sc
+
+sc.run()
+
+# Arrow からも静的メソッド・クラスメソッドとして呼べる
+emit([str(sc.Temp.to_f(0)), str(sc.Temp.parse("10C").deg)])
+# 32.0 10.0
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "32.0 10.0",
+    "",
+], "py_static_class_funcs")
+check_text(py_output(), [
+    "212.0 98.6",
+    "Temp 25.0 25.0C = 77.0F",
+    "Hot 40.0",
+    "42 abab 8",
+    "",
+], "py_static_class_funcs (python side)")

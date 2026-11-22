@@ -1,0 +1,36 @@
+# py_protocol_classes.ar — Python の `class X(Protocol)` は Arrow の protocol（pandas_import_plan.md の 6-9）
+#
+# 型スタブの `typing.Protocol` のクラスは構造で照合する（同じメンバーを持つ物なら、継承しなくても渡せる）。型変数
+# （`Protocol[_T_co]` の `_T_co`）は protocol の型引数になる（`SupportsRead[str]`）。自分を参照する protocol（numpy の
+# `_NestedSequence` と同じ形の `_Nested[T]`）には、入れ子の `py_list` もタプルも渡せる。名前が `_` で始まる protocol も型になる。
+# ⚠ 以前は protocol のクラスがただのクラスとして写され（`SupportsRead` を継承しない `StrReader` は渡せない）、型変数と `_` で
+#   始まる名前は `Any` だった。
+#
+# 期待される出力:
+#   xxx 1
+#   xx
+#   2 1
+#   ok
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_protocol_classes.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_protocol_classes as m
+
+mut r = m.reader()
+emit([str(m.take(r, 3)), str(m.shut(r))])
+mut s: m.SupportsRead[str] = m.reader()
+emit([str(s.read(2))])
+
+mut nested = [[1, 2] => py_list[int], [3] => py_list[int]] => py_list[py_list[int]]
+emit([str(m.depth(nested)), str(m.depth((5, 6)))])
+emit([str("ok")])
+
+# ── 出力を照らす ──
+check_output([
+    "xxx 1",
+    "xx",
+    "2 1",
+    "ok",
+    "",
+], "py_protocol_classes")

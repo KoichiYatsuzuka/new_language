@@ -1,0 +1,21 @@
+# py_module_types_error.ar — 別のモジュールの同名クラスは別の型
+#
+# 対になる正常系: py_module_types.ar
+#
+# 期待されるエラー（2 件）:
+#   StaticTypeError  'x' is declared 'z.Dog' but initialized with 'test_modules.py_module_types_kennel.Dog'
+#   StaticTypeError  'y' is declared 'Dog' but initialized with 'test_modules.py_module_types_zoo.Dog'
+#
+# ⚠ Python のクラスはモジュールの名前で登録するので、kennel の `Dog`・zoo の `Dog`・メインの `Dog` は 3 つの別の型。
+# ⚠ Python のモジュールにない名前（`z.Cat`）は誤りにしない（CPython のモジュールは実行時に名前が増えうるので `Any`）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_module_types_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+import[py] test_modules.py_module_types_zoo as z
+import[py] test_modules.py_module_types_kennel as k
+
+class Dog:
+    mut v: int
+
+mut x: z.Dog = k.Dog()                    # ⛔ kennel.Dog を zoo.Dog へ   # expect: static VarTypeMismatch
+mut y: Dog = z.Dog()                      # ⛔ zoo.Dog をメインの Dog へ   # expect: static VarTypeMismatch

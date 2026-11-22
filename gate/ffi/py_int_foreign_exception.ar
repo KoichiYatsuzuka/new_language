@@ -1,0 +1,65 @@
+# py_int_foreign_error.ar — Python が投げた例外の種類（正例・ffi_value_exchange_plan.md 7-24・pandas_import_plan.md の 2-1）
+#
+# Python が投げた組み込みの例外は、同じ名前の Arrow の例外（`ValueError`・`KeyError`）。メッセージ（`e.message`・`str(e)`）は
+# CPython の `str(e)`。Arrow の値を Python へ渡せない（キャストしていない Arrow の list など・pandas_import_plan.md の 2-11）のは
+# Arrow 側の誤りなので `TypeError`。Arrow のインスタンスは Python へ渡り（2-6）、Python の演算の誤りは Python の `TypeError`。
+# ⚠ ファイルの名前は 7-24 のときのもの。7-24 から 2-1 までは C# / JS と同じく `ForeignError`（`message` は `ValueError: bad`）で、
+#   `except ValueError:` で捕まらなかった。7-24 より前は呼び出しの種類で決まる例外（関数は `RuntimeError: Python call failed: …`・
+#   メソッドは `AttributeError: Python method call …`）だった。
+# Python で定義した例外は py_int_exceptions.ar。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には Python（py_int_probe.py）が要る。
+# 対になる負例: py_int_exception_error.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_int_foreign_error.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] py_int_probe as pp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    emit([str(label + " OK")])
+
+class Point:
+    mut x: int
+
+mut message = ""
+try:
+    emit([str(pp.fail("bad"))])
+except ValueError as e:
+    message = e.message
+check("a Python function's exception is a ValueError (" + message + ")", message == "bad")
+
+message = ""
+mut r = pp.make_raiser()
+try:
+    emit([str(r.boom())])
+except KeyError as e:
+    message = e.message
+check("a Python method's exception is a KeyError (" + message + ")", message == "'k'")
+
+message = ""
+mut loose: Any = [1, 2]
+try:
+    emit([str(pp.big_text(loose))])
+except TypeError as e:
+    message = e.message
+check("an Arrow value Python cannot take is a TypeError", "cannot pass an Arrow list to Python" in message)
+
+message = ""
+try:
+    emit([str(pp.big_text(Point(1)))])
+except TypeError as e:
+    message = e.message
+check("Python's TypeError about an Arrow instance names its class", "unsupported operand type(s) for +: 'Point' and 'int'" in message)
+
+# ── 出力を照らす ──
+check_output([
+    "a Python function's exception is a ValueError (bad) OK",
+    "a Python method's exception is a KeyError ('k') OK",
+    "an Arrow value Python cannot take is a TypeError OK",
+    "Python's TypeError about an Arrow instance names its class OK",
+    "",
+], "py_int_foreign_exception")

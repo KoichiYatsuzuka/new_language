@@ -1,0 +1,81 @@
+# py_comprehension.ar — Python の内包表記（リスト・集合・辞書）を使う関数を Arrow から呼ぶ
+#
+# 内包表記は CPython が実行する。Arrow の list / dict は `=> py_list[T]` / `=> py_dict[K, V]` で写して渡し、戻り値の
+# list / set / dict は CPython の物のまま `py_list` などで受ける（表示は Python の形）。
+# Arrow の内包表記は `examples/collections/comprehension.ar`。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_comprehension.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_comprehension as m
+
+mut xs = [1, 2, 3, 4]
+mut ys = [10, 20]
+
+# ── ① 基本形 ────────────────────────────────────────────────────────────
+emit([str(m.simple(xs => py_list[int]))])
+# [2, 4, 6, 8]
+
+# ── ② フィルタ / フィルタ複数 ───────────────────────────────────────────
+emit([str(m.filtered(xs => py_list[int]))])
+# [3, 4]
+emit([str(m.two_ifs(xs => py_list[int]))])
+# [2, 3]
+
+# ── ③ 多重 for（結果は平坦） ────────────────────────────────────────────
+emit([str(m.nested(xs => py_list[int], ys => py_list[int]))])
+# [10, 20, 20, 40, 30, 60, 40, 80]
+emit([str(m.nested_filtered(xs => py_list[int], ys => py_list[int]))])
+# [60, 80]
+
+# ── ④ range / 任意の要素式 ──────────────────────────────────────────────
+mut n = 3
+emit([str(m.over_range(n))])
+# [0, 1, 2]
+emit([str(m.expr_elt(xs => py_list[int]))])
+# ['1!', '2!', '3!', '4!']
+
+# ── ⑤ 内包表記の中に内包表記 ────────────────────────────────────────────
+emit([str(m.comp_of_comp(xs => py_list[int], ys => py_list[int]))])
+# [[1, 2, 3, 4], [1, 2, 3, 4]]
+
+# ── ⑥ 式なので呼び出し引数にそのまま置ける ──────────────────────────────
+emit([str(m.in_call(xs => py_list[int]))])
+# 3
+
+# ── ⑦ セット内包（`set(<for 式>)` に脱糖される） ────────────────────────
+#     ⚠ セットの表示順は当てにできないので、大きさとメンバシップで確認する。
+emit([str(m.set_comp_size(xs => py_list[int]))])
+# 2
+mut zero = 0
+emit([str(m.set_comp_has(xs => py_list[int], zero))])
+# True
+mut nine = 9
+emit([str(m.set_comp_has(xs => py_list[int], nine))])
+# False
+
+# ── ⑧ 辞書内包 ──────────────────────────────────────────────────────────
+emit([str(m.dict_comp(xs => py_list[int]))])
+# {1: 2, 2: 4, 4: 8}
+mut words: dict[str, int] = {"a": 1, "b": 2}
+emit([str(m.dict_comp_items(words => py_dict[str, int]))])
+# {1: 'a', 2: 'b'}
+
+# ── 出力を照らす ──
+check_output([
+    "[2, 4, 6, 8]",
+    "[3, 4]",
+    "[2, 3]",
+    "[10, 20, 20, 40, 30, 60, 40, 80]",
+    "[60, 80]",
+    "[0, 1, 2]",
+    "['1!', '2!', '3!', '4!']",
+    "[[1, 2, 3, 4], [1, 2, 3, 4]]",
+    "3",
+    "2",
+    "True",
+    "False",
+    "{1: 2, 2: 4, 4: 8}",
+    "{1: 'a', 2: 'b'}",
+    "",
+], "py_comprehension")

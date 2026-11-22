@@ -1,0 +1,23 @@
+# py_int_cast_required_error.ar — Arrow の list / dict / set をキャストせずに Python へ渡すのは静的な誤り
+# （pandas_import_plan.md の D-12・2-11）。リテラルも同じで、`=> py_list[int]` などで写して渡す。
+#
+# 写して渡すと Python の書き換えが戻らず（`heapq.heappush(h, 0)` の後も `h` は元のまま）、包んで渡すと pandas などが
+# 壊れる（計画書 6.8）。どちらも黙って違う結果になるので、書いた所で誤りにする。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_int_cast_required_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+import[py] heapq
+import[py] py_int_collections as pc
+
+mut h = [3, 1, 2]
+heapq.heappush(h, 0)                          # 関数の引数   # expect: static ArrowCollectionToPython
+pc.append_twice([1], 2)                       # リテラルも   # expect: static ArrowCollectionToPython; static CallArgTypeMismatch
+mut reg = pc.Registry()
+reg.add([1, 2])                               # メソッドの引数   # expect: static ArrowCollectionToPython; static CallArgTypeMismatch
+pc.same(a = [1], b = [2])                     # キーワード引数   # expect: static ArrowCollectionToPython; static ArrowCollectionToPython
+pc.same(*[[1], [2]])                          # 展開した引数   # expect: static ArrowCollectionToPython
+mut scores = pc.make_scores()
+scores["c"] = [5]                             # 要素への代入（py_dict[str, py_list[int]] の値）   # expect: static ArrowCollectionToPython; static SubscriptTypeMismatch
+mut loose = pc.untyped_list() mustbe py_list[Any]
+loose.append([1])                             # 要素が Any でも Arrow の list は置けない   # expect: static ArrowCollectionToPython
+reg.kept = [[1] => py_list[int]]              # 属性への代入   # expect: static ArrowCollectionToPython; static FieldTypeMismatch
+let ok = 3 in ([1, 2, 3] => py_list[int])     # 写せば渡せる（誤りではない）

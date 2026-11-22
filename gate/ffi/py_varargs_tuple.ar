@@ -1,0 +1,35 @@
+# py_varargs_tuple.ar — Python の関数の `*args` はタプル（CPython で実行する）
+#
+# 余った位置引数はタプルで受ける（1 個も来なくても空タプル）。`rest + ("end",)` / `fmt % values` /
+# `isinstance(args, tuple)` / 表示 `(2, 3)`。
+# ⚠ Arrow の関数の可変長（`let ...: T`）はリスト（`list[T]`）。
+#
+# vt.run() の出力（CPython）:
+#   (2, 3) ()
+#   () tuple 0 [] (1, 'a') tuple 2 ['k']
+#   (1, 2, 'end') True
+#   (7, 'x') ['7-x']
+#   (3, 2, 1)
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_varargs_tuple.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_varargs_tuple as vt
+
+vt.run()
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "",
+], "py_varargs_tuple")
+check_text(py_output(), [
+    "(2, 3) ()",
+    "() tuple 0 [] (1, 'a') tuple 2 ['k']",
+    "(1, 2, 'end') True",
+    "(7, 'x') ['7-x']",
+    "(3, 2, 1)",
+    "",
+], "py_varargs_tuple (python side)")

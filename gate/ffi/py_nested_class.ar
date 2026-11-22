@@ -1,0 +1,47 @@
+# py_nested_class.ar — Python のクラス本体の中のクラス（入れ子のクラス）を Arrow から使う
+#
+# 型スタブは入れ子のクラスを Python の __qualname__（`Tree.Node`）の名前で持ち上げ、外側のクラスにはその型の値の属性
+# （`Node: type[Tree.Node]`）を置く（pandas_import_plan.md 3-1）。⇒ `m.Tree.Node(..)` / `t.Leaf(..)`（インスタンスから）/
+# `m.Config.Section.Entry(..)`（入れ子の入れ子）が引ける。最上位の `Node` や別のクラスの同名の入れ子（`Graph.Node`）とは
+# 別の型。入れ子のクラスの基底は同じ本体の兄弟を先に引く（`class Leaf(Node):` の `Node` は `Tree.Node`・Python と同じ）。
+# ⚠ インスタンスは CPython の物なので `mut` で持つ（D-3）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_nested_class.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_nested_class as m
+
+# ── ① Python の中で使う ────────────────────────────────────────────────
+emit([str(m.summary())])
+# top-level Node, Tree.Node, Tree.Leaf of 5, Graph.Node
+
+# ── ② Arrow から入れ子のクラスを作る ───────────────────────────────────
+mut v = 7
+mut n = m.Tree.Node(v)
+emit([str(n.kind())])
+# Tree.Node
+emit([str(n.value)])
+# 7
+
+# ── ③ インスタンス経由（self.Leaf と同じ形）───────────────────────────
+mut t = m.Tree()
+mut w = 3
+mut leaf = t.Leaf(w)
+emit([str(leaf.kind())])
+# Tree.Leaf of 3
+
+# ── ④ 3 段の入れ子 ─────────────────────────────────────────────────────
+mut key = "port"
+mut e = m.Config.Section.Entry(key)
+emit([str(e.key)])
+# port
+
+# ── 出力を照らす ──
+check_output([
+    "top-level Node, Tree.Node, Tree.Leaf of 5, Graph.Node",
+    "Tree.Node",
+    "7",
+    "Tree.Leaf of 3",
+    "port",
+    "",
+], "py_nested_class")

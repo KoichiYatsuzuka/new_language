@@ -1,0 +1,26 @@
+# py_super_classmethod.ar — クラスメソッド・静的メソッドと super()（known_bugs.md の #6）
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_super_classmethod.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_super_classmethod as m
+
+m.run()
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "",
+], "py_super_classmethod")
+check_text(py_output(), [
+    "1 classmethod: Sub<Base(Sub) | Sub<Base(Sub)",
+    "2 makes the subclass: Sub AB!",
+    "3 two-arg: Base(Sub)",
+    "4 static from classmethod: 2",
+    "5 spread: Sub cd?",
+    "6 instance methods: sub hello y | Base(Sub) | 6",
+    "7 three levels: Leaf<Sub<Base(Leaf) | Leaf",
+    "",
+], "py_super_classmethod (python side)")

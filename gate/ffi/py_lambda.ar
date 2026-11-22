@@ -1,0 +1,50 @@
+# py_lambda.ar — lambda を使う Python の関数（`sorted(key=lambda ..)`・捕捉・入れ子・既定値つき）を Arrow から呼ぶ
+#
+# lambda は CPython が実行する。Arrow へ返した lambda は CPython の呼べる物（`Any`）で、Arrow から呼べる。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_lambda.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_lambda as m
+
+mut x = 5
+
+# ── ① 変数に入れて呼ぶ ──────────────────────────────────────────────────
+emit([str(m.simple(x))])
+# 6
+
+# ── ② クロージャ捕捉 ────────────────────────────────────────────────────
+emit([str(m.capture(x))])
+# 15
+
+# ── ③ 呼び出し引数の中（最頻出の位置） ──────────────────────────────────
+emit([str(m.as_arg(x))])
+# 15
+
+# ── ④ デフォルト引数つき lambda ─────────────────────────────────────────
+emit([str(m.with_default(x))])
+# (15, 6)
+
+# ── ⑤ 入れ子の lambda（内側が外側の本体へ入る） ─────────────────────────
+emit([str(m.nested(x))])
+# 105
+
+# ── ⑥ 同じ文脈に 2 つ ───────────────────────────────────────────────────
+emit([str(m.two_in_one(x))])
+# (6, 10)
+
+# ── ⑦ lambda をデフォルト値に（`def` の前へ持ち上がる） ─────────────────
+emit([str(m.as_default())])
+# 6
+
+# ── 出力を照らす ──
+check_output([
+    "6",
+    "15",
+    "15",
+    "(15, 6)",
+    "105",
+    "(6, 10)",
+    "6",
+    "",
+], "py_lambda")

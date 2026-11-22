@@ -1,0 +1,40 @@
+# py_decorator_forward.ar — デコレータの転送パターン（`*args` / `**kwargs` で包んだ関数を返す）を Arrow から呼ぶ
+#
+# Python で最頻出の形: `def deco(f): def wrapper(*args, **kwargs): return f(*args, **kwargs)`。
+# 包まれた関数・クロージャ・関数値を受ける関数は CPython が実行し、Arrow は戻り値と関数値（`inc`・`m.triple`）を受けて呼ぶ。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_decorator_forward.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_decorator_forward as m
+
+mut n = 5
+
+# ── ① デコレータ（値を 2 倍にして返すラッパ） ──────────────────────────
+emit([str(m.triple(n))])
+# 30
+
+# ── ② スタックしたデコレータ（下から適用） ──────────────────────────────
+mut four = 4
+emit([str(m.stacked(four))])
+# [10]
+
+# ── ③ int を捕捉するクロージャ（B3 で直っていた分） ────────────────────
+mut ten = 10
+mut inc = m.counter(ten)
+emit([str(inc(n))])
+# 15
+
+# ── ④ 関数値を引数で受けて呼ぶ（入れ子なし） ────────────────────────────
+mut one = 1
+emit([str(m.apply_twice(m.triple, one))])
+# 36
+
+# ── 出力を照らす ──
+check_output([
+    "30",
+    "[10]",
+    "15",
+    "36",
+    "",
+], "py_decorator_forward")

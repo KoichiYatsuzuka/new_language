@@ -1,0 +1,30 @@
+# py_super_two_args.ar — `super(C, self)` の 2 引数の形（CPython で実行する）
+#
+# Python 2 からの書き方 `super(C, self).m(args)`（CPython が実行する）。基底が `object` のクラスの
+# `super(C, self).__init__()` は `object.__init__`。
+#
+# st.run() の出力（CPython）:
+#   square 3
+#   shape square of side 3
+#   tile: shape square of side 2
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_super_two_args.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_super_two_args as st
+
+st.run()
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "",
+], "py_super_two_args")
+check_text(py_output(), [
+    "square 3",
+    "shape square of side 3",
+    "tile: shape square of side 2",
+    "",
+], "py_super_two_args (python side)")

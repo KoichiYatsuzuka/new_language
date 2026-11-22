@@ -1,0 +1,73 @@
+# py_set.ar — Python のセットのリテラルを使う関数を Arrow から呼ぶ
+#
+# 戻り値の set は CPython の物のまま `py_set` で受ける（D-12）。集合内包は `py_comprehension.ar`。
+# ⚠⚠ **セットの repr 順は当てにしない**こと。CPython は文字列のハッシュを実行ごとにランダム化するので、
+#   `{"a","b","c"}` の表示順は**実行のたびに変わる**。ここでは int / tuple のセットだけを表示し、str のセットは
+#   メンバシップで確認する。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_set.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_set as m
+
+# ── ① リテラル / 重複除去 / 単要素 ──────────────────────────────────────
+emit([str(m.literal())])
+# {1, 2, 3}
+emit([str(m.dedup())])
+# {1, 2, 3}
+emit([str(m.single())])
+# {7}
+
+# ── ② 空セットは `set()` ────────────────────────────────────────────────
+emit([str(m.empty())])
+# set()
+
+# ── ③ メンバシップ / 長さ / 追加 ────────────────────────────────────────
+mut two = 2
+emit([str(m.membership(two))])
+# True
+mut nine = 9
+emit([str(m.membership(nine))])
+# False
+emit([str(m.size())])
+# 3
+emit([str(m.add())])
+# {1, 2, 3}
+
+# ── ④ 要素が式（重複はここでも潰れる） ──────────────────────────────────
+mut a = 1
+mut b = 3
+emit([str(m.from_exprs(a, b))])
+# {2, 6}
+
+# ── ⑤ 入れ子 / tuple 要素 ───────────────────────────────────────────────
+emit([str(m.nested_in_list())])
+# [{1, 2}, {3}]
+emit([str(m.set_of_tuples())])
+# {(1, 2), (3, 4)}
+
+# ── ⑥ str のセット（順不定なので `in` で確認） ──────────────────────────
+mut ka = "a"
+emit([str(m.str_set_membership(ka))])
+# True
+mut kz = "z"
+emit([str(m.str_set_membership(kz))])
+# False
+
+# ── 出力を照らす ──
+check_output([
+    "{1, 2, 3}",
+    "{1, 2, 3}",
+    "{7}",
+    "set()",
+    "True",
+    "False",
+    "3",
+    "{1, 2, 3}",
+    "{2, 6}",
+    "[{1, 2}, {3}]",
+    "{(1, 2), (3, 4)}",
+    "True",
+    "False",
+    "",
+], "py_set")

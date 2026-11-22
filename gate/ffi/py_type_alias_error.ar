@@ -1,0 +1,17 @@
+# py_type_alias_error.ar — 型スタブの別名を展開した型と合わない値は静的な誤り（pandas_import_plan.md の 6-10）
+#
+# `Couple[str]` は `tuple[str, str]`、`Count` は `int`、`type Name = str` は `str`。以前は別名を書いた引数が `Any` だったので
+# 何も検査されなかった。
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   argument 0 of 'test_modules.py_type_alias.swap' expects 'tuple[str, str]' but got 'tuple[int, int]'
+#   argument 0 of 'test_modules.py_type_alias.tally' expects 'int' but got 'str'
+#   argument 0 of 'test_modules.py_type_alias.greet' expects 'str' but got 'int'
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_type_alias_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+import[py] test_modules.py_type_alias as m
+
+print(m.swap((1, 2)))   # expect: static CallArgTypeMismatch
+print(m.tally("x"))   # expect: static CallArgTypeMismatch
+print(m.greet(5))   # expect: static CallArgTypeMismatch

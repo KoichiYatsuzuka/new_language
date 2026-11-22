@@ -1,0 +1,44 @@
+# py_function_attrs.ar — Python の関数の値の __name__ / __qualname__ / __doc__（CPython で実行する）
+#
+# デコレータがよく使う `func.__name__`、関数の中の関数の `outer.<locals>.inner`、メソッドの `C.m`、
+# property の getter（`p.fget.__name__` は元の名前 `celsius`）、ラムダの `<lambda>` が CPython と同じになる。
+#
+# 出力（CPython）:
+#   3 ['add']
+#   wrapper logged.<locals>.wrapper
+#   logged Record each call under the function's name.
+#   step make_counter.<locals>.step None
+#   3 6 13 make_adder.<locals>.adder
+#   <lambda> run.<locals>.<lambda>
+#   Temperature.describe describe 20Temperature.describe.<locals>.unit
+#   celsius Temperature.celsius Degrees Celsius.
+#   celsius Temperature.celsius
+#   run run None
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_function_attrs.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_function_attrs as fa
+
+fa.run()
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "",
+], "py_function_attrs")
+check_text(py_output(), [
+    "3 ['add']",
+    "wrapper logged.<locals>.wrapper",
+    "logged Record each call under the function's name.",
+    "step make_counter.<locals>.step None",
+    "3 6 13 make_adder.<locals>.adder",
+    "<lambda> run.<locals>.<lambda>",
+    "Temperature.describe describe 20Temperature.describe.<locals>.unit",
+    "celsius Temperature.celsius Degrees Celsius.",
+    "celsius Temperature.celsius",
+    "run run None",
+    "",
+], "py_function_attrs (python side)")

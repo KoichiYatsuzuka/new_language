@@ -1,0 +1,39 @@
+# ffi_boundary_check.ar — FFI 境界検査の正例（#16）
+#
+# 動的型付け言語のスタブは向こう側の型注釈を写しているだけで、実行時に守られる保証がない。
+# Arrow は**外部の値が入ってくる瞬間**（外部関数呼び出しの戻り値）に、
+# スタブが宣言した型と実際の値を突き合わせる（src/interpreter/ffi_boundary.rs）。
+#
+# この例題は「スタブどおりの値が返るなら何も起きない」ことを示す正例。
+# 嘘をつくスタブを捕捉する負例は ffi_boundary_check_error.ar。
+#
+# 検査対象は言語ごとに実装されている（Python / JavaScript）。
+# 静的型付け言語（C/C++・C#・Rust）は向こう側が型を守るため対象外。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/ffi_boundary_check.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] ffi_probe.honest_py as H
+
+fn double_it(let x: int) -> str:
+    return "doubled=" + str(x * 2)
+
+emit([str("=== int ===")])
+emit([str(double_it(H.good_int()))])      # 21 → doubled=42
+
+emit([str("=== list[int] ===")])
+emit([str(H.good_list())])                # [1, 2, 3] — 要素型も検査される
+
+emit([str("=== str ===")])
+emit([str(H.good_str())])                 # fine
+
+# ── 出力を照らす ──
+check_output([
+    "=== int ===",
+    "doubled=42",
+    "=== list[int] ===",
+    "[1, 2, 3]",
+    "=== str ===",
+    "fine",
+    "",
+], "ffi_boundary_check")

@@ -1,0 +1,11 @@
+# import[py] の物とモジュールの属性への代入を、型スタブの型で静的に検査する（pandas_import_plan.md の 2-9）
+#
+# 正しい形は py_int_attr_assign.ar。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_int_attr_assign_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+import[py] py_int_attr_assign as aa
+
+aa.count = "five"                       # 大域変数 `count: int` に str   # expect: static VarTypeMismatch
+mut b = aa.Box()
+b.value = "ten"                         # 属性 `self.value: int` に str   # expect: static FieldTypeMismatch

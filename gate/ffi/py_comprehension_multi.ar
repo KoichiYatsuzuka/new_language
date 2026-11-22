@@ -1,0 +1,42 @@
+# py_comprehension_multi.ar — 内包表記の多ターゲット（`[k for k, v in d.items()]`）を使う関数を Arrow から呼ぶ
+#
+# 内包表記は CPython が実行する。Arrow の側の多ターゲットは `examples/collections/comprehension_multi_target.ar`。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_comprehension_multi.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_comprehension_multi as m
+
+mut d = {"a": 1, "b": 2}
+mut pairs = [(1, 10), (2, 20)]
+mut xs = ["p", "q"]
+
+# ── ① キーだけ取る ──────────────────────────────────────────────────────
+emit([str(m.keys(d => py_dict[str, int]))])
+# ['a', 'b']
+
+# ── ② 両方使う ──────────────────────────────────────────────────────────
+emit([str(m.joined(d => py_dict[str, int]))])
+# ['a1', 'b2']
+
+# ── ③ フィルタ付き ──────────────────────────────────────────────────────
+emit([str(m.filt(pairs => py_list[tuple[int, int]]))])
+# [2]
+
+# ── ④ セット内包 ────────────────────────────────────────────────────────
+emit([str(m.sset(d => py_dict[str, int]))])
+# 2
+
+# ── ⑤ enumerate ─────────────────────────────────────────────────────────
+emit([str(m.with_enumerate(xs => py_list[str]))])
+# ['0p', '1q']
+
+# ── 出力を照らす ──
+check_output([
+    "['a', 'b']",
+    "['a1', 'b2']",
+    "[2]",
+    "2",
+    "['0p', '1q']",
+    "",
+], "py_comprehension_multi")

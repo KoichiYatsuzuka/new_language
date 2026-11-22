@@ -1,0 +1,44 @@
+# py_cached_property.ar — Python の functools.cached_property を持つクラスを Arrow から読む
+#
+# `@cached_property def area(self)` は初めて読んだときだけ計算し、以後はインスタンスの `__dict__` に覚えた値を返す
+# （`obj.area = v` もそこへ入る）。Arrow からの読み書きも CPython の `getattr` / `setattr` なので同じ。
+#
+# cp.run() の出力（CPython）:
+#   12.0 12.0 27.0 [2, 3]
+#   ['round', 'small'] ['round']
+#   1.5 [2, 3]
+#   cached_property area Area, computed once per instance. area
+#   True
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_cached_property.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_cached_property as cp
+
+cp.run()
+
+# Arrow からも読める。getter の戻り値の注釈（`-> float`）が型になる（タスク 6-8 と同じ）。
+mut c = cp.Circle(10)
+emit([str(c.area * 2.0)])
+emit([str(c.area), str(cp.CALLS)])
+c.area = 0.5
+emit([str(c.area)])
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "600.0",
+    "300.0 [2, 3, 10]",
+    "0.5",
+    "",
+], "py_cached_property")
+check_text(py_output(), [
+    "12.0 12.0 27.0 [2, 3]",
+    "['round', 'small'] ['round']",
+    "1.5 [2, 3]",
+    "cached_property area Area, computed once per instance. area",
+    "True",
+    "",
+], "py_cached_property (python side)")

@@ -1,0 +1,76 @@
+# py_defaults.ar — 既定値のある引数を持つ Python の関数を Arrow から呼ぶ
+#
+# 型スタブは既定値のある引数を省略できる引数として読む（型検査が省略を許す）。既定値の式は CPython が評価する。
+# ⚠ 可変の既定値は `def` のときに 1 回だけ作られて共有される（⑦・CPython の有名な罠）。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_defaults.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_defaults as m
+
+# ── ① デフォルトを使う / 上書きする ──────────────────────────────────────
+mut name = "bob"
+emit([str(m.greet(name))])
+# hi bob
+mut greeting = "yo"
+emit([str(m.greet(name, greeting))])
+# yo bob
+
+# ── ② デフォルト複数（後ろから埋まる） ──────────────────────────────────
+mut a = 1
+mut b = 2
+mut c = 3
+emit([str(m.add(a))])
+# 111
+emit([str(m.add(a, b))])
+# 103
+emit([str(m.add(a, b, c))])
+# 6
+
+# ── ③ キーワード専用引数のデフォルト ─────────────────────────────────────
+emit([str(m.kw(a))])
+# 134
+emit([str(m.kw(a, c=c))])
+# 133
+
+# ── ④ None デフォルト ───────────────────────────────────────────────────
+emit([str(m.nonespec())])
+# None
+
+# ── ⑤ タプルリテラルのデフォルト ────────────────────────────────────────
+emit([str(m.pair())])
+# 3
+
+# ── ⑥ `__init__` のデフォルト ───────────────────────────────────────────
+mut o = m.Box()
+emit([str(o.show())])
+# box=7
+mut v = 9
+mut o2 = m.Box(v)
+emit([str(o2.show())])
+# box=9
+
+# ── ⑦ 可変の既定値は共有される（1 → 2） ──────────────────────────────────
+emit([str(m.mutdef())])
+# 1
+emit([str(m.mutdef())])
+# 2
+
+# ── 出力を照らす ──
+check_output([
+    "hi bob",
+    "yo bob",
+    "111",
+    "103",
+    "6",
+    "134",
+    "133",
+    "None",
+    "3",
+    "box=7",
+    "box=9",
+    "1",
+    "2",
+    "",
+], "py_defaults")

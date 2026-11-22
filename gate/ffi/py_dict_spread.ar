@@ -1,0 +1,32 @@
+# py_dict_spread.ar — 辞書の合成 `{**d}` を使う関数を Arrow から呼ぶ
+#
+# 後から来たキーが勝つ（CPython）。Arrow の dict は `=> py_dict[str, int]` で写して渡し、結果は `py_dict` のまま受ける。
+# Arrow の側の `{**other, key: value}` は `examples/collections/dict_spread.ar`。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_dict_spread.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_dict_spread as m
+
+mut a = {"a": 1}
+mut b = {"b": 2}
+
+# ── ① 2 つの辞書を合成 ──────────────────────────────────────────────────
+emit([str(m.merge(a => py_dict[str, int], b => py_dict[str, int]))])
+# {'a': 1, 'b': 2}
+
+# ── ② 展開 + 追加 ───────────────────────────────────────────────────────
+emit([str(m.with_extra(a => py_dict[str, int]))])
+# {'a': 1, 'z': 9}
+
+# ── ③ 追加 + 展開（順序どおり） ─────────────────────────────────────────
+emit([str(m.before(a => py_dict[str, int]))])
+# {'z': 0, 'a': 1}
+
+# ── 出力を照らす ──
+check_output([
+    "{'a': 1, 'b': 2}",
+    "{'a': 1, 'z': 9}",
+    "{'z': 0, 'a': 1}",
+    "",
+], "py_dict_spread")

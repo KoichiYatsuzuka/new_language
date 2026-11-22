@@ -1,0 +1,13 @@
+# py_int_collections_runtime_error.ar — 要素の型が合わないキャストは実行時の TypeError（pandas_import_plan.md の D-12・2-7）
+#
+# 型の分からない Python の list（`untyped_list()` は注釈が無いので `Any`）を `=> list[int]` で写すと、写しながら要素を照合する。
+# `[1, "two", 3]` の "two" は int ではないので TypeError になる（黙って Arrow の list に入れない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_int_collections_runtime_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: runtime TypeError "cannot cast to 'list[int]': found an element of type 'str' w"
+import[py] py_int_collections as pc
+
+mut loose = pc.untyped_list() mustbe py_list[Any]
+print("elements:", len(loose))
+let xs = loose => list[int]
+print("unreachable:", xs)

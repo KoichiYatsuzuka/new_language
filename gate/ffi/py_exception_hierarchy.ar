@@ -1,0 +1,27 @@
+# py_exception_hierarchy.ar — 組み込みの例外を継承した Python の例外クラスを Arrow で捕まえる
+#
+# Python のクラスは組み込みの例外を継承できる（class AppError(Exception) / class ConfigError(ValueError)）。
+# 継承は多段でも効く（MissingKey → ConfigError → ValueError → Exception）。Arrow 側の `except ValueError` も
+# Python で送出した派生の例外を捕まえる（CPython の `isinstance`・pandas_import_plan.md 2-1）。
+# ⚠ 捕まえた値は CPython の物（`as mut e` で受ける）。Arrow の例外の欄 `e.message` は無いので `str(e)` で読む。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_exception_hierarchy.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_exception_hierarchy as p
+
+emit([str(p.run())])
+# ValueError branch, ValueError branch, Exception branch, Exception branch
+
+try:
+    p.fail()
+except ValueError as mut e:
+    emit([str("Arrow caught ValueError: " + str(e))])
+# Arrow caught ValueError: raised in python
+
+# ── 出力を照らす ──
+check_output([
+    "ValueError branch, ValueError branch, Exception branch, Exception branch",
+    "Arrow caught ValueError: raised in python",
+    "",
+], "py_exception_hierarchy")

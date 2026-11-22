@@ -1,0 +1,69 @@
+# py_object.ar — CPython の `object()` の番兵を Arrow で持つ
+#
+# CPython の `object()` は同一性そのものが意味の値（番兵: `MISSING = object()`）。境界では写さずに共有するので、Arrow の
+# 変数・list を通って Python へ戻っても同じ物（`x is MISSING` が真）。すべての値は `object` の派生
+# （`isinstance(x, object)` / `x is object` は何でも真）。
+# ⚠ 番兵は CPython の物なので `mut` で受ける（D-3）。型は `Any`（注釈が無い）なので、比べるのは Python の関数に任せる。
+# ⚠ Arrow のソースで `object()` を呼ぶのは静的な誤り（py_object_error.ar）。
+#
+# po.run() の出力（CPython）:
+#   True True False True
+#   True True True False
+#   True False True False
+#   2 missing other False True
+#   object True True False
+#   True True
+#   True True True True
+#   True True <class 'object'> <class 'type'>
+#   True True 1
+#   TypeError: object.__init__() takes exactly one argument (the instance to initialize)
+#   AttributeError: 'object' object has no attribute 'x'
+#   TypeError: object() takes no arguments
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_object.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_object as po
+
+po.run()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow の変数・list を通っても同じ物（Python の `is` で比べる）
+mut m = po.MISSING
+check(po.is_missing(m), "the sentinel keeps its identity through an Arrow variable")
+mut ms = [m, po.OTHER]
+check(po.is_missing(ms[0]) and not po.is_missing(ms[1]), "an Arrow list keeps identity")
+check(not po.Config(m).has_timeout() and po.Config(3).has_timeout(), "passed back to Python")
+
+# すべての値は object の派生
+let n = 5
+check(isinstance(n, object) and isinstance("s", object) and isinstance(m, object), "isinstance")
+check(n is object, "is object")
+emit([str("arrow side ok")])
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "arrow side ok",
+    "",
+], "py_object")
+check_text(py_output(), [
+    "True True False True",
+    "True True True False",
+    "True False True False",
+    "2 missing other False True",
+    "object True True False",
+    "True True",
+    "True True True True",
+    "True True <class 'object'> <class 'type'>",
+    "True True 1",
+    "TypeError: object.__init__() takes exactly one argument (the instance to initialize)",
+    "AttributeError: 'object' object has no attribute 'x'",
+    "TypeError: object() takes no arguments",
+    "",
+], "py_object (python side)")

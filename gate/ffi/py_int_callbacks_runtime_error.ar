@@ -1,0 +1,19 @@
+# Python へ渡した Arrow の関数が投げた例外を、どこでも捕まえない（実行時の誤り・pandas_import_plan.md の 2-5）
+#
+# 本体の例外は Python の中を `arrow.ArrowError` として通り、Arrow へ戻ると元の Arrow の例外に戻る。捕まえなければ
+# Arrow の例外と同じ最後の行（`Overdrawn: balance would be -5`）で終わる。捕まえる形は py_int_callbacks.ar。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_int_callbacks_runtime_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+import[py] py_int_callbacks as pc
+
+class Overdrawn(Error):
+    fn __init__(mut self, balance: int) -> None:
+        self.message = "balance would be " + str(balance)
+
+fn withdraw() -> None:
+    raise Overdrawn(-5)   # expect: runtime Overdrawn "balance would be -5"
+
+print("before")
+pc.call_through(withdraw)
+print("unreachable")

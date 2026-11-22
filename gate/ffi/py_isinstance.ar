@@ -1,0 +1,50 @@
+# py_isinstance.ar — isinstance を使う Python のコードと、Arrow の isinstance に CPython のクラスを渡す形
+#
+# 対になる誤りの例: py_isinstance_error.ar
+#
+# Arrow の `isinstance(x, m.Dog)` は CPython のクラスを受ける（CPython の `isinstance`・pandas_import_plan.md 3-1）。
+#   - 組は要素ごと（`isinstance(x, (list, tuple))`）
+#   - 組み込みの型は値の種類。`bool` は `int` の派生（`isinstance(True, int)` は真）
+#   - 第 2 引数は値なので、変数に入れたクラスでも書ける
+# ⚠ Arrow のコードでは `x is C` が同じ判定で、型の絞り込みも効く。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_isinstance.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_isinstance as m
+
+emit([str("=== 1. inside Python code ===")])
+emit([str(m.kinds())])        # ['bool', 'int', 'sequence', 'sequence', 'dict', 'a Dog', 'an Animal', 'other']
+
+emit([str("=== 2. a class held in a variable ===")])
+# ⚠ Python の関数の仮引数は `mut` 扱いなので、クラスも `mut` の変数で渡す（既存の規則）。
+mut animal_cls = m.Animal
+mut dog_cls = m.Dog
+emit([str(m.by_variable(m.Puppy(), animal_cls)), str(m.by_variable(m.Animal(), dog_cls))])    # True False
+
+emit([str("=== 3. from Arrow ===")])
+emit([str(isinstance(True, int)), str(isinstance(1, float)), str(isinstance(1.5, float))])     # True False True
+emit([str(isinstance([1], (dict, list))), str(isinstance("s", (int, bool)))])             # True False
+emit([str(isinstance(m.Puppy(), m.Dog)), str(isinstance(None, int))])                     # True False
+
+emit([str("=== 4. exceptions ===")])
+try:
+    let xs: list[int] = [1]
+    emit([str(xs[5])])
+except Exception as e:
+    emit([str(isinstance(e, IndexError)), str(isinstance(e, Exception)), str(isinstance(e, KeyError))])   # True True False
+
+# ── 出力を照らす ──
+check_output([
+    "=== 1. inside Python code ===",
+    "['bool', 'int', 'sequence', 'sequence', 'dict', 'a Dog', 'an Animal', 'other']",
+    "=== 2. a class held in a variable ===",
+    "True False",
+    "=== 3. from Arrow ===",
+    "True False True",
+    "True False",
+    "True False",
+    "=== 4. exceptions ===",
+    "True True False",
+    "",
+], "py_isinstance")

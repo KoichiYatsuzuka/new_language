@@ -1,0 +1,39 @@
+# py_call_spread.ar — `*args` / `**kwargs` を受ける Python の関数を Arrow から呼ぶ（展開して転送する形）
+#
+# Python の関数が `def forward(*args, **kwargs): return add3(*args, **kwargs)` のように展開して転送する（④）。
+# Arrow から渡す list / dict は `=> py_list[T]` / `=> py_dict[K, V]` で写して渡す（D-12）。
+# Arrow 側の `f(*xs)` / `f(**d)` は `examples/basics/call_spread.ar`。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_call_spread.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_call_spread as m
+
+# ── ① リストを丸ごと展開 ────────────────────────────────────────────────
+mut xs = [1, 2, 3]
+emit([str(m.star(xs => py_list[int]))])
+# 6
+
+# ── ② 位置引数と混ぜる ──────────────────────────────────────────────────
+mut one = 1
+mut pair = [2, 3]
+emit([str(m.mixed(one, pair => py_list[int]))])
+# 6
+
+# ── ③ 辞書をキーワード引数として展開 ────────────────────────────────────
+mut d = {"b": 2, "c": 3}
+emit([str(m.kwstar(d => py_dict[str, int]))])
+# 6
+
+# ── ④ ★転送パターン（`*args` / `**kwargs` を受けてそのまま渡す） ───────
+emit([str(m.use_forward())])
+# 6
+
+# ── 出力を照らす ──
+check_output([
+    "6",
+    "6",
+    "6",
+    "6",
+    "",
+], "py_call_spread")

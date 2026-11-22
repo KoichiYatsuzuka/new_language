@@ -1,0 +1,66 @@
+# py_getattr_hook.ar — `__getattr__` を持つ Python のクラスを CPython で動かし、Arrow から読む
+#
+# `__getattr__(name)` は、ふつうの読みが AttributeError になったときだけ呼ばれる（無い名前・`del` した属性・
+# AttributeError を投げた property の getter）。見つかる名前（フィールド・メソッド・property）では呼ばれない。
+# Arrow からの `o.k` / `getattr(o, k, d)` / `hasattr(o, k)` / `o.k(..)` も CPython の `getattr` なので同じ。
+# ⚠ Arrow のクラスは `__getattr__` を定義できない（`classes/getattr_hook_error.ar`）。
+#
+# m.run() / m.errors() の出力（CPython）:
+#   1 read: 1 method dyn:zz ['zz']
+#   2 getattr: dyn:yy default True False
+#   3 deleted: dyn:real
+#   4 frame: [1, 2] [3] False True
+#   5 call: greet['x', 2] other[]
+#   5 child: dyn:whatever 1 ['whatever']
+#   6 property: fallback:value 1
+#   7 super: 1 1 False
+#   E refused: AttributeError Dyn refuses no_x
+#   E frame_missing: AttributeError 'Frame' object has no attribute 'volume'
+#   E bypass_missing: AttributeError 'Dyn' object has no attribute 'zz'
+#   E bad_name: TypeError attribute name must be string, not 'int'
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_getattr_hook.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_getattr_hook as m
+
+m.run()
+m.errors()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow から読んでも `__getattr__` が答える（型検査も宣言していない名前を通す。型は Any）
+mut d = m.Dyn()
+check(str(d.anything) == "dyn:anything", "read from Arrow goes through __getattr__")
+check(hasattr(d, "other") and not hasattr(d, "no_way"), "hasattr asks __getattr__")
+mut c = m.Calls()
+check(str(c.greet(1)) == "greet[1]", "a method call reads through __getattr__")
+# 見つかる名前は今までどおり（`__getattr__` を呼ばない）
+check(str(d.method()) == "method" and str(d.asked) == "['anything', 'other', 'no_way']", "found names skip __getattr__")
+emit([str("arrow side ok")])
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "arrow side ok",
+    "",
+], "py_getattr_hook")
+check_text(py_output(), [
+    "1 read: 1 method dyn:zz ['zz']",
+    "2 getattr: dyn:yy default True False",
+    "3 deleted: dyn:real",
+    "4 frame: [1, 2] [3] False True",
+    "5 call: greet['x', 2] other[]",
+    "5 child: dyn:whatever 1 ['whatever']",
+    "6 property: fallback:value 1",
+    "7 super: 1 1 False",
+    "E refused: AttributeError Dyn refuses no_x",
+    "E frame_missing: AttributeError 'Frame' object has no attribute 'volume'",
+    "E bypass_missing: AttributeError 'Dyn' object has no attribute 'zz'",
+    "E bad_name: TypeError attribute name must be string, not 'int'",
+    "",
+], "py_getattr_hook (python side)")

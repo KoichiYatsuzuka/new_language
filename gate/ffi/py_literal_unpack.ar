@@ -1,0 +1,58 @@
+# py_literal_unpack.ar — リテラルの中の `*` 展開（`[0, *a, 9]`・`(*a, 9)`・`{*a}`）を使う関数を Arrow から呼ぶ
+#
+# 展開は CPython が実行する。Arrow の list は `=> py_list[int]` で写して渡す。
+# Arrow の側の `*other` は `examples/collections/seq_spread.ar`。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_literal_unpack.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_literal_unpack as m
+
+mut a = [1, 2]
+mut b = [3, 4]
+mut t = (5, 6)
+
+# ── ① 前後にリテラルがある ──────────────────────────────────────────────
+emit([str(m.mid(a => py_list[int]))])
+# [0, 1, 2, 9]
+
+# ── ② 先頭が展開 ────────────────────────────────────────────────────────
+emit([str(m.head(a => py_list[int]))])
+# [1, 2, 9]
+
+# ── ③ タプルを展開 ──────────────────────────────────────────────────────
+emit([str(m.from_tuple(t))])
+# [5, 6, 9]
+
+# ── ④ 展開だけ（＝コピー） ──────────────────────────────────────────────
+emit([str(m.only(a => py_list[int]))])
+# [1, 2]
+
+# ── ⑤ 展開が 2 つ ───────────────────────────────────────────────────────
+emit([str(m.two(a => py_list[int], b => py_list[int]))])
+# [1, 2, 3, 4]
+
+# ── ⑥ `[*a]` が**新しいリスト**であること（元を書き換えない） ───────────
+emit([str(m.copy_check(a => py_list[int]))])
+# (2, 3)
+
+# ── ⑦ タプル表示の展開 ──────────────────────────────────────────────────
+emit([str(m.tup(a => py_list[int]))])
+# (1, 2, 9)
+
+# ── ⑧ セット表示の展開（並びは当てにしない） ────────────────────────────
+emit([str(m.st(a => py_list[int]))])
+# (3, True)
+
+# ── 出力を照らす ──
+check_output([
+    "[0, 1, 2, 9]",
+    "[1, 2, 9]",
+    "[5, 6, 9]",
+    "[1, 2]",
+    "[1, 2, 3, 4]",
+    "(2, 3)",
+    "(1, 2, 9)",
+    "(3, True)",
+    "",
+], "py_literal_unpack")

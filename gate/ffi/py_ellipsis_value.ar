@@ -1,0 +1,59 @@
+# py_ellipsis_value.ar — Python の値の `...`（Ellipsis）と Arrow の `Ellipsis`
+#
+# 値の `...` は唯一の値 `Ellipsis`（クラス `ellipsis` の唯一のインスタンス）。境界を越えても同じ値で、Python の `...` は
+# Arrow の `Ellipsis` に、Arrow の `Ellipsis` は Python の `...` になる（`is` / `===` で同じ物）。表示は `Ellipsis`。
+#
+# pe.run() の出力（CPython）:
+#   True True False True
+#   True False False True
+#   True True True True 1
+#   Ellipsis Ellipsis Ellipsis [Ellipsis, 1] ellipsis True
+#   True True True True
+#   TypeError: EllipsisType takes no arguments
+#   AttributeError: 'ellipsis' object has no attribute 'x'
+#
+# ⚠ `pe.pick()` の型は `Any`（注釈が無い）。`Any` の値に `===` は使えないので、同じ物かは `id()` で比べる。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_ellipsis_value.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_ellipsis_value as pe
+
+pe.run()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow のソースからも同じ値
+let e = Ellipsis
+mut picked = pe.pick()
+check(id(picked) == id(e) and id(picked) == id(Ellipsis), "same object as Python's ...")
+mut given = pe.pick(None)
+check(id(given) != id(e), "None is not Ellipsis")
+mut back = pe.pick(e)
+check(id(back) == id(e), "Arrow's Ellipsis comes back as itself")
+let es = [e, Ellipsis]
+check(es[0] === es[1] and es[0] == es[1], "only one Ellipsis")
+check(repr(e) == "Ellipsis" and str(e) == "Ellipsis", "display")
+check(e is object, "Ellipsis is an object")
+emit([str("arrow side ok")])
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "arrow side ok",
+    "",
+], "py_ellipsis_value")
+check_text(py_output(), [
+    "True True False True",
+    "True False False True",
+    "True True True True 1",
+    "Ellipsis Ellipsis Ellipsis [Ellipsis, 1] ellipsis True",
+    "True True True True",
+    "TypeError: EllipsisType takes no arguments",
+    "AttributeError: 'ellipsis' object has no attribute 'x'",
+    "",
+], "py_ellipsis_value (python side)")

@@ -1,0 +1,16 @@
+# py_numpy_types_error.ar — numpy の配列の型と合わない使い方は静的な誤り（pandas_import_plan.md の 6-11）
+#
+# `np.arange(3)` は `np.ndarray`（以前は `Any`）なので、`str` の変数に入れられない。`__index__` を持つ容器でないクラスは `int`
+# なので、`str` の変数に入れられない。
+#
+# 期待されるエラー（StaticTypeError・実行の前）:
+#   's' is declared 'str' but initialized with 'numpy.ndarray'
+#   't' is declared 'str' but initialized with 'int'
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_numpy_types_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+
+import[py] numpy as np
+import[py] test_modules.py_numeric_classes as m
+
+mut s: str = np.arange(3)   # expect: static VarTypeMismatch
+let t: str = m.count(5)   # expect: static VarTypeMismatch

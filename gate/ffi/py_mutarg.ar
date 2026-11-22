@@ -1,0 +1,42 @@
+# py_mutarg.ar — Python の関数へ、変数・リテラル・`mut` の要素・戻り値を渡す
+#
+# Python の関数の引数は型スタブで不変（`mut` の実引数を求めない）なので、どれも渡せる。Arrow の list は
+# `=> py_list[int]` で写して渡す。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_mutarg.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_mutarg as m
+
+mut n = 5
+mut xs = [1, 2, 3]
+
+# ── ① mut 変数（従来から通っていた形） ──────────────────────────────────
+emit([str(m.take(n))])
+# 5
+
+# ── ② リテラル ──────────────────────────────────────────────────────────
+emit([str(m.take(5))])
+# 5
+
+# ── ③ mut コレクションの要素 ─────────────────────────────────────────────
+emit([str(m.take(xs[0]))])
+# 1
+
+# ── ④ 呼び出しの戻り値 ──────────────────────────────────────────────────
+emit([str(m.take(m.take(n)))])
+# 5
+
+# ── ⑤ リテラルのコレクションを直接渡す ──────────────────────────────────
+emit([str(m.scale(2, [1, 2, 3] => py_list[int]))])
+# [2, 4, 6]
+
+# ── 出力を照らす ──
+check_output([
+    "5",
+    "5",
+    "1",
+    "5",
+    "[2, 4, 6]",
+    "",
+], "py_mutarg")

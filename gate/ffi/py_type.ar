@@ -1,0 +1,44 @@
+# py_type.ar — type(x) を使う Python のコード（CPython で実行する）
+#
+# 対になる誤りの例: py_type_error.ar
+#
+# `type(x)` はインスタンスならそのクラスの値、ほかは組み込みの型の値（`<class 'int'>`）を返す。返した値は
+#   - 呼べる（`type(self)(...)` で同じクラスを作り直す・派生でも派生のまま）
+#   - `__name__` で名前が引ける
+#   - `===`（Python の `is`）・`==` で比べられる
+# ⚠ 3 引数の `type(name, bases, dict)`（実行時にクラスを作る）は対象外。
+# ⚠ Arrow の `type(x)` に CPython の物を渡すと CPython の `type`（そのクラスの値）を返す。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_type.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_type as m
+
+emit([str("=== 1. inside Python code ===")])
+emit([str(m.names())])          # ['int', 'str', 'list', 'NoneType', 'Square(2)', 'Square(6)']
+mut a = m.Square(1)
+mut b = m.Square(2)
+mut c = m.Shape(3)
+emit([str(m.same_class(a, b)), str(m.same_class(a, c))])       # True False
+
+emit([str("=== 2. from Arrow ===")])
+class Box:
+    mut v: int
+
+let box = Box(1)
+let again = type(box)(5)
+emit([str(again.v), str(type(box).__name__)])                   # 5 Box
+emit([str(type(box) === Box), str(type(1.5) == float), str(type(True) === int)])   # True True False
+emit([str(type(3)), str(type(None))])                           # <class 'int'> <class 'NoneType'>
+
+# ── 出力を照らす ──
+check_output([
+    "=== 1. inside Python code ===",
+    "['int', 'str', 'list', 'NoneType', 'Square(2)', 'Square(6)']",
+    "True False",
+    "=== 2. from Arrow ===",
+    "5 Box",
+    "True True False",
+    "<class 'int'> <class 'NoneType'>",
+    "",
+], "py_type")

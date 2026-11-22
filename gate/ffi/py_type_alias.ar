@@ -1,0 +1,52 @@
+# py_type_alias.ar — Python の型の別名を使うモジュールを CPython で動かす（型スタブは別名を展開する・pandas_import_plan.md の 6-10）
+#
+# 型スタブは型の別名を読んで、注釈の中で展開する: `type X = T`（CPython 3.12 の文）・`X = 型の式`・`X: TypeAlias = 型の式`。
+# 型変数を持つ別名（`Couple = tuple[_T, _T]`）は型引数を当てはめ（`Couple[str]` は `tuple[str, str]`）、別名を使う別名と、
+# ほかのモジュールから import した別名もたどる。引数は展開した型で静的に検査される（`py_type_alias_error.ar`）。
+# ⚠ 以前は型スタブが別名を読まず、別名を書いた引数・戻り値の型は `Any`（何も検査しない）だった。
+# Arrow の list は `=> py_list[int]` で写して渡す。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_type_alias.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_type_alias as m
+import[py] test_modules.py_type_alias_other as o
+
+# ── ① `type Vec = list[int]` が展開される ───────────────────────────────
+mut xs = [1, 2, 3]
+emit([str(m.total(xs => py_list[int]))])
+# 6
+
+# ── ② 素の型へのエイリアス ──────────────────────────────────────────────
+mut n = "bob"
+emit([str(m.greet(n))])
+# hi bob
+
+# ── ③ エイリアスの連鎖（`type Pair = Vec` → list[int]） ─────────────────
+emit([str(m.chained(xs => py_list[int]))])
+# 3
+
+# ── ④ 別モジュールの**同名**エイリアスは別の型のまま ────────────────────
+mut s = "hello"
+emit([str(o.size(s))])
+# 5
+
+# ── ⑤ 型変数を持つ別名（`Couple[str]` は `tuple[str, str]`）と `TypeAlias` ──
+emit([str(m.swap(("a", "b"))), str(m.tally(4))])
+# ('b', 'a') 5
+
+# ── ⑥ ほかのモジュールの別名（`Grid = list[list[Scalar]]`・`Scalar = Union[int, float]`） ──
+mut g = [[1, 2] => py_list[int], [3, 4] => py_list[int]] => py_list[py_list[int]]
+emit([str(m.cell(g, 1))])
+# 4
+
+# ── 出力を照らす ──
+check_output([
+    "6",
+    "hi bob",
+    "3",
+    "5",
+    "('b', 'a') 5",
+    "4",
+    "",
+], "py_type_alias")

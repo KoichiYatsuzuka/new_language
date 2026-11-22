@@ -1,0 +1,94 @@
+# py_reassign.ar — 同じ名前へ何度も代入する Python の関数（`if` / `for` / `while` / `try` の中も）を Arrow から呼ぶ
+#
+# Python は「スコープ内で一度でも代入された名前は、そのスコープ全体で同じ 1 つの変数」。CPython が実行する。
+# Arrow の list は `=> py_list[int]` で写して渡す。
+# ⚠ py 関数の引数は型注釈が無いので `Any` の値を受ける。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_reassign.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_reassign as m
+
+# ── ① 素朴な再代入 ──────────────────────────────────────────────────────
+emit([str(m.basic())])
+# 12
+
+# ── ② while のカウンタ ──────────────────────────────────────────────────
+mut n = 4
+emit([str(m.loop(n))])
+# 10
+
+# ── ③ for + if のネスト ─────────────────────────────────────────────────
+mut xs = [1, 2, 3]
+emit([str(m.in_for(xs => py_list[int]))])
+# 106
+
+# ── ④ try / except / finally ────────────────────────────────────────────
+emit([str(m.in_try())])
+# 12
+
+# ── ⑤ if / elif / else（旧実装が唯一カバーしていた形） ──────────────────
+mut k = 7
+emit([str(m.branches(k))])
+# 2
+mut k2 = 1
+emit([str(m.branches(k2))])
+# 1
+mut k3 = 0
+emit([str(m.branches(k3))])
+# -1
+
+# ── ⑥ パラメータへの再代入 ──────────────────────────────────────────────
+mut a = 5
+emit([str(m.param_reassign(a))])
+# 11
+
+# ── ⑦ モジュール直下の再代入 ────────────────────────────────────────────
+emit([str(m.COUNT)])
+# 10
+
+# ── ⑧ 入れ子関数は別スコープ ────────────────────────────────────────────
+emit([str(m.shadow())])
+# 199
+
+# ── ⑨⑩ ループの最後の値を取る（推奨形）───────────────────────
+#
+# ループ変数そのものをループ後に読むのではなく、**別の変数へ退避**させる。
+# （Python のコードの中ではループ変数をループの後で読める。CPython が実行する。）
+#
+# ⚠ **ループ変数をループ後に読む形は Arrow ではエラー**（bug_fix.md B4・規則 2）。
+#   CPython とは違うが、**意図した違い**—— ループ変数はブロック内の束縛で、
+#   抜けたら解放される。そもそも避けるべき書き方なので黙って通さずに止める。
+#   エラー側の実演は
+#   [for_target_scope_error.ar](../basics/for_target_scope_error.ar)。
+
+emit([str(m.latest_with_default(xs => py_list[int]))])
+# 3
+
+emit([str(m.latest_of(xs => py_list[int]))])
+# 3
+
+# ── ⑪ `if __name__ == "__main__":` の中の代入を巻き上げないこと ──────────
+#     import したモジュールの `__name__` は `__main__` ではないので、ガードの中は走らない。
+#     Arrow のこのファイルの `mut scratch` はモジュールの名前とは別。
+mut scratch = 42
+emit([str(scratch)])
+# 42
+
+# ── 出力を照らす ──
+check_output([
+    "12",
+    "10",
+    "106",
+    "12",
+    "2",
+    "1",
+    "-1",
+    "11",
+    "10",
+    "199",
+    "3",
+    "3",
+    "42",
+    "",
+], "py_reassign")

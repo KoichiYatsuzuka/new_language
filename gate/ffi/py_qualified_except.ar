@@ -1,0 +1,28 @@
+# py_qualified_except.ar — Python の except m.Err: と、Arrow から Python のクラスを修飾名で捕まえる形
+#
+# Python のモジュールが別のモジュールの例外を except h.ConfigError: で捕まえる（基底でも当たる: MissingKey は
+# ConfigError の派生）。Arrow の側も except h.ConfigError: と書ける（値は CPython の物なので `as mut e`）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_qualified_except.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_qualified_except as q
+import[py] test_modules.py_exception_hierarchy as h
+
+emit([str(q.guarded(1))])                       # ConfigError: raised in python
+emit([str(q.guarded(2))])                       # AppError: app failure
+
+try:
+    h.fail()
+except h.AppError:
+    emit([str("not reached")])
+except h.ConfigError as mut e:
+    emit([str("Arrow caught h.ConfigError:"), str(e)])    # Arrow caught h.ConfigError: raised in python
+
+# ── 出力を照らす ──
+check_output([
+    "ConfigError: raised in python",
+    "AppError: app failure",
+    "Arrow caught h.ConfigError: raised in python",
+    "",
+], "py_qualified_except")

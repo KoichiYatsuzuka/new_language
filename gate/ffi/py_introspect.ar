@@ -1,0 +1,40 @@
+# py_introspect.ar — issubclass / callable / getattr / hasattr / setattr を使う Python のコードと、Arrow から CPython のクラスを調べる
+#
+# 対になる誤りの例: py_introspect_error.ar
+#
+# Arrow の `issubclass(m.Puppy, m.Animal)` / `callable(m.Dog)` は CPython のクラスを受ける（CPython の `issubclass`・
+# pandas_import_plan.md 3-1）。片方だけ CPython のクラスなら偽（Arrow のクラスと継承でつながらない）。
+# - issubclass(C, spec): クラス同士は isinstance と同じ判定（同じクラスか派生）、組み込みの型は bool ⊂ int、組は要素ごと
+# - callable(x): 関数・クラス・組み込みの関数と型・`__call__` を持つインスタンスは真
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_introspect.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_introspect as m
+
+emit([str(m.kinds())])          # ['bool', 'int', 'sequence of 2', 'sequence of 1', 'dict', 'Puppy (an Animal)', 'other: str']
+mut p = m.Puppy("x")
+mut three = 3
+emit([str(m.by_variable(p)), str(m.by_variable(three))])      # True False
+emit([str(m.subclasses())])     # [True, False, True, True]
+emit([str(m.callables())])      # [True, True, False, True, True]
+emit([str(m.attributes())])     # ['rex', 'brown', [True, False], 'max', 'max says woof']
+emit([str(m.types())])          # [True, True, False, 'copy says woof', 'bool']
+
+emit([str("=== from Arrow ===")])
+emit([str(issubclass(m.Puppy, m.Animal)), str(issubclass(bool, int)), str(issubclass(int, bool))])   # True True False
+emit([str(callable(len)), str(callable(m.Dog)), str(callable(3)), str(callable(print))])                  # True True False True
+
+# ── 出力を照らす ──
+check_output([
+    "['bool', 'int', 'sequence of 2', 'sequence of 1', 'dict', 'Puppy (an Animal)', 'other: str']",
+    "True False",
+    "[True, False, True, True]",
+    "[True, True, False, True, True]",
+    "['rex', 'brown', [True, False], 'max', 'max says woof']",
+    "[True, True, False, 'copy says woof', 'bool']",
+    "=== from Arrow ===",
+    "True True False",
+    "True True False True",
+    "",
+], "py_introspect")

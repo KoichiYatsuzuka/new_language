@@ -1,0 +1,15 @@
+# py_del_error.ar — Python のコードの中で `del o.a` で消した属性を読むと AttributeError（CPython が投げた例外が Arrow へ届く）
+#
+# 期待されるエラー（実行時・CPython の文言）:
+#   AttributeError: 'Series' object has no attribute '_cacher'
+#
+# ⚠ Python が投げた例外は、捕まえなければ CPython と同じ最後の行で止まる（pandas_import_plan.md 2-1）。
+# ほかの誤り（`py_del.ar` の `errors()` が捕まえて表示する）は CPython の `del` の誤りそのもの。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_del_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: runtime AttributeError "'Series' object has no attribute '_cacher'"
+
+import[py] test_modules.py_del as m
+
+print(m.read_deleted())
+print("unreachable")

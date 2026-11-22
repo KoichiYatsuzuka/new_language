@@ -1,0 +1,19 @@
+# py_open.ar — Python のコードの with open(path, "w", encoding="utf-8") as f:（CPython の open）
+#
+# Python のコードの `open` は CPython の組み込みの `open`（文字列のモード・`encoding=`）。`with` の終わりで閉じる。
+# 書く行は Arrow の list を `=> py_list[str]` で写して渡す（D-12）。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_open.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_open as po
+
+po.save("_tmp_py_open.txt", ["alpha", "beta"] => py_list[str])
+emit([str(po.load("_tmp_py_open.txt"))], end="")      # alpha / beta
+
+# ── 出力を照らす ──
+check_output([
+    "alpha",
+    "beta",
+    "",
+], "py_open")

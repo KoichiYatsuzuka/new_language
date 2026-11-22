@@ -1,0 +1,44 @@
+# py_for_unpack.ar — `for` のアンパック（`for k, v in pairs:` / `d.items()` / `enumerate` / `zip`）を使う関数を Arrow から呼ぶ
+#
+# `for` は CPython が実行する。Arrow の list / dict は `=> py_list[T]` / `=> py_dict[K, V]` で写して渡す。
+# Arrow の側の `for k, v in d.items():` は `examples/collections/dict_items.ar`。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_for_unpack.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_for_unpack as m
+
+# ── ① タプルのリストを分解する ──────────────────────────────────────────
+mut pairs = [(1, 10), (2, 20)]
+emit([str(m.from_pairs(pairs => py_list[tuple[int, int]]))])
+# ['1->10', '2->20']
+
+# ── ② dict.items()（本項目で Arrow に追加した） ─────────────────────────
+mut d = {"a": 1, "b": 2}
+emit([str(m.from_dict(d => py_dict[str, int]))])
+# 3
+
+# ── ③ enumerate ─────────────────────────────────────────────────────────
+mut xs = ["p", "q"]
+emit([str(m.with_enumerate(xs => py_list[str]))])
+# ['0:p', '1:q']
+
+# ── ④ zip ───────────────────────────────────────────────────────────────
+mut ys = [1, 2]
+emit([str(m.with_zip(xs => py_list[str], ys => py_list[int]))])
+# ['p1', 'q2']
+
+# ── ⑤ 3 要素の分解 ──────────────────────────────────────────────────────
+mut rows = [(1, 2, 3), (4, 5, 6)]
+emit([str(m.triple(rows => py_list[tuple[int, int, int]]))])
+# [6, 15]
+
+# ── 出力を照らす ──
+check_output([
+    "['1->10', '2->20']",
+    "3",
+    "['0:p', '1:q']",
+    "['p1', 'q2']",
+    "[6, 15]",
+    "",
+], "py_for_unpack")

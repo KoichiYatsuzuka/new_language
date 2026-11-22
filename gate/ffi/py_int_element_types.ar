@@ -1,0 +1,49 @@
+# py_int_element_types.ar — Python の注釈の要素型を型スタブに残す（正例・ffi_value_exchange_plan.md 7-8）
+#
+# Python のモジュールの型スタブは Python の注釈から作る。`set[tuple[int, int]]` / `frozenset[str]` / `dict[str, list[int]]` は要素型まで
+# Arrow の型になり（frozenset は Arrow の set で届くので `set[str]`）、戻り値の要素も境界で照合する。
+# ⚠ 7-8 より前は `set[tuple[int, int]]` → `set[tuple]`・`frozenset[str]` → `Any`・`dict[K, V]` → `dict` と要素型を落としていた
+#   ので、注釈に反する要素（`{(1, "x")}`・`{"a": "x"}`）が黙って通った。
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# 実行には Python（py_int_probe.py）が要る。
+# 対になる負例: py_int_element_type_error.ar
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_int_element_types.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] py_int_probe as pp
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    emit([str(label + " OK")])
+
+let ps = pp.pairs() => set[tuple[int, int]]
+check("set[tuple[int, int]]", (1, 2) in ps and len(ps) == 2)
+let fs: set[str] = pp.frozen()
+check("frozenset[str] is set[str]", "a" in fs)
+let t = pp.table() => dict[str, list[int]]
+check("dict[str, list[int]]", t["a"] == [1, 2])
+
+mut caught = 0
+try:
+    mut bad = pp.lying_pairs()
+    emit([str("unreachable:"), str(bad)])
+except FfiTypeError:
+    caught += 1
+try:
+    mut bad2 = pp.lying_table()
+    emit([str("unreachable:"), str(bad2)])
+except FfiTypeError:
+    caught += 1
+check("elements that break the annotation are FfiTypeError", caught == 2)
+
+# ── 出力を照らす ──
+check_output([
+    "set[tuple[int, int]] OK",
+    "frozenset[str] is set[str] OK",
+    "dict[str, list[int]] OK",
+    "elements that break the annotation are FfiTypeError OK",
+    "",
+], "py_int_element_types")

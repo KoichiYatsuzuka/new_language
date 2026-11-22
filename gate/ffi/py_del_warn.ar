@@ -1,0 +1,35 @@
+# py_del_warn.ar — `del <name>` と例外の構文（`try` / `except` / 素の `except:`）を使う関数を Arrow から呼ぶ
+#
+# `del x`（束縛の削除）も CPython が実行する。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_del_warn.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_del_warn as m
+
+mut n = 5
+
+# ── ① del <name> は無視され、残りはそのまま動く ─────────────────────────
+emit([str(m.del_name(n))])
+# 5
+
+# ── ② 素の try / except E as e / finally は通り続ける ───────────────────
+emit([str(m.plain_try(n))])
+# ok
+
+mut neg = -1
+emit([str(m.plain_try(neg))])
+# caught
+
+# ── ③ 裸の except: も通り続ける ─────────────────────────────────────────
+emit([str(m.bare_except())])
+# bare
+
+# ── 出力を照らす ──
+check_output([
+    "5",
+    "ok",
+    "caught",
+    "bare",
+    "",
+], "py_del_warn")

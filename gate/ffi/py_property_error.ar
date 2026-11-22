@@ -1,0 +1,12 @@
+# py_property_error.ar — setter の無い property への代入（Python のコードの中・CPython の AttributeError が Arrow へ届く）
+#
+# 期待される出力:
+#   42
+#   AttributeError: property 'value' of 'ReadOnly' object has no setter
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_property_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: runtime AttributeError "property 'value' of 'ReadOnly' object has no setter"
+
+import[py] test_modules.py_property_error as pe
+
+pe.run()

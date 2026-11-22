@@ -1,0 +1,15 @@
+# py_bound_method.ar — Python のコードの束縛メソッド（f = s.apply / getattr(s, "apply") / map(s.apply, ..)）
+# （CPython で実行する）
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_bound_method.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] test_modules.py_bound_method as pb
+
+emit([str(pb.run())])                         # [6, 12, [3, 6], [1, 2, 3]]
+
+# ── 出力を照らす ──
+check_output([
+    "[6, 12, [3, 6], [1, 2, 3]]",
+    "",
+], "py_bound_method")

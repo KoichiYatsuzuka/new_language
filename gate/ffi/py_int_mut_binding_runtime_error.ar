@@ -1,0 +1,20 @@
+# 型から分からない Python のオブジェクトを不変の束縛で受けると、実行時の誤り（pandas_import_plan.md の D-3・タスク 1-2）
+#
+# Python の関数を値として読んだもの（型は関数）や、`Any` で受けた物は、静的には Python の物と分からない。
+# 束縛するときに実行時に止める:
+#   TypeError: parameter 'x' receives a Python object, so it must be declared `mut` (Python code can change it
+#   through other references)
+# 静的に分かる形は py_int_mut_binding_error.ar、正しい形は py_int_mut_binding.ar。
+# ⚠ gate/ への写し（gate_speed_plan.md 4-2）: もとは examples/interop/py_int_mut_binding_runtime_error.ar。行末の期待（expect のコメント）は写したときの誤りから書き、
+#   例題のコメントと照らして見直した（gate/README.md 3 節）。
+# expect-file: runtime TypeError "parameter 'x' receives a Python object, so it must be declar"
+
+import[py] py_int_refcount as rc
+
+fn describe(x: Any) -> str:             # mut でない引数
+    return "never reached"
+
+mut p = rc.make()
+print("before")
+print(describe(p))
+print("not reached")

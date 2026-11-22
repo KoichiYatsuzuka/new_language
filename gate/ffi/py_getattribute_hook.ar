@@ -1,0 +1,53 @@
+# py_getattribute_hook.ar — `__getattribute__` を持つ Python のクラスを CPython で動かし、Arrow から読む
+#
+# `__getattribute__(name)` は、**すべての明示の読み**で呼ばれる: フィールド・メソッド・
+# property・`getattr` / `hasattr`・メソッドの呼び出し `o.m(..)`（読んでから呼ぶ）・特殊メソッドを明示して呼ぶ
+# `o.__len__()`。`AttributeError` を投げれば `__getattr__` へ回る。`str(o)` / `len(o)` / `o + 1` / `for x in o` が
+# 内部で引く特殊メソッドは通らない（CPython も型から直接引く）。本当の属性を読むのは `object.__getattribute__(self, k)` /
+# `super().__getattribute__(k)`。Arrow からの読み（`o.k` / `o.m(..)`）も CPython の `getattr` なので同じ。
+# ⚠ Arrow のクラスは `__getattribute__` を定義できない（`classes/getattr_hook_error.ar` と同じパースの誤り）。
+#
+# m.run() の出力（CPython）:
+#   1 explicit: (1, 'm', 'p', 1, True) ['x', 'method', 'prop', 'x', 'x']
+#   2 implicit: ('Logged!', 3, 101, [7, 8]) []
+#   2 explicit dunder: (3, 'Logged!') ['__len__', '__str__']
+#   3 redirect: v:color real v:size True
+#   4 fallback: 1 fallback:hidden fallback:hidden fallback:missing
+#   5 child: 11 ['extra', 'x']
+# ⚠ gate/ への写し（gate_speed_plan.md 4-1）: もとは examples/interop/py_getattribute_hook.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.pycap import py_output   # ⚠ いちばん初めの import（Python の print を貯める・README 2.3）
+from ..lib.check import emit, check_output, check_text
+
+import[py] test_modules.py_getattribute_hook as m
+
+m.run()
+
+fn check(let ok: bool, let what: str) -> None:
+    if not ok:
+        raise ValueError(f"failed: {what}")
+
+# Arrow から読む・呼ぶのも上書きを通る（型検査は宣言していない名前を通す。型は `__getattribute__` の戻り値・注釈が無ければ Any）
+mut r = m.Redirect()
+check(str(r.virtual_shape) == "v:shape", "read from Arrow goes through __getattribute__")
+mut lg = m.Logged()
+check(str(lg.method()) == "m" and str(m.seen(lg)) == "['method']", "a method call from Arrow goes through it")
+check(len(lg) == 3 and str(m.seen(lg)) == "['method']", "len() from Arrow does not")
+emit([str("arrow side ok")])
+
+
+# ── 出力を照らす ──
+# Arrow の側の行（emit）と Python の側の行（print・lib/pycap.ar）を別々に照らす（gate/README.md 2.3）。
+check_output([
+    "arrow side ok",
+    "",
+], "py_getattribute_hook")
+check_text(py_output(), [
+    "1 explicit: (1, 'm', 'p', 1, True) ['x', 'method', 'prop', 'x', 'x']",
+    "2 implicit: ('Logged!', 3, 101, [7, 8]) []",
+    "2 explicit dunder: (3, 'Logged!') ['__len__', '__str__']",
+    "3 redirect: v:color real v:size True",
+    "4 fallback: 1 fallback:hidden fallback:hidden fallback:missing",
+    "5 child: 11 ['extra', 'x']",
+    "",
+], "py_getattribute_hook (python side)")
