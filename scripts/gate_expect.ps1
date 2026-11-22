@@ -13,7 +13,7 @@
 #   ./scripts/gate_expect.ps1 -Fresh          # 保存した結果を使わずに実行し直す
 # 最後の行は `GATE-EXPECT: <合格> passed, <不合格> failed`。1 つでも不合格なら exit 1。
 # ⚠ このファイルは日本語コメントを含むので UTF-8 BOM 付きで保存すること。
-param([string]$Exe = '', [string]$Root = '', [int]$TimeoutSec = 60, [int]$Jobs = 1, [switch]$Fresh)
+param([string]$Exe = '', [string]$Root = '', [int]$TimeoutSec = 60, [int]$Jobs = 0, [switch]$Fresh)
 
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot

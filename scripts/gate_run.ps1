@@ -87,7 +87,8 @@ function Invoke-GateRun {
         [string]$WorkDir = 'file',
         [hashtable]$ExtraEnv = @{},
         [int]$TimeoutSec = 60,
-        [int]$Jobs = 1,
+        # 0 = 論理コアの半分（3-5）。1 で逐次。
+        [int]$Jobs = 0,
         # タイムアウトした後、窓を閉じる要求（CloseMainWindow）を送って自分で終わるのを待つ秒数（今の force_gate の GUI の例題・
         # 0 なら待たずに止める）。待つ間に終われば closed=1（終了処理まで確かめた）、終わらなければ止めて timeout=1。
         [int]$GraceSec = 0,
@@ -115,18 +116,33 @@ function Invoke-GateRun {
     if (Test-Path -LiteralPath $dir) { Remove-Item -LiteralPath $dir -Recurse -Force }
     $null = New-Item -ItemType Directory -Path $dir -Force
 
+    if ($Jobs -le 0) { $Jobs = [Math]::Max(1, [int]([Environment]::ProcessorCount / 2)) }
+    # ⚠ `import[cpp-lib]` を書いたファイルは先に 1 本ずつ走らせる（同じ中継 DLL をヘッダの隣に同時に作り直すと取り合う・
+    #   gate/README.md 6 節）。それで中継 DLL のキャッシュが温まるので、残りは並列でよい。
+    $serial = @{}
+    if ($Jobs -gt 1) {
+        for ($k = 0; $k -lt $files.Count; $k++) {
+            if ([IO.File]::ReadAllText($files[$k]) -match 'import\[cpp-lib\]') { $serial[$k] = $true }
+        }
+    }
+    $order = @(@(0..($files.Count - 1) | Where-Object { $serial.ContainsKey($_) }) + @(0..($files.Count - 1) | Where-Object { -not $serial.ContainsKey($_) }))
+    if ($files.Count -eq 0) { $order = @() }
     $rows = New-Object System.Collections.Generic.List[object]
     $running = New-Object System.Collections.Generic.List[object]
     $next = 0
     $sw = [Diagnostics.Stopwatch]::StartNew()
     try {
         while (($next -lt $files.Count) -or ($running.Count -gt 0)) {
-            while (($running.Count -lt [Math]::Max(1, $Jobs)) -and ($next -lt $files.Count)) {
-                $i = $next + 1
+            while ($next -lt $files.Count) {
+                $k = $order[$next]
+                # 逐次のファイルの間（と、まだ走っている間）は 1 本だけ
+                $limit = if ($serial.ContainsKey($k) -or @($running | Where-Object { $_.Serial }).Count -gt 0) { 1 } else { [Math]::Max(1, $Jobs) }
+                if ($running.Count -ge $limit) { break }
+                $i = $k + 1
                 $stem = Join-Path $dir ('{0:D4}' -f $i)
-                $wd = if ($WorkDir -eq 'file') { Split-Path -Parent $files[$next] } else { $WorkDir }
-                $p = Start-GateProcess $Exe $files[$next] $wd $ExtraEnv "$stem.out" "$stem.err" "$stem.diag"
-                $running.Add([pscustomobject]@{ I = $i; Rel = $rels[$next]; P = $p; Sw = [Diagnostics.Stopwatch]::StartNew(); Grace = $false; NextClose = 0.0 })
+                $wd = if ($WorkDir -eq 'file') { Split-Path -Parent $files[$k] } else { $WorkDir }
+                $p = Start-GateProcess $Exe $files[$k] $wd $ExtraEnv "$stem.out" "$stem.err" "$stem.diag"
+                $running.Add([pscustomobject]@{ I = $i; Rel = $rels[$k]; P = $p; Sw = [Diagnostics.Stopwatch]::StartNew(); Grace = $false; NextClose = 0.0; Serial = $serial.ContainsKey($k) })
                 $next++
             }
             [Threading.Thread]::Sleep(10)

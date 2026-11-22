@@ -11,7 +11,7 @@
 # ⚠ 実行は共通ランナー（gate_run.ps1）が行い、ここは保存した結果から判定するだけ（gate_speed_plan.md 3-3）。
 #   結果は target/gate_results/ に残り、同じ exe・同じファイルなら次は実行せずに読む（読んだことを表示する。-Fresh で実行し直す）。
 #   ⚠ examples/ を対象にするときの作業ディレクトリは**リポジトリ直下**のまま（3-3 で古い実装と同じ判定になることを確かめた）。
-param([string]$Exe = '', [int]$TimeoutSec = 45, [switch]$SkipTestBuild, [string]$Root = '', [switch]$Fresh, [int]$Jobs = 1)
+param([string]$Exe = '', [int]$TimeoutSec = 45, [switch]$SkipTestBuild, [string]$Root = '', [switch]$Fresh, [int]$Jobs = 0)
 
 
 # ── 前段: `cargo test`（debug）がビルドできるか（`test_build_gate.ps1`）────────────

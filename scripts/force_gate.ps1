@@ -39,7 +39,7 @@
 #   窓を閉じる猶予（-Grace）もランナーが行う（-GraceSec）。結果は target/gate_results/ に残り、同じ exe・同じファイルなら
 #   次は実行せずに読む（読んだことを表示する。-Fresh で実行し直す）。
 #   -Exclude … 対象から外すファイル（リポジトリ直下からの相対パスに対する正規表現。例: 窓を出す例題を外して測る）
-param([int]$Timeout = 45, [int]$Grace = 25, [switch]$SkipTestBuild, [string]$Root = '', [switch]$Fresh, [int]$Jobs = 1, [string]$Exclude = '')
+param([int]$Timeout = 45, [int]$Grace = 25, [switch]$SkipTestBuild, [string]$Root = '', [switch]$Fresh, [int]$Jobs = 0, [string]$Exclude = '')
 
 
 # ── 前段: `cargo test`（debug）がビルドできるか（`test_build_gate.ps1`）────────────
