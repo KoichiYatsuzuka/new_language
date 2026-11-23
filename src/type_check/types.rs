@@ -1092,6 +1092,7 @@ pub(crate) struct FnSig {
 // ---------------------------------------------------------------------------
 
 /// スコープ内の変数情報。推論済み型と可変性フラグを保持する。
+#[derive(Clone)]
 pub(crate) struct VarInfo {
     pub(crate) ty: InferredType,
     /// 付け替えられるか（`x = ..`）。

@@ -72,6 +72,12 @@ pub struct TypeChecker {
     /// 検査の進行に伴って変化するカーソル状態（スコープスタック・現在の関数/クラス・
     /// `block_return` 禁止深さ）。操作は scope.rs の委譲メソッド経由で行う。
     state: CheckState,
+    /// **組み込みの名前だけの大域スコープ**（検査を始めたときの `state` の大域・known_bugs.md の #21 ②）。
+    ///
+    /// import 先のモジュールの本体はこれを大域にして検査する（`annotate_module_body`）。取り込む側の大域の上で
+    /// 検査すると、取り込む側の名前（`let MAIN_G = 1`）がモジュールから見えてしまう（実行時はモジュールの大域が
+    /// 別なので `NameError`）。
+    builtin_globals: HashMap<String, VarInfo>,
     /// クラス・trait・protocol・関数の宣言索引。収集パス（registry/builder.rs）で
     /// 組み立て済みで、検査中は**読み取り専用**。
     registry: TypeRegistry,
@@ -350,6 +356,7 @@ impl TypeChecker {
         builder.collect(stmts);
 
         Self {
+            builtin_globals: global.clone(),
             state: CheckState::new(global),
             registry: builder.build(),
             diags: Diagnostics::default(),

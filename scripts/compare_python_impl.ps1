@@ -256,6 +256,7 @@ $knownDiff = @{
     'nested_native_call_lifetime'    ='Rust: 入れ子のネイティブ呼び出しが作った値はその呼び出しから戻れば捨てられる例題（known_bugs.md の #25 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'arena_rewind_skip'              ='Rust: 値を積まない関数の呼び出しは前後でアリーナを巻き戻さず、積む関数は呼ぶたびに巻き戻す例題（copy_alloc_speed_plan.md 7-12 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'direct_field_after_error'       ='Rust: コンパイル済みコードは誤りの後で覚えたインスタンスの番地へ書かない例題（known_bugs.md の #26 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
+    'module_errors_error'            ='Rust: import したモジュールの静的な誤りも import した側の誤りとして挙げて実行しない（known_bugs.md の #21 で新設）。py: モジュールの本体を検査しないので実行してしまう'
     'direct_field_nested_cache'      ='Rust: コンパイル済みコードは入れ子の受け手の番地を（変数, 属性）ごとに使い回し、親のフィールドを差し替える呼び出しの後で取り直す例題（copy_alloc_speed_plan.md 7-13 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'blk_method_call'                ='Rust: コンパイル済みコードは raw レイアウトのクラスのメソッドを番地で呼び、クラス・初期化・__copy__ を確かめて外れたら今までの呼び出しへ回る例題（copy_alloc_speed_plan.md 7-14 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'for_loop_rewind'                ='Rust: コンパイル済みコードの for は周ごとの一時値を次の周の頭で捨てる例題（copy_alloc_speed_plan.md 7-15 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'

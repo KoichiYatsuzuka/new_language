@@ -8,8 +8,10 @@
 # stops after the static checks, so no example is executed (no GUI, FFI or sleeps).
 #
 #   * INVENTED (wasm only) and MISSED (arrow.exe only) must both be 0.
-#   * Errors arrow.exe reports in an imported module's file are not compared: the editor shows a
-#     document's own errors only.
+#   * Errors arrow.exe reports in an imported module's file (known_bugs.md #21: a module's static
+#     errors are the importer's errors too) are shown by the editor on the import statement that
+#     reaches the module, with the module position in 'imported'. They are compared by module file
+#     name + line:col ('mod:<file>:<line>:<col>').
 #   * An import arrow.exe cannot resolve stops it with a ParseError; the editor reports the import
 #     and goes on. Then only the import's message is compared (see the branch below).
 #
@@ -114,8 +116,7 @@ function Invoke-Child([string]$exePath, [string]$argLine, [string]$workDir, [has
 
 # Pull "line:col" keys out of arrow.exe's static-error table. Messages wrap across
 # terminal columns, so positions are the reliable key; '<unknown>' rows are counted.
-# Only rows of $mainFile: the editor shows a document's own errors (an imported module's errors
-# are shown when that file is open).
+# Rows of another file (an imported module, known_bugs.md #21) are keyed 'mod:<file>:<line>:<col>'.
 function Get-ExeErrorKeys([string]$text, [string]$mainFile) {
     $clean = $text -replace "$([char]27)\[[0-9;]*m", ''
     $main = ($mainFile -replace '\\', '/').ToLowerInvariant()
@@ -123,7 +124,12 @@ function Get-ExeErrorKeys([string]$text, [string]$mainFile) {
     foreach ($line in ($clean -split "`r?`n")) {
         if ($line -match '^(\S.*?)\s+(\d+):(\d+)\s+StaticTypeError\s') {
             $file = ($Matches[1].Trim() -replace '\\', '/').ToLowerInvariant()
-            if ($file -ne $main) { continue }
+            if ($file -ne $main) {
+                # An imported module's error (known_bugs.md #21): keyed by the module's file name.
+                $leaf = ($file -split '/')[-1]
+                $keys.Add("mod:$($leaf):$($Matches[2]):$($Matches[3])")
+                continue
+            }
             $keys.Add("$($Matches[2]):$($Matches[3])")
         } elseif ($line -match '^<unknown>\s+-\s+StaticTypeError\s') {
             $keys.Add('<unknown>')
@@ -221,6 +227,12 @@ foreach ($f in $files) {
     $wasmKeys = @()
     foreach ($d in $wj.diagnostics) {
         if ($d.severity -ne 0) { continue }
+        if ($null -ne $d.imported) {
+            # On the import statement; the module's own position is in 'imported' (known_bugs.md #21).
+            $leaf = (($d.imported.file -replace '\\', '/').ToLowerInvariant() -split '/')[-1]
+            $wasmKeys += "mod:$($leaf):$($d.imported.line):$($d.imported.col)"
+            continue
+        }
         if ($null -eq $d.at) { $wasmKeys += '<unknown>' }
         else { $wasmKeys += "$($d.at.line + 1):$($d.at.col + 1)" }
     }

@@ -228,6 +228,37 @@ fn diag_json(
     })
 }
 
+/// このドキュメント（`filename`）の import 文ごとに、その文の位置と、その文から（入れ子の import を含めて）
+/// たどり着くモジュールのファイルの集まり（known_bugs.md の #21）。並びはドキュメントの順。
+///
+/// ファイルはモジュールの本体の文の位置（`Stmt::position`）から取る。同じモジュールは型検査が 1 回だけ
+/// 検査する（最初にたどり着く import で検査する）ので、誤りは最初に見つかった import 文に付ける。
+fn import_reach(stmts: &[Stmt], filename: &str) -> Vec<(Span, std::collections::HashSet<String>)> {
+    fn collect(body: &[Stmt], out: &mut std::collections::HashSet<String>) {
+        for st in body {
+            if let Some(p) = st.position() {
+                out.insert(p.file.to_string());
+            }
+            if let Stmt::Import { body, .. } | Stmt::FromImport { body, .. } = st {
+                collect(body, out);
+            }
+        }
+    }
+    let mut reach = Vec::new();
+    for st in stmts {
+        if let Stmt::Import { body, origin, .. } | Stmt::FromImport { body, origin, .. } = st {
+            if &*origin.span.file != filename {
+                continue;
+            }
+            let mut files = std::collections::HashSet::new();
+            collect(body, &mut files);
+            files.remove(filename);
+            reach.push((origin.span.clone(), files));
+        }
+    }
+    reach
+}
+
 /// `fn f(a: int, b: str) -> bool` からパラメータ表示を作る（signature help 用）。
 fn params_json(params: &[Param]) -> Value {
     Value::Array(
@@ -502,6 +533,26 @@ fn analyze_impl(source: &str, filename: &str, source_dir: Option<std::path::Path
                 strip_ansi(&e.detail_str()),
                 e.error_type_str(),
             ));
+        }
+        // ⚠⚠ **import 先のモジュールの中の誤り**は、そのモジュールへたどり着く**このドキュメントの import 文**に
+        //    付ける（known_bugs.md の #21・CLI はモジュールのファイルの位置で全部を挙げる）。位置をそのまま使うと
+        //    このドキュメントの同じ行・列に波線が付くので、import 文を指し、文面にモジュールの位置を書く。
+        //    `imported` に元の位置を持たせる（`compare_wasm_frontend` が CLI のモジュールの誤りと照らす）。
+        let imports = import_reach(&stmts, filename);
+        for e in errors.iter().filter(|e| !here(e.span.as_ref())) {
+            let Some(span) = e.span.as_ref() else { continue }; // 位置の無い誤りは上で出している
+            let at = imports.iter().find(|(_, files)| files.contains(&*span.file)).map(|(at, _)| at);
+            let message = format!(
+                "in imported module {}:{}:{}: {}",
+                span.file,
+                span.line,
+                span.col,
+                strip_ansi(&e.detail_str())
+            );
+            // ⚠ たどり着く import 文が見つからない誤りも捨てない（ドキュメントの先頭に出す）。
+            let mut d = diag_json(&cols, at, SEVERITY_ERROR, message, e.error_type_str());
+            d["imported"] = json!({ "file": &*span.file, "line": span.line, "col": span.col });
+            diagnostics.push(d);
         }
         for w in warnings.iter().filter(|w| here(w.span.as_ref())) {
             diagnostics.push(diag_json(

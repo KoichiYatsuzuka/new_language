@@ -9,6 +9,12 @@ use std::collections::HashMap;
 
 use super::types::{FnSig, InferredType, VarInfo};
 
+/// [`CheckState::swap_scopes`] が退避したスコープの積み。
+pub(super) struct SavedScopes {
+    scope_stack: Vec<HashMap<String, VarInfo>>,
+    local_fn_sigs: Vec<HashMap<String, Vec<FnSig>>>,
+}
+
 /// 検査中のスコープスタックと「今どこを検査しているか」を保持する。
 pub(super) struct CheckState {
     /// 変数スコープのスタック。インデックス 0 がグローバルスコープ、末尾がローカルスコープ。
@@ -137,6 +143,23 @@ impl CheckState {
             self.scope_stack.pop();
             self.local_fn_sigs.pop();
         }
+    }
+
+    /// スコープの積みを `global` だけにした積みと取り替え、元の積みを返す（[`Self::restore_scopes`] へ渡す）。
+    ///
+    /// import 先のモジュールの本体を、取り込む側の名前が見えない大域で検査するため（known_bugs.md の #21 ②）。
+    /// import は最上位にしか書けないので、ほかの位置の状態（今の関数・クラスの本体の深さ…）は最上位のまま。
+    pub(super) fn swap_scopes(&mut self, global: HashMap<String, VarInfo>) -> SavedScopes {
+        SavedScopes {
+            scope_stack: std::mem::replace(&mut self.scope_stack, vec![global]),
+            local_fn_sigs: std::mem::replace(&mut self.local_fn_sigs, vec![HashMap::new()]),
+        }
+    }
+
+    /// [`Self::swap_scopes`] が返した積みに戻す。
+    pub(super) fn restore_scopes(&mut self, saved: SavedScopes) {
+        self.scope_stack = saved.scope_stack;
+        self.local_fn_sigs = saved.local_fn_sigs;
     }
 
     /// 入れ子の関数のシグネチャを今のスコープに積む（同じスコープの同じ名前は多重定義として並ぶ・1-7）。

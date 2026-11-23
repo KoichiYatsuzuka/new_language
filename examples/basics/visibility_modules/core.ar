@@ -8,7 +8,7 @@ const LABEL: str = "core"
 class Item:
     let v: int
 
-    fn __init__(mut self, let v: int):
+    fn __init__(mut self, let v: int) -> None:
         self.v = v
 
 fn make_item(let v: int) -> Item:

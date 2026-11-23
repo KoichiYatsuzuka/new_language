@@ -1,0 +1,30 @@
+# module_errors_error.ar — import したモジュールの静的な誤りも、import した側の誤りとして挙がる
+#
+# 計画: implementation_plans/known_bugs.md の #21（2026-11-23 の利用者の決定）
+#
+# - モジュールの本体の誤りは、位置をモジュールのファイルのまま、入口から import をたどって**全部**挙がる
+#   （bad_mid.ar → bad_leaf.ar の入れ子も）。import の所で止まらず、入口の残りの誤りも続けて挙がる。
+# - モジュールの本体は**組み込みの名前だけが見える大域**で検査する。入口の `ENTRY_ONLY` は
+#   reads_importer.ar からは見えない（実行時もモジュールの大域は別）。
+# - VS Code 拡張では、モジュールの誤りはそのモジュールへたどり着く import 文に出る（文面にモジュールの位置）。
+#
+# ⚠ 以前は import 先の誤りを捨てていたので、このファイルは何も言わずに動き、`str` と注釈した
+#   `bad_leaf.label` に `1` が入ったままだった。
+# ⚠ 外部言語（py / cpp / cs / js / rs）のスタブの本体の誤りは今までどおり出さない（スタブは利用者が
+#   書いた Arrow のコードではない・`annotate_module_body`）。
+#
+# 期待されるエラー（この順）:
+#   module_errors/bad_leaf.ar        StaticTypeError  'label' is declared 'str' but initialized with 'int'
+#   module_errors/bad_leaf.ar        StaticTypeError  name 'missing_in_leaf' is not defined
+#   module_errors/bad_mid.ar         StaticTypeError  'count' is declared 'int' but initialized with 'str'
+#   module_errors/reads_importer.ar  StaticTypeError  name 'ENTRY_ONLY' is not defined
+#   module_errors_error.ar           StaticTypeError  'after' is declared 'int' but initialized with 'str'
+
+let ENTRY_ONLY = 1
+
+import module_errors.bad_mid as mid
+import module_errors.reads_importer as r
+
+let after: int = "imports"              # ⛔ import の後の入口の誤りも挙がる
+
+print(mid.count, r.read_entry())

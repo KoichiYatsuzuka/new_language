@@ -1980,12 +1980,26 @@ mod tests {
     ///
     /// ⚠ モジュールと本体は**同じ node-id カウンタ**でパースする（パーサの `parse_sub_module` と同じ）。
     fn expand_with_module(module_src: &str, imports: &[Stmt], main_src: &str) -> Result<Vec<Stmt>, String> {
+        expand_with_module_after("", module_src, imports, main_src)
+    }
+
+    /// [`expand_with_module`] と同じだが、`import` の**前**にメインの文 `prefix_src` を置く。
+    fn expand_with_module_after(
+        prefix_src: &str,
+        module_src: &str,
+        imports: &[Stmt],
+        main_src: &str,
+    ) -> Result<Vec<Stmt>, String> {
         let (body, counter, traits) = parse(module_src)?;
-        let tokens = crate::lexer::Lexer::new(main_src, "").tokenize();
-        let mut parser = crate::parser::Parser::new(tokens, None);
-        parser.set_node_counter(std::rc::Rc::clone(&counter));
-        let main = parser.parse_program()?;
-        let mut stmts: Vec<Stmt> = Vec::new();
+        let parse_main = |src: &str| {
+            let tokens = crate::lexer::Lexer::new(src, "").tokenize();
+            let mut parser = crate::parser::Parser::new(tokens, None);
+            parser.set_node_counter(std::rc::Rc::clone(&counter));
+            parser.parse_program()
+        };
+        let prefix = parse_main(prefix_src)?;
+        let main = parse_main(main_src)?;
+        let mut stmts: Vec<Stmt> = prefix;
         for imp in imports {
             let mut imp = imp.clone();
             match &mut imp {
@@ -2572,8 +2586,9 @@ mod tests {
         assert!(at < use_at, "使う文より前に置く");
     }
 
-    /// ⚠⚠ `import` 先の具体化の型の誤りも出る（タスク 2-15）。型検査はモジュールの本体の診断を
-    /// 捨てるが、具体化の本体で見つかった誤り（型引数を選んだ側の誤り）は残す。
+    /// ⚠⚠ `import` 先の具体化の型の誤りも出る（タスク 2-15）。具体化の本体で見つかった誤り（型引数を選んだ側の
+    /// 誤り）と、テンプレートの本体の誤り（モジュール自身の誤り・known_bugs.md の #21 で import 側にも出す）の
+    /// 両方が出る。テンプレートの本体でも出る誤りは、具体化の分を落として 1 回だけ出す。
     #[test]
     fn a_type_error_in_an_imported_instantiation_is_reported() {
         let out = expand_with_module(
@@ -2592,8 +2607,50 @@ mod tests {
         let (errors, _, _) = crate::type_check::TypeChecker::check_program(&out);
         let msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
         assert!(msgs.iter().any(|m| m.contains("Box[str]") && m.contains("declared")), "出ていない: {msgs:?}");
-        // テンプレートの本体の誤り（`label`）はモジュール自身の誤りなので import 側には出さない。
-        assert!(!msgs.iter().any(|m| m.contains("label")), "出てはいけない: {msgs:?}");
+        // テンプレートの本体の誤り（`label`）はモジュール自身の誤りとして 1 回だけ出す（具体化の同じ誤りは落とす）。
+        assert_eq!(msgs.iter().filter(|m| m.contains("label")).count(), 1, "1 回だけ出す: {msgs:?}");
+    }
+
+    /// ⚠⚠ **import したモジュールの本体の誤りは import した側の誤りとしても出る**（known_bugs.md の #21 ①）。
+    /// 何か所から import しても 1 回だけ。以前は捨てていたので、`str` の変数に `1` が入ったまま動いた。
+    #[test]
+    fn a_module_s_own_errors_are_reported_to_the_importer() {
+        let out = expand_with_module(
+            concat!(
+                "let s: str = 1\n",
+                "fn never_called() -> None:\n",
+                "    print(missing_in_module)\n",
+            ),
+            &[import_of(None), from_import_of(&["s"])],
+            "print(m.s)\n",
+        )
+        .expect("expand");
+        let (errors, _, _) = crate::type_check::TypeChecker::check_program(&out);
+        let msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        // 文面は名前を ANSI で色付けしている（`'s'` の引用符の間に制御文字が入る）ので、文言の部分で数える。
+        assert_eq!(msgs.iter().filter(|m| m.contains("is declared")).count(), 1, "{msgs:?}");
+        assert_eq!(msgs.iter().filter(|m| m.contains("missing_in_module")).count(), 1, "{msgs:?}");
+    }
+
+    /// ⚠⚠ **モジュールの本体から import した側の大域は見えない**（known_bugs.md の #21 ②）。以前は import した側の
+    /// 大域の上で検査していたので型検査は通り、実行時に `NameError` になっていた（モジュールの大域は別）。
+    /// 組み込みの名前（`len`）は見える。
+    #[test]
+    fn a_module_body_does_not_see_the_importer_s_globals() {
+        let out = expand_with_module_after(
+            "let MAIN_G = 1\n",
+            concat!(
+                "fn read_main() -> int:\n",
+                "    return MAIN_G + len(\"ab\")\n",
+            ),
+            &[import_of(None)],
+            "print(m.read_main())\n",
+        )
+        .expect("expand");
+        let (errors, _, _) = crate::type_check::TypeChecker::check_program(&out);
+        let msgs: Vec<String> = errors.iter().map(|e| e.to_string()).collect();
+        assert_eq!(msgs.len(), 1, "{msgs:?}");
+        assert!(msgs[0].contains("MAIN_G") && msgs[0].contains("not defined"), "{msgs:?}");
     }
 
     #[test]

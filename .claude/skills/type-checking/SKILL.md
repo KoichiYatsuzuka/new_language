@@ -167,7 +167,10 @@ protocol / template names, visible type variables, `Self`, `_`, and — **inside
   ⚠ `Namespace(members, closed, vars)`: the third field (`ModuleVars`) carries the **attribute** (`VarAttr`:
   `Const` / `Let` / `Mut` / `Imported`) of each module global. Member types and attributes of globals come
   from the scope the module body was checked in (`annotate_module_body` stores `module_globals` before
-  popping it), so unannotated and `mut` globals are typed too. Writes through `g.X` are decided by the
+  restoring the importer's scopes), so unannotated and `mut` globals are typed too.
+  ⚠ `annotate_module_body` checks the body on a scope stack holding **built-in names only**
+  (`CheckState::swap_scopes(builtin_globals)`), and reports the body's errors as the importer's errors
+  (Arrow source modules only; foreign stubs report only instantiation errors) — known_bugs.md #21. Writes through `g.X` are decided by the
   attribute (`check_immutable_field_assign` / `readonly_on_path`); `from g import X` declares `X` with
   `contents_mutable` from the original attribute (`VarInfo::contents_mutable`, `declare_imported`).
 - If `obj` is `NamedInstance(cls)` → access-control check runs (see below) → returns `Unresolved` (field type resolution is partial).

@@ -82,6 +82,11 @@
   - **Relative imports**: `from . import x`, `from .m import y`, `from ..m import y` (CPython), plus the Arrow
     extension `import .a` / `import ..a.b`. Each extra dot goes one directory up from the importing file.
     ⚠ Unlike CPython they also work from the entry file and may go above the entry directory.
+  - **An imported Arrow module's static errors are the importer's errors too** (known_bugs.md #21, 2026-11-23): checking
+    the entry reports every error of every module it reaches (nested imports included, at the module's file position)
+    without stopping at the import. The module body is checked against built-in names only (the importer's globals are
+    not visible, as at run time). Foreign stubs (py / cpp / cs / js / rs) are not reported. The VS Code extension shows
+    them on the import statement that reaches the module.
   - **The same rule applies to every `import[lang]`** (`.ar` / `.arc` / py / cpp / cs / js), when
     parsing and at runtime. ⚠ cpp / cs / js / rs dotted paths are file locations, not packages: they bind
     the alias or the last part (cpp: the header's stem) as before. `import[rs]` takes a crate name, so a

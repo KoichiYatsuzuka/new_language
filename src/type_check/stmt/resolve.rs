@@ -30,20 +30,19 @@ fn is_template_decl(st: &Stmt) -> bool {
 }
 
 impl TypeChecker {
-    /// import 先モジュールの本体を検査して**注釈だけ**を採取する（#16 段階 F）。
+    /// import 先モジュールの本体を検査して、注釈を付け、誤りを報告する（#16 段階 F・known_bugs.md の #21）。
     ///
     /// 型検査は従来メインプログラムの文だけを走査しており、`Stmt::Import` の `body` は
     /// `collect_module_types`（署名を読むだけ）しか通らなかった。そのため
     /// **import 先の関数本体には注釈が付かず**、同じコードでもメイン側より最適化が効かなかった
     /// （実測: メインの `v.x*v.x+v.y*v.y` は `FBIN_SS` になるのに、import 先の同じ式は `BIN` のまま）。
     ///
-    /// **診断は捨てる**。モジュール自身の型エラーは、そのモジュールを直接実行/`--compile` した
-    /// ときに報告されるべきもので、ここで出すと import 側に二重に出てしまう。
-    /// 採取したいのは注釈テーブルへの書き込み（副作用）だけ。
+    /// **誤りは取り込む側の誤りとして報告する**（位置はモジュールのファイル・#21 ①）。同じモジュールは
+    /// 1 回だけ検査する（`annotated_modules`）ので、何か所から import しても誤りは 1 回だけ出る。
     ///
-    /// スコープは push/pop で隔離する。万一 import 先がメイン側の名前を拾っても、
-    /// 影響は注釈が不正確になることだけで、VM の特化 op は実行時型が想定外なら汎用へ
-    /// フォールバックするため結果は変わらない。
+    /// 本体は**組み込みの名前だけが見える大域**で検査する（#21 ②・[`CheckState::swap_scopes`]）。
+    ///
+    /// [`CheckState::swap_scopes`]: crate::type_check::state::CheckState::swap_scopes
     pub(crate) fn annotate_module_body(
         &mut self,
         lang: &str,
@@ -86,7 +85,11 @@ impl TypeChecker {
         // ⚠ モジュールの本体の名前は**そのモジュールの文脈で**引く（`tags.Tag`・フェーズ10 10-8）。
         //   知らないモジュール（外部言語）では文脈は変わらない。
         let prev_scope = self.registry.enter_module_scope(&module.join("."));
-        self.push_scope();
+        // ⚠⚠ 大域は**組み込みの名前だけ**にする（known_bugs.md の #21 ②）。以前は取り込む側の大域の上に
+        //    スコープを積んで検査していたので、取り込む側の `let MAIN_G = 1` がモジュールから見えた
+        //    （実行時はモジュールの大域が別なので `NameError`）。モジュールの最上位はそのモジュールを入口に
+        //    したときと同じ深さ（大域）になる。
+        let saved_scopes = self.state.swap_scopes(self.builtin_globals.clone());
         // モジュールの最上位の束縛は**本体全体**から取る（2 回目以降の `import` で検査するのが具体化だけでも同じ）。
         self.module_toplevel.push(crate::type_check::names::collect_toplevel_bindings(body));
         self.check_stmts(target);
@@ -97,21 +100,32 @@ impl TypeChecker {
             let vars = self.module_global_vars(target);
             self.module_globals.insert(module.join("."), vars);
         }
-        self.pop_scope();
+        self.state.restore_scopes(saved_scopes);
         self.registry.leave_module_scope(prev_scope);
         let module_diags = std::mem::replace(&mut self.diags, saved);
-        // ⚠⚠ ただし、**呼び出し側の型引数が原因の誤り**は捨てない（タスク 2-15）。
-        //   `m.Box[str]` の具体化は展開器がモジュールの本体に置く（`monomorph::instantiate_imported`）
-        //   ので、その本体の誤り（`Box[str]` の `self.v = 0`）はここで見つかる。捨てると
-        //   実行時の `TypeError` まで分からない（実測）。
-        //   ⚠ テンプレートの本体（型変数のまま）でも出る誤りは**モジュール自身の誤り**なので捨てる
-        //     （具体化の誤りのうち、テンプレートの本体の誤りと同じ文面のものを落とす・`dedup_instance_errors`）。
+        // ⚠⚠ **モジュールの誤りも取り込む側の誤りとして報告する**（known_bugs.md の #21 ①・2026-11-23 の利用者の
+        //    決定）。位置はモジュールのファイルのまま。import の所で止めず、入口から import をたどって全部を挙げる
+        //    （入れ子の import の誤りは、その本体の検査がここへ持ち上げてある）。
+        //    以前は「モジュールを入口にしたときに報告すべきで、ここで出すと二重に出る」として捨てていたが、
+        //    実行時は注釈を確かめないので、`let s: str = 1` のモジュールを import すると `s` に `1` が入ったまま
+        //    動いていた。
+        //   ⚠ 同じモジュールの 2 回目以降の `import` で検査するのはテンプレートと新しい具体化だけで、テンプレート
+        //     の誤りは 1 回目に報告してある。出すのは**呼び出し側の型引数が原因の誤り**（具体化の本体の誤り・
+        //     タスク 2-15）だけ。
+        //   ⚠ 具体化の誤りのうち、テンプレートの本体（型変数のまま）でも出る誤りと同じ文面のものは落とす
+        //     （モジュール自身の誤りとしてテンプレートの側で報告する・`dedup_instance_errors`）。
+        //   ⚠ 外部言語（py / cpp / cs / js / rs）の本体は、そのソースから作ったスタブの宣言で、利用者が書いた
+        //     Arrow のコードではない。位置を持たないので誤りは import の行を指し、スタブの作り方の都合の誤り
+        //     （Python の関数の引数が `mut` でない・`timezone: int = None`・スタブが知らない型の名前…・
+        //     2026-11-23 に例題で数百件）が出る。外部のコード自身の正しさはその言語が確かめるので、
+        //     具体化の誤り以外は今までどおり出さない（「掬いきれなかった選択肢はエラーにする」の例外）。
+        let report_all = first && crate::module_path::is_arrow_source_lang(lang);
         let (errors, _) = module_diags.into_parts_tagged();
         let instance_names = self.registry.instance_names().clone();
         for (e, from_instance) in Self::dedup_instance_errors(errors, &instance_names) {
-            if from_instance {
+            if report_all || from_instance {
                 // 文の位置は持ち越さない（モジュールの文の位置で、この文の重複除去には使わない・2-3）。
-                self.diags.report_error(e, true, None);
+                self.diags.report_error(e, from_instance, None);
             }
         }
     }
