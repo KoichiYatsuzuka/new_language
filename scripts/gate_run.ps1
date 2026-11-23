@@ -37,12 +37,17 @@ function Get-GateExeHash([string]$Exe) {
 # 対象のディレクトリの下の全ファイルの指紋。$Exclude（正規表現・相対パスに対して）に合うものは除く。
 # ⚠ テストが実行中に書く一時ファイル（`_tmp_*`・.gitignore と同じ規則）は常に除く。入れると実行するたびに指紋が
 #   変わり、保存した結果が二度と使われない（4-1 で gate/lang のファイル I/O のテストが踏んだ）。
+# ⚠ cpp-lib の中継 DLL のキャッシュ（`ar_{stem}.dll` / `.syms` / `_shim.*`）も除く（6-2）。ヘッダ（指紋に入る）と exe（鍵に入る）
+#   から作られるもので、A/B の比較は exe ごとにキャッシュを入れ替えて戻す（cpp_cache_isolation.ps1）。入れると、入れ替えや
+#   作り直しのたびに鍵が変わり、基準の exe の保存が使われなくなる。
 function Get-GateTreeFingerprint([string]$Root, [string]$Exclude) {
     $rootFull = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\')
     $lines = New-Object System.Collections.Generic.List[string]
     foreach ($f in [IO.Directory]::EnumerateFiles($rootFull, '*', [IO.SearchOption]::AllDirectories)) {
         $rel = $f.Substring($rootFull.Length + 1)
-        if ([IO.Path]::GetFileName($rel).StartsWith('_tmp_')) { continue }
+        $leaf = [IO.Path]::GetFileName($rel)
+        if ($leaf.StartsWith('_tmp_')) { continue }
+        if ($leaf -match '^ar_.+(\.dll|\.syms|_shim\.exp|_shim\.lib)$') { continue }
         if ($Exclude -and ($rel -match $Exclude)) { continue }
         $fi = New-Object IO.FileInfo($f)
         $lines.Add(('{0}|{1}|{2}' -f $rel, $fi.Length, $fi.LastWriteTimeUtc.Ticks))
@@ -66,6 +71,30 @@ function Read-GateDiag([string]$Path) {
     return ,@($text -split "`n" | Where-Object { $_.Trim() -ne '' } | ForEach-Object { $_ | ConvertFrom-Json })
 }
 
+# stderr を VM のダンプ（`AR_VM_DUMP=1`）とそれ以外に分ける（6-1）。戻り値: @{ Dump; Rest }（どちらも LF の文字列）。
+#   ダンプの 1 つの塊 = `== chunk <名前> (n_locals=N) ==` の行・命令の行（`   0  CONST …`）・終わりの空行 1 つ
+#   （src/vm/disasm.rs の `disassemble` を `eprintln!` で 1 回に出す）。
+#   ⚠ 塊は 1 回の `eprintln!` で出るので、別のスレッドの出力が塊の途中に入ることはない（stderr の lock）。
+#   ⚠ 命令の行に生の改行は入らない（定数は Rust の Debug 表示なので `\n` はエスケープされる）。この前提が崩れると、
+#     塊の残りが Rest に漏れて compare_outputs が差を出す（黙って緩むのではなく赤になる）。
+function Split-GateVmDump([string]$Text) {
+    $dump = New-Object System.Text.StringBuilder
+    $rest = New-Object System.Text.StringBuilder
+    $inDump = $false
+    foreach ($line in (($Text -replace "`r`n", "`n") -split "`n")) {
+        if ($line -match '^== chunk .+ \(n_locals=\d+\) ==$') { $inDump = $true; $null = $dump.Append($line).Append("`n"); continue }
+        if ($inDump) {
+            if ($line -match '^\s*\d+\s+[A-Z_]') { $null = $dump.Append($line).Append("`n"); continue }
+            $inDump = $false
+            if ($line -eq '') { continue }   # 塊の終わりの空行
+        }
+        $null = $rest.Append($line).Append("`n")
+    }
+    $r = $rest.ToString()
+    if ($r.EndsWith("`n")) { $r = $r.Substring(0, $r.Length - 1) }   # split で足した最後の改行を戻す
+    return [pscustomobject]@{ Dump = $dump.ToString(); Rest = $r }
+}
+
 function Start-GateProcess($Exe, $File, $WorkDir, $ExtraEnv, $Out, $Err, $Diag) {
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $env:ComSpec
@@ -79,6 +108,35 @@ function Start-GateProcess($Exe, $File, $WorkDir, $ExtraEnv, $Out, $Err, $Diag) 
     foreach ($k in $ExtraEnv.Keys) { $psi.EnvironmentVariables[$k] = [string]$ExtraEnv[$k] }
     $psi.EnvironmentVariables['AR_DIAG_OUT'] = $Diag
     return [Diagnostics.Process]::Start($psi)
+}
+
+# 実行の鍵と保存先（Invoke-GateRun と同じ引数を取る）。戻り値: @{ Files; Rels; Key; Dir; Index }
+function Get-GateRunPlan {
+    param(
+        [Parameter(Mandatory=$true)][string]$Exe, [Parameter(Mandatory=$true)][string]$Root, [Parameter(Mandatory=$true)][string[]]$Files,
+        [string]$WorkDir = 'file', [hashtable]$ExtraEnv = @{}, [int]$TimeoutSec = 60, [int]$GraceSec = 0,
+        [string]$TreeExclude = '', [string]$ResultsRoot = ''
+    )
+    $rootFull = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\')
+    if (-not $ResultsRoot) { $ResultsRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'target\gate_results' }
+    $files = @($Files | ForEach-Object { (Resolve-Path -LiteralPath $_).Path })
+    $rels = @($files | ForEach-Object { if ($_.StartsWith($rootFull + '\')) { $_.Substring($rootFull.Length + 1) } else { $_ } })
+    $envText = (($ExtraEnv.Keys | Sort-Object | ForEach-Object { "$_=$($ExtraEnv[$_])" }) -join ';')
+    $key = Get-GateStringHash ((Get-GateTreeFingerprint $rootFull $TreeExclude) + "`n" + ($rels -join "`n") + "`n" + $envText + "`n" + $WorkDir + "`n" + $TimeoutSec + "`n" + $GraceSec)
+    $dir = Join-Path (Join-Path $ResultsRoot (Get-GateExeHash ((Resolve-Path -LiteralPath $Exe).Path))) $key
+    return [pscustomobject]@{ Files = $files; Rels = $rels; Key = $key; Dir = $dir; Index = (Join-Path $dir 'index.csv') }
+}
+
+# 同じ引数の実行の結果が保存されているか（実行はしない。A/B 系が、走らせる exe だけ中継 DLL のキャッシュを温めるのに使う・6-2）。
+function Test-GateRunSaved {
+    param(
+        [Parameter(Mandatory=$true)][string]$Exe, [Parameter(Mandatory=$true)][string]$Root, [Parameter(Mandatory=$true)][string[]]$Files,
+        [string]$WorkDir = 'file', [hashtable]$ExtraEnv = @{}, [int]$TimeoutSec = 60, [int]$GraceSec = 0,
+        [string]$TreeExclude = '', [string]$ResultsRoot = ''
+    )
+    $plan = Get-GateRunPlan -Exe $Exe -Root $Root -Files $Files -WorkDir $WorkDir -ExtraEnv $ExtraEnv -TimeoutSec $TimeoutSec -GraceSec $GraceSec -TreeExclude $TreeExclude -ResultsRoot $ResultsRoot
+    if (-not (Test-Path -LiteralPath $plan.Index)) { return $false }
+    return (@(Import-Csv -LiteralPath $plan.Index).Count -eq $plan.Files.Count)
 }
 
 function Invoke-GateRun {
@@ -100,14 +158,8 @@ function Invoke-GateRun {
         [string]$ResultsRoot = ''
     )
     $Exe = (Resolve-Path -LiteralPath $Exe).Path
-    $rootFull = (Resolve-Path -LiteralPath $Root).Path.TrimEnd('\')
-    if (-not $ResultsRoot) { $ResultsRoot = Join-Path (Split-Path -Parent $PSScriptRoot) 'target\gate_results' }
-    $files = @($Files | ForEach-Object { (Resolve-Path -LiteralPath $_).Path })
-    $rels = @($files | ForEach-Object { if ($_.StartsWith($rootFull + '\')) { $_.Substring($rootFull.Length + 1) } else { $_ } })
-    $envText = (($ExtraEnv.Keys | Sort-Object | ForEach-Object { "$_=$($ExtraEnv[$_])" }) -join ';')
-    $key = Get-GateStringHash ((Get-GateTreeFingerprint $rootFull $TreeExclude) + "`n" + ($rels -join "`n") + "`n" + $envText + "`n" + $WorkDir + "`n" + $TimeoutSec + "`n" + $GraceSec)
-    $dir = Join-Path (Join-Path $ResultsRoot (Get-GateExeHash $Exe)) $key
-    $index = Join-Path $dir 'index.csv'
+    $plan = Get-GateRunPlan -Exe $Exe -Root $Root -Files $Files -WorkDir $WorkDir -ExtraEnv $ExtraEnv -TimeoutSec $TimeoutSec -GraceSec $GraceSec -TreeExclude $TreeExclude -ResultsRoot $ResultsRoot
+    $files = $plan.Files; $rels = $plan.Rels; $key = $plan.Key; $dir = $plan.Dir; $index = $plan.Index
 
     if ((-not $Fresh) -and (Test-Path -LiteralPath $index)) {
         $rows = @(Import-Csv -LiteralPath $index)

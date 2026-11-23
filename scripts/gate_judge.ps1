@@ -20,7 +20,7 @@ function Write-GateScanReport($Results) {
             continue
         }
         if ($r.Exit -ne 0) {
-            $err = Read-GateText $r.ErrPath
+            $err = (Split-GateVmDump (Read-GateText $r.ErrPath)).Rest   # Invoke-GateSuite はダンプを付けて走らせる
             $line = ($err -split "`n" | Where-Object { $_ -match '\S' } | Select-Object -Last 3) -join ' | '
             Write-Host "FAIL`t$name`t$(ConvertTo-GateOneLine $line)"
             $n++
@@ -67,8 +67,8 @@ $script:GateExampleSkip = @(
     'importation'
 )
 # ⚠⚠ **`archived/` と `practical_examples/` は意図的に対象外**（タスク 9.3・利用者の決定）。
-#    `$categoryDirs` を使うスクリプト（scan_examples / check_examples / compare_outputs / compare_bytecode /
-#    compare_python_impl）は 9 カテゴリだけを走査する。
+#    `$categoryDirs` を使うスクリプト（scan_examples -Root examples / check_examples / compare_python_impl）は
+#    9 カテゴリだけを走査する（A/B 系は 6-1 から gate/ を見る）。
 #    ⚠ `force_gate.ps1 -Root examples` と `compare_wasm_frontend.ps1` は `examples/` を `-Recurse` で
 #      舐めるので上記 2 つも**含む**が、どちらも「例題が成功するか」は見ていない
 #      （バイトコード化の可否／2 実装の診断の一致）。⇒ **壊れていても素通りする。**
@@ -81,10 +81,24 @@ $script:GateExampleCategories = @('basics','collections','classes','typing','exc
 # gates_every_time はどれもこれを呼ぶので、保存のキー（ファイルの並び・作業ディレクトリ・時間切れ・猶予・指紋）が揃い、
 # 1 回走らせれば残りは保存した結果を読むだけになる。⚠ 引数を変えるとキーが変わる（別々に走る）。
 #   gate/ には窓を出すテストが無い（D-10）ので猶予（GraceSec）は 0、時間切れは 60 秒。gate_run.ps1 を先に dot-source すること。
-function Invoke-GateSuite([string]$Exe, [string]$Root, [int]$Jobs = 0, [switch]$Fresh) {
+#   ⚠ **VM のダンプ（`AR_VM_DUMP=1`）を付けて走らせる**（6-1）。A/B 系（compare_outputs / compare_bytecode）が同じ結果を
+#     読むので、「毎回」のゲートの後の A/B は基準の exe を走らせるだけになる。ダンプを付けても exit / stdout / ダンプを除いた
+#     stderr は変わらず（1-3）、時間も変わらない（6-1 で 26.1 秒どうし・stderr は計 5.2 MB）。⚠ stderr を読む判定は
+#     `Split-GateVmDump` でダンプを除いてから読むこと（`VmForceError` などの 1 行を探すだけなら除かなくてよい）。
+function Get-GateSuiteArgs([string]$Root) {
     $rootDir = (Resolve-Path $Root).Path
     $files = @(Get-GateTestFiles $rootDir | Sort-Object FullName | ForEach-Object { $_.FullName })
-    return Invoke-GateRun -Exe $Exe -Root $rootDir -Files $files -WorkDir file -TimeoutSec 60 -GraceSec 0 -Jobs $Jobs -Fresh:$Fresh
+    return @{ Root = $rootDir; Files = $files; WorkDir = 'file'; TimeoutSec = 60; GraceSec = 0; ExtraEnv = @{ AR_VM_DUMP = '1' } }
+}
+
+function Invoke-GateSuite([string]$Exe, [string]$Root, [int]$Jobs = 0, [switch]$Fresh, [string]$ResultsRoot = '') {
+    $a = Get-GateSuiteArgs $Root
+    return Invoke-GateRun -Exe $Exe @a -Jobs $Jobs -Fresh:$Fresh -ResultsRoot $ResultsRoot
+}
+
+function Test-GateSuiteSaved([string]$Exe, [string]$Root, [string]$ResultsRoot = '') {
+    $a = Get-GateSuiteArgs $Root
+    return Test-GateRunSaved -Exe $Exe @a -ResultsRoot $ResultsRoot
 }
 
 # ── 期待との照合（gate/README.md 3 節・gate_speed_plan.md D-14 / 3-4）──────────────────────────────

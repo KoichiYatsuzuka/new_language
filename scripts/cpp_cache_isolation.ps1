@@ -14,21 +14,24 @@
 #      その exe のキャッシュを控える
 #   3. 比較では、走らせる exe のキャッシュに入れ替えてから走らせる（2 つの exe のキャッシュが同じなら入れ替えない）
 #   4. 終わったら始める前のキャッシュに戻す（ゲートは作業ツリーを変えない）
-# ⚠ 例題の外（`examples/DxLib`・`practical_examples`・`archived`）のキャッシュは扱わない（比較の対象外）。
+# ⚠ 扱うのは `-Under` の下（既定 `gate/`・6-2）。`DxLib`・`practical_examples`・`archived` の下は扱わない（比較の対象外）。
 # ⚠ ウォームアップに漏れたヘッダ（cpp-lib を使う例題を `import` 経由でしか読まないもの）は比較の中で作り直されうる。
 #   そのときは `Test-CppCacheUnchanged` が知らせる。
+# ⚠ A/B 系（gate_ab.ps1）は exe ごとにまとめて走らせる（交互ではない）ので、`Use-CppCache` を呼ぶのは各 exe の実行の前の 1 回。
+#   保存した結果を読むだけの exe は温めない（`-Exes` に渡さない）。
 #
 # 使い方（dot-source する）:
 #   . (Join-Path $PSScriptRoot 'cpp_cache_isolation.ps1')
-#   $cache = Initialize-CppCacheIsolation -Repo $repo -Exes @($A, $B) -Examples $files -Tmp $tmp -TimeoutSec 60
+#   $cache = Initialize-CppCacheIsolation -Repo $repo -Exes @($A, $B) -Examples $files -Tmp $tmp -TimeoutSec 60 [-Under gate] [-WorkDir file]
 #   try { ... Use-CppCache $cache $A; <A を走らせる>; Use-CppCache $cache $B; <B を走らせる> ... }
 #   finally { Close-CppCacheIsolation $cache }
 # ⚠ このファイルは日本語コメントを含むので UTF-8 BOM 付きで保存すること。
 
-# 例題の下の cpp-lib のキャッシュのファイル（無いものも含む・`ar_{stem}.syms` ごとに 5 つ）。
-function Get-CppCacheFiles([string]$Repo) {
+# 対象のディレクトリ（`$Under`・リポジトリ直下からの相対）の下の cpp-lib のキャッシュのファイル（無いものも含む・
+# `ar_{stem}.syms` ごとに 5 つ）。A/B 系は `gate/` を見る（gate_speed_plan.md 6-2）。
+function Get-CppCacheFiles([string]$Repo, [string[]]$Under = @('gate')) {
     $files = @()
-    Get-ChildItem (Join-Path $Repo 'examples') -Recurse -Filter 'ar_*.syms' -ErrorAction SilentlyContinue |
+    $Under | ForEach-Object { Get-ChildItem (Join-Path $Repo $_) -Recurse -Filter 'ar_*.syms' -ErrorAction SilentlyContinue } |
         Where-Object { $_.FullName -notmatch '[\\/](DxLib|practical_examples|archived)[\\/]' } |
         ForEach-Object {
             foreach ($suffix in '.dll', '.syms', '_shim.dll', '_shim.exp', '_shim.lib') {
@@ -70,13 +73,16 @@ function Initialize-CppCacheIsolation {
     param(
         [Parameter(Mandatory=$true)][string]$Repo,
         [Parameter(Mandatory=$true)][string[]]$Exes,
-        [Parameter(Mandatory=$true)][string[]]$Examples,
+        [Parameter(Mandatory=$true)][AllowEmptyCollection()][string[]]$Examples,
         [Parameter(Mandatory=$true)][string]$Tmp,
-        [int]$TimeoutSec = 60
+        [int]$TimeoutSec = 60,
+        [string[]]$Under = @('gate'),
+        # 'file' = 例題のディレクトリで走らせる（gate/ のテストと同じ・D-10）。それ以外はそのディレクトリ。
+        [string]$WorkDir = 'file'
     )
     $root = Join-Path $Tmp 'cppcache'
-    $state = @{ Files = @(Get-CppCacheFiles $Repo); Orig = (Join-Path $root 'orig'); OrigComplete = $false
-                Dirs = @{}; Current = $null; Shared = $false }
+    $state = @{ Files = @(Get-CppCacheFiles $Repo $Under); Orig = (Join-Path $root 'orig'); OrigComplete = $false
+                Dirs = @{}; Current = $null; Shared = $false; Repo = $Repo; Under = $Under }
     # 控えが揃ってから戻す側に回る（揃わなければ何も触らずに止まる）
     Save-CppCache $state.Files $state.Orig
     $state.OrigComplete = $true
@@ -88,12 +94,13 @@ function Initialize-CppCacheIsolation {
             $i++
             Restore-CppCache $state.Files $state.Orig
             foreach ($w in $warm) {
-                $p = Start-Process -FilePath $exe -ArgumentList ('"' + $w + '"') -WorkingDirectory $Repo -NoNewWindow -PassThru `
+                $wd = if ($WorkDir -eq 'file') { Split-Path -Parent $w } else { $WorkDir }
+                $p = Start-Process -FilePath $exe -ArgumentList ('"' + $w + '"') -WorkingDirectory $wd -NoNewWindow -PassThru `
                     -RedirectStandardOutput (Join-Path $Tmp 'cppcache_warm.out') -RedirectStandardError (Join-Path $Tmp 'cppcache_warm.err')
                 if (-not $p.WaitForExit($TimeoutSec * 1000)) { try { $p.Kill() } catch {} }
             }
             # ウォームアップで初めてできたキャッシュも扱う（始める前は無かった → 終わったら消す）
-            $state.Files = @(($state.Files + (Get-CppCacheFiles $Repo)) | Sort-Object -Unique)
+            $state.Files = @(($state.Files + (Get-CppCacheFiles $Repo $Under)) | Sort-Object -Unique)
             $dir = Join-Path $root "exe$i"
             Save-CppCache $state.Files $dir
             $state.Dirs[$exe] = $dir
@@ -105,8 +112,8 @@ function Initialize-CppCacheIsolation {
     $dirs = @($state.Dirs.Values)
     $state.Shared = ($dirs.Count -le 1) -or ((Get-CppCacheFingerprint $dirs[0]) -eq (Get-CppCacheFingerprint $dirs[1]))
     if ($state.Shared) { Restore-CppCache $state.Files $dirs[0] }
-    Write-Host ("cpp-lib caches: {0} file(s), warmed with {1} example(s); the two exes {2}" -f `
-        $state.Files.Count, $warm.Count, $(if ($state.Shared) { 'share the same caches' } else { 'get their own caches' })) -ForegroundColor DarkGray
+    Write-Host ("cpp-lib caches: {0} file(s), warmed with {1} example(s); {2}" -f `
+        $state.Files.Count, $warm.Count, $(if ($dirs.Count -le 1) { 'one exe warmed (the other side is read from saved results, or is the same exe)' } elseif ($state.Shared) { 'the two exes share the same caches' } else { 'the two exes get their own caches' })) -ForegroundColor DarkGray
     return $state
 }
 

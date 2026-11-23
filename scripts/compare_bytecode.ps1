@@ -1,135 +1,42 @@
-﻿# compare_bytecode.ps1 — 2 つの arrow.exe が生成する**バイトコードが同一か**を全例題で突き合わせる。
+﻿# compare_bytecode.ps1 — 2 つの arrow.exe が生成する**バイトコードが同一か**を `gate/` の全テストで突き合わせる。
 #
 # 「挙動不変」の主張を exit code より強く裏付けるための検査（#52 で確立した手順の .ps1 化・#68）。
-# リファクタリング（#62 / #63 / #66 …）のたびに手で回していたので固定した。
+# ⚠ バイトコードが同一でも、解釈側だけを触った変更では挙動が変わりうる。そちらは compare_outputs.ps1 の担当。
 #
 # 使い方:
-#   ./scripts/compare_bytecode.ps1 -A <head-arrow.exe> -B <new-arrow.exe>
-#   ./scripts/compare_bytecode.ps1 -A ../head_wt/target/release/arrow.exe   # -B の既定は target/release
-#   ./scripts/compare_bytecode.ps1 -A x.exe -B x.exe                        # 負の対照（必ず 100% 一致）
+#   ./scripts/compare_bytecode.ps1 -A <base-arrow.exe> [-B <new-arrow.exe>]   # -B の既定は target/release/arrow.exe
+#   ./scripts/compare_bytecode.ps1 -A x.exe -B x.exe      # 負の対照（独立した 2 回の実行を比べる。必ず 100% 一致）
+#   -ShowDiff で差分の中身、-Fresh で保存を使わず走らせ直す、-Root で別の gate/ を指す。
 #
-# ⚠⚠ **async 例題は対象外**（#52）。worker スレッドの書き込み順とタスクのコンパイル回数が
-#    スケジューリング依存なので、**同一バイナリでも dump が揺れる**。
-#    差分を見たら**まず同一バイナリで再現するかを見る**（-A と -B に同じ exe を渡す）。
+# ── 2026-11-23 からの形（gate_speed_plan.md 6-1 / 6-2）──────────────────────────
+#   - 対象は `examples/` ではなく **`gate/`**。実行は compare_outputs と**同じ 1 回**（gate_ab.ps1・`AR_VM_DUMP=1`）で、
+#     ここでは stderr のダンプの行（`Split-GateVmDump`）だけを比べる。
+#   - ⚠ stderr にはダンプ以外も混ざる（実行時の誤りのトレースバックなど）。このゲートの主張は「バイトコードが同一か」で
+#     stderr の一致ではない（それは compare_outputs の担当）ので、ダンプの塊だけを取り出す。
+#   - ⚠ 以前の形は子の出力をパイプで受けていたので、外部プロセス（js-proc / cs-proc）と長いベンチを外していた。共通ランナーは
+#     ファイルへ落とすので、それらも比べる。
 #
-# ⚠ 子の stdout / stderr は **必ず ReadToEndAsync で同時に読む**（vm-pitfalls §4）。
-#    AR_VM_DUMP=1 の出力は 1 例題で数 KB〜数十 KB 出るので、逐次 ReadToEnd にすると
-#    パイプ（既定 4KB）が埋まって**確実にデッドロックする**。このスクリプト自身が
-#    「AR_VM_DUMP を付けて回して確かめる」の負の対照になっている。
-#
-# ⚠ このファイルは**日本語コメントを含むので UTF-8 BOM 付きで保存すること**
-#    （PS5.1 は BOM 無しを ANSI として読む）。
-# ⚠ パス区切りは**全部スラッシュ**にしてある（生成スクリプト側でバックスラッシュが
-#    エスケープに化けて壊した実績があるため。PowerShell はスラッシュを受け付ける）。
+# ⚠⚠ 差分を見たら**まず同一 exe で再現するかを見る**（-A と -B に同じ exe を渡す）。async のテストは、worker スレッドの
+#    コンパイルの順がスケジューリングで変わりうる（#52）。
+# ⚠ このファイルは**日本語コメントを含むので UTF-8 BOM 付きで保存すること**（PS5.1 は BOM 無しを ANSI として読む）。
 param(
     [Parameter(Mandatory=$true)][string]$A,
     [string]$B = '',
-    [int]$TimeoutSec = 45,
+    [string]$Root = '',
+    [int]$Jobs = 0,
+    [switch]$Fresh,
     [switch]$ShowDiff
 )
 
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 if ([string]::IsNullOrEmpty($B)) { $B = Join-Path $repo 'target/release/arrow.exe' }
+if ([string]::IsNullOrEmpty($Root)) { $Root = Join-Path $repo 'gate' }
+. (Join-Path $PSScriptRoot 'gate_ab.ps1')
 
-# ⚠⚠ **相対パスを絶対パスへ正規化する**（タスク 9.5）。
-#    `Test-Path` は PowerShell のカレントで解決するので通るが、
-#    `[System.Diagnostics.Process]::Start` の `FileName` は
-#    **`WorkingDirectory` ではなく呼び出し側プロセスのカレント**で解決する。
-#    ⇒ `-A target/release/arrow_p61.exe` のような相対パスだと基準バイナリが見つからず、
-#      全例題が「A=1 lines」になって **249 件中 180 件差分**という**嘘の結果**が出た
-#      （タスク 6.1 で踏んだ。絶対パスで渡し直したら 249/249 一致）。
-#    ⚠ 「緑でないのに緑」の逆で「**赤でないのに赤**」。どちらも同じくらい時間を溶かす。
-foreach ($name in 'A', 'B') {
-    $exe = Get-Variable -Name $name -ValueOnly
-    if (-not (Test-Path $exe)) { Write-Host "NOT FOUND: $exe" -ForegroundColor Red; exit 2 }
-    Set-Variable -Name $name -Value ((Resolve-Path $exe).Path)
-}
+# ⚠⚠ **相対パスを絶対パスへ正規化する**（タスク 9.5・compare_outputs.ps1 と同じ）。
+$A = Resolve-GateAbExe $A
+$B = Resolve-GateAbExe $B
 
-# GUI・対話・外部プロセス・長時間ベンチは対象外（dump を取る前に終わらない / 窓が出る）。
-$skip = @(
-    'debug_demo', 'async_bench', 'async_demo', 'spider_render', 'spider_solitaire',
-    'rs_struct', 'flat_bench', 'flat_bench_interp', 'flat_bench_module',
-    'cs_form_app', 'cs_proc_app', 'js_proc_test', 'js_proc_async_test', 'math_render',
-    'importation', 'event_handler'
-)
-# ⚠ async ディレクトリは丸ごと対象外（同一バイナリでも揺れる・#52）。
-# ⚠ `archived/` と `practical_examples/` は意図的に対象外（タスク 9.3）。
-#   理由と現状は scan_examples.ps1 の `$categoryDirs` のコメント、および
-#   examples/archived/README.md ・ examples/practical_examples/README.md。
-$categoryDirs = @('basics','collections','classes','typing','exceptions','bench','apps','interop')
-
-$examples = $categoryDirs | ForEach-Object {
-    Get-ChildItem (Join-Path $repo "examples/$_/*.ar") -ErrorAction SilentlyContinue
-} | Where-Object { $skip -notcontains $_.BaseName } | Sort-Object FullName
-
-function Get-Dump([string]$exe, [string]$file) {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $exe
-    $psi.Arguments = '"' + $file + '"'
-    $psi.WorkingDirectory = $repo
-    $psi.UseShellExecute = $false
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.CreateNoWindow = $true
-    $psi.EnvironmentVariables['AR_VM_DUMP'] = '1'
-
-    $proc = [System.Diagnostics.Process]::Start($psi)
-    # ⚠ 逐次 ReadToEnd は子とデッドロックする（vm-pitfalls §4）。必ず両方を非同期で開始する。
-    $outTask = $proc.StandardOutput.ReadToEndAsync()
-    $errTask = $proc.StandardError.ReadToEndAsync()
-    if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-        try { $proc.Kill() } catch {}
-        return $null
-    }
-    $null = $outTask.Result
-    # バイトコードは stderr へ出る（AR_VM_DUMP=1）。行末差は正規化して比較する。
-    #
-    # ⚠ **stderr にはダンプ以外も混ざる**。実行時エラーで落ちる例題では traceback
-    #   （`Traceback ...` / `  File "...", in ...` / `TypeError: ...`）が同じ stream に出るため、
-    #   素で比較すると「バイトコードは完全に同一なのに差分」と報告してしまう
-    #   （A-3 で `classes/field_type_runtime_error.ar` を追加した際に発覚）。
-    #   このゲートの主張は「**バイトコードが同一か**」であって stderr の一致ではない
-    #   （それは compare_outputs.ps1 の担当）。よってダンプ行だけを残す:
-    #     - chunk ヘッダ  `== chunk <name> (n_locals=N) ==`
-    #     - 命令行        `   0  CONST 0 = Some(...)`
-    #   ⚠ 命令行に実改行は入らない（const は Rust の Debug 出力なので `\n` は
-    #     エスケープされる）。この前提が崩れると行が落ちてゲートが黙って緩むので注意。
-    $lines = ($errTask.Result -replace "`r`n", "`n") -split "`n"
-    $dumpOnly = $lines | Where-Object { $_ -match '^== chunk ' -or $_ -match '^\s*\d+\s+[A-Z_]' }
-    return ($dumpOnly -join "`n")
-}
-
-$same = 0; $diff = 0; $timeouts = 0
-$rows = @()
-
-foreach ($f in $examples) {
-    $da = Get-Dump $A $f.FullName
-    $db = Get-Dump $B $f.FullName
-    if (($null -eq $da) -or ($null -eq $db)) {
-        $timeouts++
-        $rows += ("{0,-46} TIMEOUT (not compared)" -f $f.Name)
-        continue
-    }
-    if ($da -eq $db) {
-        $same++
-    } else {
-        $diff++
-        $la = ($da -split "`n").Count
-        $lb = ($db -split "`n").Count
-        $rows += ("{0,-46} A={1} lines  B={2} lines" -f $f.Name, $la, $lb)
-        if ($ShowDiff) {
-            $rows += (Compare-Object ($da -split "`n") ($db -split "`n") |
-                Select-Object -First 20 |
-                ForEach-Object { "    {0} {1}" -f $_.SideIndicator, $_.InputObject })
-        }
-    }
-}
-
-if ($rows.Count -gt 0) {
-    Write-Host 'DIFFERING / NOT COMPARED:' -ForegroundColor Yellow
-    $rows | ForEach-Object { Write-Host $_ }
-    Write-Host ''
-}
-Write-Host ("bytecode identical: {0} / {1}   differing: {2}   timeout: {3}" -f $same, ($same + $diff), $diff, $timeouts)
-if ($diff -gt 0) { exit 1 } else { exit 0 }
+$sides = Invoke-GateAbSides -A $A -B $B -Root $Root -Jobs $Jobs -Fresh:$Fresh
+exit (Compare-GateAbResults $sides ${function:Get-GateAbDumpRecord} 'bytecode' -ShowDiff:$ShowDiff)
