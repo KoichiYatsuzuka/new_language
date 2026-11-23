@@ -252,6 +252,7 @@ $knownDiff = @{
     'borrow_inline'                  ='Rust: 読むだけの関数へ mut の値を渡す判定をコンパイル済みコードが自分で行う例題（copy_alloc_speed_plan.md 7-7 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'direct_construct'               ='Rust: 全フィールドが数値のクラスを合成した __init__ で作るとき、生成コードが作ったばかりのインスタンスの番地へ直接書く例題（copy_alloc_speed_plan.md 7-11 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'compiled_global_assign'         ='Rust: コンパイル済みのモジュールの関数の中の大域への代入（= / +=）を VM に任せる例題（known_bugs.md の #23 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
+    'compiled_freeze'                ='Rust: コンパイル済みのモジュールの関数の中の freeze が let x = x と同じく写しを凍らせて __freeze__ を呼ぶ例題（known_bugs.md の #24 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'copy_freeze_hooks'              ='Rust: __copy__ / __freeze__ の有無をクラスごとの印で引く例題（copy_alloc_speed_plan.md 7-1 で新設）。py: let y = x がインスタンスを写さず共有し、let y = x of Plain: expected 1, got 2 で止まる'
     'nested_native_call_lifetime'    ='Rust: 入れ子のネイティブ呼び出しが作った値はその呼び出しから戻れば捨てられる例題（known_bugs.md の #25 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'
     'arena_rewind_skip'              ='Rust: 値を積まない関数の呼び出しは前後でアリーナを巻き戻さず、積む関数は呼ぶたびに巻き戻す例題（copy_alloc_speed_plan.md 7-12 で新設・コンパイル済みモジュールを読む）。py: .arc を読めず UnicodeDecodeError'

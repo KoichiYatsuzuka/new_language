@@ -199,7 +199,24 @@ impl<'a> GenCtx<'a> {
                 self.gen_expr(e);
                 self.discarded_func = None;
             }
-            Stmt::Freeze(..) => {}
+            // `freeze x` は `let x = x` と同じ結果（深い写しを不変にして `x` を束縛し直す・language-differences の `freeze`）。
+            // VM の `LoadLocal` + `StoreLocalCopyFreeze` と同じ `ar_bind_value`（`BindCopy::CopyFreeze`）を呼ぶので、
+            // `__freeze__` も 1 回呼ばれ、呼んだ側の `mut` の値は凍らない（known_bugs.md #24）。
+            // ⚠ 以前は何も出さず、`__freeze__` が呼ばれず、凍らせた後の `x` が呼んだ側の値と同じ実体のままだった。
+            // `int` / `float` の生値は写しても同じなので何も出さない（`bind_decl` と同じ）。
+            // 名前は必ずローカルの表にある（適格判定が `assign_target_ok` で確かめる）。
+            Stmt::Freeze(name, _) => {
+                let Some((ptr, st)) = self.locals.get(name).cloned() else {
+                    unreachable!("stmt_eligible admits `freeze` only of a local ('{name}')");
+                };
+                if st == Ty::Handle {
+                    let cur = self.fresh_reg();
+                    self.ec(&format!("{cur} = load i64, ptr {ptr}"));
+                    let mode = crate::interpreter::BindCopy::CopyFreeze as i32;
+                    let frozen = self.call_cb(CB_BIND_VALUE, &[format!("i32 {mode}"), format!("i64 {cur}")]);
+                    self.store_val(Ty::Handle, &frozen, &ptr);
+                }
+            }
             Stmt::Block(body) => self.gen_stmts(body),
 
             Stmt::BlockReturn(expr, _) => {

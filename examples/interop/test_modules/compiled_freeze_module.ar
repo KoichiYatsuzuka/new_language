@@ -1,0 +1,45 @@
+# compiled_freeze_module.ar — compiled_freeze.ar のコンパイル済みの側（known_bugs.md #24）
+#
+# 関数の中の `freeze x` は `let x = x` と同じ結果（深い写しを不変にして `x` を束縛し直す）。生成コードも VM と同じ
+# `ar_bind_value`（`CopyFreeze`）を呼ぶので、`__freeze__` が写しで 1 回呼ばれ、呼んだ側の `mut` の値は凍らない。
+# ⚠ 以前の生成コードは `freeze` で何も出さず、`__freeze__` が呼ばれなかった（`freeze_hook(Mark(1))` が 1001 でなく 1）。
+
+class Mark:
+    mut n: int
+
+    fn __freeze__(mut self) -> None:
+        self.n = self.n + 1000
+
+# 仮引数を凍らせる: フックは写しで走り、呼んだ側の値は変わらない
+fn freeze_hook(mut m: Mark) -> int:
+    freeze m
+    return m.n
+
+# 凍らせた写しを返す: 呼んだ側の値と別の実体
+fn freeze_returns(mut m: Mark) -> Mark:
+    freeze m
+    return m
+
+# 本体で宣言したローカルを凍らせる
+fn freeze_local(let k: int) -> int:
+    mut m = Mark(k)
+    freeze m
+    return m.n
+
+# ループの中で毎周宣言するローカルを凍らせる（フックは周ごとに 1 回）
+fn freeze_in_loop(let k: int) -> int:
+    mut s = 0
+    for i in range(k):
+        mut m = Mark(i)
+        freeze m
+        s += m.n
+    return s
+
+# フックを持たない値（リスト）・生の値（int）
+fn freeze_list(mut xs: list[int]) -> int:
+    freeze xs
+    return len(xs) + xs[0]
+
+fn freeze_int(mut n: int) -> int:
+    freeze n
+    return n + 1

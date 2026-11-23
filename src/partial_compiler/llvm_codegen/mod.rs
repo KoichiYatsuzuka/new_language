@@ -1029,7 +1029,9 @@ fn stmt_eligible<'s>(stmt: &'s Stmt, sc: &mut EligScope<'s>) -> bool {
         Stmt::Return(Some(e), _) => expr_eligible(e, sc),
         Stmt::Return(None, _) | Stmt::Pass | Stmt::Break | Stmt::Continue => true,
         Stmt::Expr(e)    => expr_eligible(e, sc),
-        Stmt::Freeze(..) => true,
+        // 凍らせる名前もローカルの表で引ける名前だけ（生成側は束縛し直してローカルへ書く・known_bugs.md #24）。
+        // 大域・`static` の `freeze` は VM が動かす（`FreezeVar` / 誤り）
+        Stmt::Freeze(name, _) => sc.assign_target_ok(name),
         Stmt::Block(ss)  => body_eligible(ss, sc),
         Stmt::BlockReturn(e, _) => expr_eligible(e, sc),
         Stmt::LoopYield(e, _)      => expr_eligible(e, sc),

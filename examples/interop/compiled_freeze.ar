@@ -1,0 +1,84 @@
+# compiled_freeze.ar — コンパイル済みのモジュールの関数の中の `freeze`（known_bugs.md #24）
+#
+# 以前は、`--compile` したモジュールの関数の中の `freeze x` をコンパイル済みコードが**何もせず**、`__freeze__` が
+# 呼ばれず、凍らせた後の `x` が呼んだ側の `mut` の値と同じ実体のままだった（VM は `let x = x` と同じく深い写しを
+# 凍らせて束縛し直し、`__freeze__` を 1 回呼ぶ）。生成コードも VM と同じ束縛（`ar_bind_value` の `CopyFreeze`）を出す。
+# 同じ定義を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ値になること:
+#   - 仮引数の `freeze`: フックが写しで走る（1001）・呼んだ側の値は 1 のままで、後から書ける
+#   - 凍らせた写しを返す: 呼んだ側の値を後から書き換えても、返した値は変わらない
+#   - 本体のローカル・ループの中のローカル・フックを持たない値（リスト）・生の値（int）
+#   1. cargo run --release -- --compile examples/interop/test_modules/compiled_freeze_module.ar
+#   2. cargo run --release -- examples/interop/compiled_freeze.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.compiled_freeze_module as m
+
+class Mark:
+    mut n: int
+
+    fn __freeze__(mut self) -> None:
+        self.n = self.n + 1000
+
+fn freeze_hook(mut mk: Mark) -> int:
+    freeze mk
+    return mk.n
+
+fn freeze_returns(mut mk: Mark) -> Mark:
+    freeze mk
+    return mk
+
+fn freeze_local(let k: int) -> int:
+    mut mk = Mark(k)
+    freeze mk
+    return mk.n
+
+fn freeze_in_loop(let k: int) -> int:
+    mut s = 0
+    for i in range(k):
+        mut mk = Mark(i)
+        freeze mk
+        s += mk.n
+    return s
+
+fn freeze_list(mut xs: list[int]) -> int:
+    freeze xs
+    return len(xs) + xs[0]
+
+fn freeze_int(mut n: int) -> int:
+    freeze n
+    return n + 1
+
+fn expect(let name: str, let got: str, let want: str) -> None:
+    if got != want:
+        raise ValueError("compiled_freeze: " + name + " = " + got + ", expected " + want)
+
+# ── VM（この本体の定義） ──────────────────────────────────────────────────────
+mut vm: list[str] = []
+mut a = Mark(1)
+vm.append(str(freeze_hook(a)) + "/" + str(a.n))
+mut r = freeze_returns(a)
+a.n = 5
+vm.append(str(r.n) + "/" + str(a.n))
+vm.append(str(freeze_local(2)) + "/" + str(freeze_in_loop(3)))
+mut xs = [7, 8]
+vm.append(str(freeze_list(xs)) + "/" + str(freeze_int(41)))
+xs.append(9)
+vm.append(str(len(xs)))
+expect("vm", ", ".join(vm), "1001/1, 1001/5, 1002/3003, 9/42, 3")
+
+# ── コンパイル済み（モジュール） ──────────────────────────────────────────────
+mut compiled: list[str] = []
+mut b = m.Mark(1)
+compiled.append(str(m.freeze_hook(b)) + "/" + str(b.n))
+mut rb = m.freeze_returns(b)
+b.n = 5
+compiled.append(str(rb.n) + "/" + str(b.n))
+compiled.append(str(m.freeze_local(2)) + "/" + str(m.freeze_in_loop(3)))
+mut ys = [7, 8]
+compiled.append(str(m.freeze_list(ys)) + "/" + str(m.freeze_int(41)))
+ys.append(9)
+compiled.append(str(len(ys)))
+expect("compiled", ", ".join(compiled), ", ".join(vm))
+print("compiled_freeze: " + ", ".join(compiled))
+print("compiled_freeze: ok")

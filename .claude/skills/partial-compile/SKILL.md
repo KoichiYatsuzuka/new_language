@@ -186,7 +186,7 @@ The eligibility check recurses into nested `if`, `while`, `for`, `match`, and `b
 | `async` assignment (`target <- async->T: body`) | Thread-spawning semantics require the interpreter |
 | Tuple-unpacking `let` / `mut` (`let x, y = expr`) | Not implemented in codegen |
 | Multi-target `for` (`for x, y in iter`) | Only single-target `for` is lowered; `targets.len() > 1` fails the check |
-| `x = ..` / `x += ..` whose target is not a local (a module global) | The codegen only writes locals (`GenCtx::locals`). The check walks the body in order and allows a target only if it is a parameter or was declared earlier (`let` / `mut` / `const` / `for` target) — `EligScope` (known_bugs.md #23: the global write used to be silently dropped, and `+=` made clang fail for the whole module) |
+| `x = ..` / `x += ..` / `freeze x` whose target is not a local (a module global) | The codegen only writes locals (`GenCtx::locals`). The check walks the body in order and allows a target only if it is a parameter or was declared earlier (`let` / `mut` / `const` / `for` target) — `EligScope` (known_bugs.md #23: the global write used to be silently dropped, and `+=` made clang fail for the whole module). `freeze` of a local is lowered like `let x = x` (`ar_bind_value` with `CopyFreeze`, so `__freeze__` runs; known_bugs.md #24 — it used to emit nothing) |
 
 ### Ineligible expressions — any occurrence in the body skips the whole function
 
