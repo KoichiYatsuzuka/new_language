@@ -696,7 +696,8 @@ export function provideDocumentSemanticTokens(
     // いまは「何が識別子か」を lexer が答えるので、その手の誤検出が構造的に起きない。
     let line = -1;
     let byName = new Map<string, Symbol>();
-    for (const t of analysis.tokens) {
+    for (let ti = 0; ti < analysis.tokens.length; ti++) {
+        const t = analysis.tokens[ti];
         if (t.kind !== 'ident') continue;
         // 可視シンボルは行ごとに変わる。行が変わったときだけ引き直す。
         if (t.line !== line) {
@@ -723,6 +724,21 @@ export function provideDocumentSemanticTokens(
             continue;
         }
 
+        // `a.B` の `B`（`.` の直後）は、このファイルのスコープの名前ではなく**受け手のメンバ**。
+        // 受け手（モジュール・クラス）のメンバ表で引き、型・名前空間と分かれば決める。
+        // ここを通さないと `cg.Adsorbate(` は宣言が見えず着色されないまま TextMate の
+        // `function-call` に落ち、クラスが関数色になる。同名の別の名前（`byName`）も拾わない。
+        if (!decl && isAfterDot(analysis, document, ti)) {
+            const member = memberAfterDot(analysis, document, ti);
+            const memberTok = member && (member.kind === 'module' ? 'namespace' : TYPE_TOKEN_OF[member.kind]);
+            if (memberTok) {
+                builder.push(t.line, t.col, length,
+                    SEMANTIC_TOKENS_LEGEND.tokenTypes.indexOf(memberTok), 0);
+            }
+            // 引けなかった（フィールド・メソッド・未解決）ものは従来どおり TextMate に任せる。
+            continue;
+        }
+
         // 型検査器が使っている位置の結び付きを決めていれば、それに従う（見えない名前は着色しない・name_scope_plan.md の 2-2）。
         let sym: Symbol | undefined = decl;
         if (!sym && uses.has(at)) {
@@ -738,6 +754,19 @@ export function provideDocumentSemanticTokens(
             decl ? 1 : 0);
     }
     return builder.build();
+}
+
+function isAfterDot(analysis: Analysis, document: vscode.TextDocument, idx: number): boolean {
+    const before = analysis.tokens[idx - 1];
+    return !!before && before.kind === 'op' && document.getText(tokenRange(before)) === '.';
+}
+
+/** `owner.name` の `name`（トークン `idx`）を、受け手の型のメンバ表から引く。引けなければ undefined。 */
+function memberAfterDot(analysis: Analysis, document: vscode.TextDocument, idx: number): Member | undefined {
+    const owner = typeOfExprEndingAt(analysis, document, idx - 2, 0);
+    if (!owner) return undefined;
+    const name = document.getText(tokenRange(analysis.tokens[idx]));
+    return membersOf(analysis, owner).find(m => m.name === name);
 }
 
 // ===== 4. Completion =====
