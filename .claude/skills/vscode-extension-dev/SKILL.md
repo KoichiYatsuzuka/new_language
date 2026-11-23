@@ -167,7 +167,7 @@ cd ../crates/arrow-frontend && cargo build --release --target wasm32-unknown-unk
 
 | Check | Command | Must show |
 |---|---|---|
-| Editor agrees with `arrow.exe` | `./scripts/compare_wasm_frontend.ps1` | `MISSED: 0`, `INVENTED: 0`, `parse mismatch: 0` — every example, imports included (the editor must report **the same** errors in the file; `arrow.exe` runs with `AR_CHECK_ONLY=1`, so nothing is executed) |
+| Editor agrees with `arrow.exe` | `./scripts/compare_wasm_frontend.ps1` | `MISSED: 0`, `INVENTED: 0`, `parse mismatch: 0`, `not compared: 0` — every `.ar` under `gate/` (`-Root examples` for the examples), imports included (the editor must report **the same** errors in the file; `arrow.exe` runs with `AR_CHECK_ONLY=1`, so nothing is executed). The wasm analyses all files in **one** process (`dump_diags.js --list`; `-PerFile` for one per file); the exe side runs through the common runner and is saved by the exe's hash. ⚠ The gate does not rebuild the wasm — rebuild it first |
 | TextMate grammar agrees with the lexer | `./scripts/compare_tm_grammar.ps1` (`-VerboseDiff` shows each line; `-Files <f.ar>` for one file) | `SPILL: 0` (no string/comment carried from one line into code) and `keyword lists: match`. "other diffs" are in-line differences, reported only (0 as of 2026-10-31). Population: every example + `vscode-extension/test_fixtures/*.ar`. Uses VS Code's own TextMate engine (taken from its `node_modules.asar` into `target/tm_engine/`) |
 | No provider throws / no regressions | `ELECTRON_RUN_AS_NODE=1 "<VS Code>/Code.exe" stress.js` | `threw: 0`, `hover misses: 0`, `def misses: 0` |
 | One file in detail | `node run_debug.js <file.ar>` | see `vscode-debug-runner` |

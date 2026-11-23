@@ -513,7 +513,7 @@ scripts/  (検証・計測スクリプト。何をいつ走らせるかは CLAUD
   compare_outputs.ps1 (48)
   compare_python_impl.ps1 (713)
   compare_tm_grammar.ps1 (124)
-  compare_wasm_frontend.ps1 (313)
+  compare_wasm_frontend.ps1 (376)
   copy_stats.ps1 (203)
   cpp_cache_isolation.ps1 (142)
   debug_session.ps1 (163)
@@ -580,7 +580,7 @@ implementation_logs/  (計画・実装ログ・引き継ぎ文書)
 
 (repo root)
   ar_config.json (38)
-  CLAUDE.md (183)
+  CLAUDE.md (184)
   README.md (317)
 ```
 _Generated 2026-11-24 by generate-codebase-map.ps1_

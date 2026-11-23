@@ -702,12 +702,35 @@
 
 ### フェーズ 7: wasm の突き合わせ
 
-- **7-1** `dump_diags.js` がファイルの一覧を受け取り、1 プロセスで全部を解析して 1 行に 1 ファイルの JSON を出す形に
+- **7-1（済・2026-11-24）** `dump_diags.js` がファイルの一覧を受け取り、1 プロセスで全部を解析して 1 行に 1 ファイルの JSON を出す形に
   する。ファイルごとに `setHostCwd` を呼ぶ。拡張も wasm を読んだまま複数のファイルを解析するので、実際の使われ方に近づく。
-- **7-2** exe 側（`AR_CHECK_ONLY=1`）を共通ランナーで実行する。対象を `gate/` にする。
-- **7-3** 1 ファイルずつ起動する今の形と、診断が全ファイルで同じことを確かめる。前のファイルの状態が残って結果が
+  - `node dump_diags.js <wasm> --list <files.txt> --out <out.jsonl>`。出力はファイルへ（パイプで受けない・D-5）。解析が
+    例外を投げたファイルは `{"file", "error"}` の行にして、捨てない。1 ファイルの形（stdout に JSON）も残した。
+  - `compare_wasm_frontend.ps1` はこれを 1 回だけ起動する。`-PerFile` で以前の 1 ファイル 1 プロセスに戻せる。
+  - wasm の側の時間: `gate/` の 836 件で 12.7〜14.7 秒、`examples/` の 831 件で 22.3 秒（1 プロセス）。
+- **7-2（済・2026-11-24）** exe 側（`AR_CHECK_ONLY=1`）を共通ランナーで実行する。対象を `gate/` にする。
+  - 対象は `gate/` の下の全 `.ar`（テストが import するモジュールと `lib/` も。拡張はそれらも開く。以前の `examples/` も
+    import 先を含めていた）。`-Root examples` で以前の集まり（`archived/` を除いて再帰）。
+  - exe の結果は共通ランナーが exe のハッシュで保存する（6 並列・`gate/` で 25.8 秒。2 回目は読むだけ）。
+  - 比べ方（行:桁の鍵・ParseError の文面・import の誤り）は変えていない。
+  - ⚠ 変えた判定: wasm の解析が失敗したファイルと exe が時間切れになったファイルを、以前は `skipped` と数えて通していた。
+    今は `not compared` として exit 1。
+  - 時間: 1-1 は 196.8 秒。今は `-Fresh` 相当の初回が 60〜83 秒（frontend の単体テストと tsc を含む）、exe の保存がある
+    2 回目は 24.4 秒。
+- **7-3（済・2026-11-24）** 1 ファイルずつ起動する今の形と、診断が全ファイルで同じことを確かめる。前のファイルの状態が残って結果が
   変わるファイルがあれば、それは拡張の不具合なので別に報告する。あわせて、wasm の診断を exe との一致に加えて
   `gate/` の期待（D-14）とも照らす（3-1 で種類の名前を wasm に載せられた場合）。
+  - 1 プロセスで全部を解析した JSON と、1 ファイル 1 プロセスの JSON を、ファイルごとに丸ごと比べた（判定ではなく生の
+    出力）: `gate/` 836 / 836、`examples/` 831 / 831 が同じ。⇒ 前のファイルの状態が残って結果が変わるファイルは無かった。
+  - ゲートの判定: `gate/` 836 件・`examples/` 831 件とも全件一致（1-1 の `examples/` も 831 件一致）。
+  - 正の対照: 一覧の形でだけ各ファイルの最初の診断を捨てる `dump_diags.js` にして `gate/` で走らせ、`MISSED` 208・
+    `parse mismatch` 8 で exit 1 になった（戻した）。
+  - ⚠ wasm の診断を `gate/` の期待と照らすことは**していない**。wasm の診断には種類の名前が無い（`source` は
+    `StaticTypeError` などの大分類だけ）。行と桁は exe と一致することをこのゲートが確かめ、exe の診断は `gate_expect` が
+    期待と照らすので、行と桁については間接に照らされている。種類まで照らすには、拡張の解析（`crates/arrow-frontend`）が
+    返す診断に種類を足す必要があり、本計画の外とする。
+  - ⚠ ゲートを書くときの罠: `Code.exe` は GUI のサブシステムの exe なので、PowerShell の `&` は終わるのを**待たない**
+    （確かめのスクリプトで、出力ファイルが無いまま先へ進んだ）。`compare_wasm_frontend.ps1` は `Process.WaitForExit` で待つ。
 
 ### フェーズ 8: 候補（フェーズ 7 の後に測って判断）
 
@@ -745,7 +768,7 @@
 | 「毎回」のテストの実行回数（Rust 側） | 3 回 | 1 回 | 1 回（`gate/` の 762 件・6 並列） |
 | 「毎回」の `impl_python` の実行 | 約 700 件 × 170 ms 以上 | 0（凍結・D-9） | 0 |
 | 「毎回」のゲートの合計 | **573.2 秒**（1-1・今の exe で。`test_build_gate` 0.4・`scan` 80.3・`force` 175.0・`compare_python_impl` 317.5） | 1 分前後 | **約 30 秒**（`gates_every_time -Fresh`・3 回で 29.1〜30.6 秒。`test_build_gate` 0.3・実行 26〜27・判定 3）。保存した結果を読むだけなら 3.4 秒 |
-| 触ったときに走らせる A/B 系と wasm | 555 秒（1-1・`compare_wasm_frontend` 196.8・`compare_outputs` 135.0・`compare_bytecode` 218.1・`compare_import_paths` 5.0） | — | A/B 系 3 本（フェーズ 6 の後）: 基準の exe の初回は `compare_outputs` 約 35 秒、その後の `compare_bytecode` 6.5 秒・`compare_import_paths` 約 4 秒（新しい側は「毎回」のゲートの保存を読む）。wasm はフェーズ 7 の対象 |
+| 触ったときに走らせる A/B 系と wasm | 555 秒（1-1・`compare_wasm_frontend` 196.8・`compare_outputs` 135.0・`compare_bytecode` 218.1・`compare_import_paths` 5.0） | — | A/B 系 3 本（フェーズ 6 の後）: 基準の exe の初回は `compare_outputs` 約 35 秒、その後の `compare_bytecode` 6.5 秒・`compare_import_paths` 約 4 秒（新しい側は「毎回」のゲートの保存を読む）。`compare_wasm_frontend`（フェーズ 7 の後・`gate/` の 836 件）: 初回 60〜83 秒、exe の保存があれば 24.4 秒 |
 
 - ⚠ 「今」の列は、計画を立てた後に直した exe（1-2 の `.arc`・2-1 の一時ディレクトリ）で測った値。計画を立てたときの exe なら
   `scan` は 156 秒だった。スクリプトはフェーズ 3 より前の版。

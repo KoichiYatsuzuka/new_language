@@ -289,7 +289,7 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   **サブディレクトリの例題を 1 本も見ない**。
   ⚠⚠ **`scan_examples` も同じく非再帰**（`examples/<cat>/*.ar`）。以前ここに
   「`scan_examples` / `force_gate` は再帰する」と書いていたが、**再帰するのは
-  `force_gate` と `compare_wasm_frontend` だけ**だった（タスク 9.3 で実測）。
+  `force_gate` と `compare_wasm_frontend` だけ**だった（タスク 9.3 で実測。どちらも 2026-11-23 からの既定は `gate/`）。
   実測（2026-09-18）で 9 カテゴリのサブディレクトリに 14 件の `.ar` があり、
   そのどれも `scan_examples` は見ていない（大半は他の例題が import する
   モジュール側なので単体実行の対象ではないが、**見ていないことは事実**）。
@@ -467,6 +467,10 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   なる。`Start-Process -PassThru` の `ExitCode` も当てにならない
   （`System.Diagnostics.Process` を直接使う）。
 - ⚠ `powershell -File` 経由だと `-Scripts a,b,c` が 1 要素に潰れる（`-Command` で呼ぶ）。
+- ⚠ **`Code.exe`（`ELECTRON_RUN_AS_NODE=1` で Node として使う）を `&` で呼ぶと終わるのを待たない**（gate_speed_plan.md 7-3）。
+  GUI のサブシステムの exe なので PowerShell は起動だけして先へ進み、出力ファイルがまだ無いまま読みに行った。
+  `System.Diagnostics.Process` で起動して `WaitForExit` する（`compare_wasm_frontend.ps1` の `Invoke-Child`）。
+  ⚠ 出力をファイルへ落とすのに PS5.1 の `>` を使わない（UTF-16 で書き直す）。`cmd /c` のリダイレクトか `--out` の引数にする。
 
 ---
 

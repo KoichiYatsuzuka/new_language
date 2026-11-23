@@ -95,7 +95,7 @@ python -m impl_python examples/basics/control_flow.ar
 | `tw_stats.ps1` | ツリーウォークが定義文だけかの内訳（`gate/`） | **VM の適格範囲**を触ったとき |
 | `syntax_cov.ps1` | **`gate/` が一度も書いていない構文**（`NESTED-GAP`）。`-Root examples` で例題 | **新しい構文・文脈**を扱うとき |
 | `type_obligations.ps1` | **型義務 94 件のどれで型検査が走っているか**（`STATIC`/`RUNTIME`/`NONE`）。退行すると exit 1 | **型検査を触ったとき**（`syntax_cov` が構文、こちらが型義務の網の目） |
-| `compare_wasm_frontend.ps1` | VS Code 拡張の wasm フロントエンドが `arrow.exe` と**同じ診断**を出すか（全例題・import 先を含む。exe は `AR_CHECK_ONLY=1` で実行しない） | **lexer / parser / type_check / import の処理を触ったとき**（拡張だけ解釈がずれるのを防ぐ唯一の網） |
+| `compare_wasm_frontend.ps1` | VS Code 拡張の wasm フロントエンドが `arrow.exe` と**同じ診断**を出すか（`gate/` の全 `.ar`・import 先を含む。`-Root examples` で例題。wasm は 1 プロセスで全ファイル、exe は `AR_CHECK_ONLY=1` で実行せず結果を exe のハッシュで保存）。⚠ wasm は作らない（先に再ビルドする） | **lexer / parser / type_check / import の処理を触ったとき**（拡張だけ解釈がずれるのを防ぐ唯一の網） |
 | `compare_tm_grammar.ps1` | VS Code 拡張の **TextMate 文法**が lexer と**同じ範囲を文字列・コメント**とするか（`gate/` の全部＋`vscode-extension/test_fixtures/`。`-Root examples` で例題。前の行から文字列を持ち越す `SPILL` 0 件）と、文法のキーワード一覧が `src/lexer/keyword.rs` と一致するか。括弧の対応付けは文法の判定だけで決まる | **`arrow.tmLanguage.json` を触ったとき**と、**lexer の文字列・コメント・キーワードを触ったとき** |
 | `check_ptr_protocol.ps1` | `PtrProtocol` の C ヘッダ・C# の写しを実際にコンパイルし、Arrow（Rust）の写しと**同じ並び**か（大きさ・欄の位置・flags） | **`bridge/ptr_protocol/` か `value/ptr.rs` の `PtrProtocolRaw` を触ったとき**（MSVC と dotnet が要る） |
 | `generate-codebase-map.ps1` | `codebase-map` skill のファイル木を再生成 | **ファイルを作成・移動・削除したら必ず** |
@@ -107,7 +107,8 @@ python -m impl_python examples/basics/control_flow.ar
 - 新しい文法・新しい禁止を足したら、`examples/` の見本に加えて `gate/` にもテストを書く（`regulations.md`）。
 - `examples/` は**リリースのときだけ**確かめる（`check_examples.ps1`・exit の 0 / 非 0 だけ）。⇒ 例題が壊れても「毎回」の
   ゲートは緑のまま。例題を直したら `check_examples.ps1` を走らせる。
-- ⚠ まだ `examples/` を見ているもの: `compare_wasm_frontend`（フェーズ 7）。`examples/archived/` と `examples/practical_examples/` はどのゲートも成功を見ない
+- 既定で `examples/` を見るゲートは無い（`-Root examples` で指せるもの: `scan_examples` / `force_gate` / `syntax_cov` /
+  `compare_tm_grammar` / `compare_wasm_frontend`）。`examples/archived/` と `examples/practical_examples/` はどのゲートも成功を見ない
   （壊れていてよい・各ディレクトリの `README.md`）。
 - ⚠ **新しい検査の影響を `examples/` で測るときは母集団を 9 カテゴリに限ること**（7.5 でここを踏んだ）。
 
