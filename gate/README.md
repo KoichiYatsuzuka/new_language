@@ -177,7 +177,10 @@ let a: int = "s"            # expect: static VarTypeMismatch
 
 `import[cpp-lib]` は、初めて走らせたときにヘッダの隣へ中継 DLL・シム・印（`ar_<stem>.dll` / `ar_<stem>_shim.*` /
 `ar_<stem>.syms`）を作る。`examples/` と同じく**コミットする**（作り直しに MSVC が要り、`ar_config.json` の `cpp.msvc` が
-環境によっては無いパスを指すため）。A/B で exe ごとに分ける仕組みは `cpp_cache_isolation.ps1`（D-11）。
+環境によっては無いパスを指すため）。A/B で exe ごとに分ける仕組みは `cpp_cache_isolation.ps1`（D-11）で、A/B 系
+（`gate_ab.ps1`）が走らせる exe ごとに温めてから走らせ、終わったら始める前に戻す（gate_speed_plan.md 6-2）。
+⚠ 中継 DLL のキャッシュは共通ランナーの保存のキー（ディレクトリの指紋）に入れない。ヘッダ（指紋に入る）と exe（鍵に入る）から
+作られるもので、入れると入れ替えのたびに保存が使われなくなるため。
 ⚠ 作るときにこの環境の MSVC を指す必要があれば、テストの `_mods/` に**一時的な** `ar_config.json`（`cpp.msvc` だけ）を置き、
 作った後に消す（コミットしない。近いディレクトリの設定がキー単位で勝つ）。
 

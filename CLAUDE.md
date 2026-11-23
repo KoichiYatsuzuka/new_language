@@ -85,9 +85,9 @@ python -m impl_python examples/basics/control_flow.ar
 | `compare_python_impl.ps1` | 参照実装 `impl_python` との stdout 差分 | **凍結中**（2026-11-23・`impl_python` の更新を止めているため。理由はスクリプトの先頭） |
 | `stale_doc_refs.ps1` | コメント中の識別子が src に実在するか | **識別子を改名・削除したら必ず** |
 | `hash_eq_identity.ps1` | 同一性で扱う型の一覧がハッシュ側と等値側で一致するか | **`Value` に種別を足した / ハッシュ・等値を触ったとき**（ずれると「入れたのに引けない辞書」になる）|
-| `compare_bytecode.ps1 -A <base.exe>` | 2 バイナリのバイトコードが同一か | **VM コンパイラ**を触ったとき（「挙動不変」の主張はこれ） |
-| `compare_outputs.ps1 -A <base.exe>` | 全例題の stdout/stderr/exit が同一か | **解釈側**を触ったとき（bytecode は自明に一致してしまう） |
-| `compare_import_paths.ps1 -A <base.exe>` | import 系 13 例題の出力が同一か | **import / FFI** を触ったとき（他ゲートの対象外を埋める） |
+| `compare_bytecode.ps1 -A <base.exe>` | 2 バイナリのバイトコードが同一か（`gate/` の全テスト・塊の並びは見ない） | **VM コンパイラ**を触ったとき（「挙動不変」の主張はこれ） |
+| `compare_outputs.ps1 -A <base.exe>` | `gate/` の全テストの exit / stdout / stderr / 診断が同一か | **解釈側**を触ったとき（bytecode は自明に一致してしまう） |
+| `compare_import_paths.ps1 -A <base.exe>` | import 系 13 件（`gate/ffi/`）の出力が同一か | **import / FFI** を触ったとき（全件の `compare_outputs` より先に短く回す） |
 | `dump_native_ir.ps1 -OutDir <dir>` | 生成 LLVM IR が byte-identical か | **ネイティブ codegen** を触ったとき（最強の検査） |
 | `check_native_ir_abi.ps1` | 例題の .arc の元を全部コンパイルし直し、生成 IR の**直接呼び出し（`@X_impl` / `@X_fast`）が定義と同じ型か**・**DLL が埋め込まれたか** | **ネイティブ codegen の呼び出し規約・適格判定**を触ったとき（型の違う直接呼び出しは clang が通し、実行時にごみを読む） |
 | `repl_session.ps1` | 対話 REPL の golden（`gate/repl/` の `.in` / `.out` の対を全部） | **REPL / 最上位実行**を触ったとき |
@@ -107,16 +107,20 @@ python -m impl_python examples/basics/control_flow.ar
 - 新しい文法・新しい禁止を足したら、`examples/` の見本に加えて `gate/` にもテストを書く（`regulations.md`）。
 - `examples/` は**リリースのときだけ**確かめる（`check_examples.ps1`・exit の 0 / 非 0 だけ）。⇒ 例題が壊れても「毎回」の
   ゲートは緑のまま。例題を直したら `check_examples.ps1` を走らせる。
-- ⚠ まだ `examples/` を見ているもの: A/B 系（`compare_outputs` / `compare_bytecode` / `compare_import_paths`・フェーズ 6）と
-  `compare_wasm_frontend`（フェーズ 7）。`examples/archived/` と `examples/practical_examples/` はどのゲートも成功を見ない
+- ⚠ まだ `examples/` を見ているもの: `compare_wasm_frontend`（フェーズ 7）。`examples/archived/` と `examples/practical_examples/` はどのゲートも成功を見ない
   （壊れていてよい・各ディレクトリの `README.md`）。
 - ⚠ **新しい検査の影響を `examples/` で測るときは母集団を 9 カテゴリに限ること**（7.5 でここを踏んだ）。
 
 ⚠ A/B 系（`-A`）は **「直前のタスクのコミット」からビルドしたバイナリ**を基準にすること。
-⚠ `compare_outputs` / `compare_import_paths` は cpp-lib の中継 DLL のキャッシュ（`examples/**/ar_*`）を **exe ごとに分けて**比べ、
-終わったら始める前に戻す（[scripts/cpp_cache_isolation.ps1](scripts/cpp_cache_isolation.ps1) を dot-source・7-34）。以前は 2 つの exe が
-交互に作り直し、その表示が偽の差分になり、最後に走った exe の印でコミット済みのキャッシュが残っていた。
-⚠ **使う前に同一 exe 同士で負の対照**（差分 0 になること）を取る。
+⚠ A/B 系は exe ごとに 1 回だけ走らせ（[scripts/gate_ab.ps1](scripts/gate_ab.ps1)・gate_speed_plan.md フェーズ 6）、結果を exe のハッシュで
+保存する。`compare_outputs` と `compare_bytecode` は同じ実行（`AR_VM_DUMP=1`）を読み、新しい側（`target/release`）は
+`gates_every_time` が残した結果を読む。⇒ 基準の exe を 1 回走らせれば、あとは数秒。⚠ release の exe は同じソースから
+作り直してもハッシュが変わる（保存が使われないだけで、取り違えはしない）。
+⚠ cpp-lib の中継 DLL のキャッシュ（`gate/**/ar_*`）は**走らせる exe ごとに温めて**から走らせ、終わったら始める前に戻す
+（[scripts/cpp_cache_isolation.ps1](scripts/cpp_cache_isolation.ps1)・7-34）。以前は 2 つの exe が交互に作り直し、その表示が偽の差分に
+なり、最後に走った exe の印でコミット済みのキャッシュが残っていた。
+⚠ **使う前に同一 exe 同士で負の対照**（差分 0 になること）を取る。`-A` と `-B` に同じ exe を渡すと、B を別の保存先に走らせ直して
+独立した 2 回を比べる（同じ保存を 2 回読んで「一致」とは言わない）。
 ⚠ ゲートは `target/release` を見る。**自分で走らせて緑**を確かめる（報告を信じない）。
 ⚠⚠ **上のゲートは全部 `target/release` を見る。** `vm/compiler/mod.rs` の
 `storage_operands` は `cfg(debug_assertions)` なので **release には存在せず**、

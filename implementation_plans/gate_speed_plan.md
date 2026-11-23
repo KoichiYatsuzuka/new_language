@@ -127,7 +127,7 @@
     （`ar_{stem}.dll` / `ar_{stem}_shim.*`）で、印（`ar_{stem}.syms`）は生成するコードのハッシュ。
   - 生成するコードが 2 つの exe で同じなら（FFI の橋渡しを触っていない変更の大半）キャッシュは同じで、入れ替えは
     起きない。違うときだけ今の仕組みが exe ごとに分ける。基準側の結果を保存しても、この動きは変えなくてよい。
-  - ⚠ 今の仕組みは `examples/` の下のキャッシュを探す。`gate/` の下も探すように直す（6-2）。
+  - ⚠ 今の仕組みは `examples/` の下のキャッシュを探す。`gate/` の下も探すように直す（6-2）。→ 直した（6-2・`-Under`）。
 - **D-12 `gate/` へ切り替える条件は、覆う範囲が `examples/` を下回らないこと。**
   - 構文: `syntax_cov` を `examples/` と `gate/` の両方で取り、`gate/` の側に新しい穴（`UNCOVERED`・文脈の表の `.`・
     `NESTED-GAP`）が無いこと（`examples/` の側の値は 1-4）。
@@ -644,12 +644,61 @@
 
 ### フェーズ 6: A/B 系
 
-- **6-1** `compare_outputs` と `compare_bytecode` の対象を `gate/` にし、実行を 1 回にする（`AR_VM_DUMP=1`。1-3 で
+- **6-1（済・2026-11-24）** `compare_outputs` と `compare_bytecode` の対象を `gate/` にし、実行を 1 回にする（`AR_VM_DUMP=1`。1-3 で
   変わらないと確かめた場合）。
-- **6-2** 基準側（`-A`）の結果を exe のハッシュで保存する。2 回目からは新しい exe の実行だけになる。中継 DLL の
+  - 共通部分を `scripts/gate_ab.ps1` に置いた（`Invoke-GateAbSides` / `Compare-GateAbResults` / 1 件の文字列の作り方 2 つ）。
+    両方のスクリプトは同じ実行の結果を読み、比べ方だけが違う。
+  - **「毎回」のゲートの実行にもダンプを付けた**（`Invoke-GateSuite`）。⇒ A/B の新しい側（`target/release`）は
+    `gates_every_time` が残した結果をそのまま読む。付ける前に測った: `gate/` の 762 件を `-Fresh` で、付けないと 33.0 / 26.1 秒・
+    付けると 27.9 / 26.1 秒（2 回ずつ・差はノイズ）。stderr は計 0.6 MB → 5.2 MB。
+    stderr を読む判定（scan の FAIL 行の末尾 3 行）はダンプを除いてから読む（`Split-GateVmDump`・gate_run.ps1）。
+  - ダンプの切り出し: 1 つの塊は `== chunk … ==` の行・命令の行・終わりの空行 1 つで、1 回の `eprintln!` で出る
+    （`src/vm/compiler/entry.rs`）。stderr の lock があるので別のスレッドの出力が塊の途中に入らない。
+  - `compare_outputs` が比べるもの: exit・stdout・ダンプを除いた stderr・**機械向けの診断（3-1）**（以前は無かった）。
+    アドレスの正規化は前と同じ。`compare_bytecode` は塊だけ（並びは見ない・6-4）。
+  - 以前の除外（`bench` 全部・`async` 全部・外部プロセス・GUI）は無くなった: `gate/` のベンチは偽の時計、async は揃う
+    書き方、外部プロセスは共通ランナーがファイルへ落とす、GUI は `gate/` に無い（D-10）。
+  - `examples/` を A/B する形は残していない（D-13。`gate/` が `examples/` の範囲を覆う・D-12）。
+- **6-2（済・2026-11-24）** 基準側（`-A`）の結果を exe のハッシュで保存する。2 回目からは新しい exe の実行だけになる。中継 DLL の
   キャッシュは D-11 のとおり（`gate/` の下のキャッシュも扱うように直す）。
-- **6-3** `compare_import_paths` を同じ仕組みに載せる（対象は 4-7 のテスト）。
-- **6-4** 同一 exe どうしの負の対照（差分 0）と、わざと出力を変えた exe での正の対照（差分が出る）を取る。
+  - 保存は共通ランナーのもの（`target/gate_results/<exe のハッシュ>/<鍵>`）をそのまま使う。保存があるかを走らせずに見る
+    `Test-GateRunSaved`（鍵の計算を `Get-GateRunPlan` に切り出した）を足した。
+  - 中継 DLL のキャッシュ: **走らせる exe だけ**を温め（保存を読む側は温めない）、exe ごとにまとめて走らせ、終わったら
+    始める前に戻す。`cpp_cache_isolation.ps1` に `-Under`（既定 `gate`）と `-WorkDir file` を足した。
+  - 保存した結果が**冷えたキャッシュで取られていた**（`CppBridge:` の行のうち `loading … (permanent)` でないものがある）
+    ときは、その exe を温めて走らせ直す（作り直しの表示が偽の差分になるため）。温めた後も作り直したら `WARNING` を出す。
+  - ⚠ 中継 DLL のキャッシュのファイルを**ディレクトリの指紋から外した**（gate_run.ps1）。ヘッダ（指紋に入る）と exe
+    （鍵に入る）から作られるもので、入れると入れ替えや作り直しのたびに鍵が変わり、基準の exe の保存が使われなくなる。
+  - 時間（`gate/` の 762 件・6 並列）: 基準も新しい側も保存が無い初回は約 35 秒（基準の実行 26 秒＋温め・判定）、
+    基準の保存がある 2 回目は `compare_bytecode` が 6.5 秒。1-1 の `compare_outputs` 135.0 秒・`compare_bytecode` 218.1 秒に対し、
+    続けて走らせても実行は exe ごとに 1 回。
+  - ⚠ release の exe は**同じソースから作り直してもハッシュが変わる**（6-4 で `c788c93c…` → `c02330b9…`）。保存が使われない
+    だけで、取り違えは起きない。
+- **6-3（済・2026-11-24）** `compare_import_paths` を同じ仕組みに載せる（対象は 4-7 のテスト）。
+  - 対象は `gate/ffi/` の 13 件。窓を出す `cs_proc_app`（cs-proc を踏む唯一の非 GUI の例題とされていた）の代わりに
+    `cs_proc_values` を置いた。一覧のファイルが無ければ `MISSING` で exit 1（黙って減らさない）。
+  - 一覧が違うので全件とは別に 1 回走らせる（13 件で 1.4 秒）。初回 3.5〜4.7 秒・保存があれば 1.1 秒（1-1 は 5.0 秒）。
+- **6-4（済・2026-11-24）** 同一 exe どうしの負の対照（差分 0）と、わざと出力を変えた exe での正の対照（差分が出る）を取る。
+  - 負の対照の作り: `-A` と `-B` が同じ exe（ハッシュが同じ）なら、B を別の保存先（`target/gate_results_negctl`）に毎回
+    走らせ直し、**独立した 2 回**を比べる。同じ保存を 2 回読んで「一致」と言わないため。
+  - 負の対照の結果:
+    - `compare_outputs` 762 / 762。
+    - `compare_bytecode` は**初め 756 / 762** だった。違ったのは async を使う 6 件（`async/async_closure_share` /
+      `async_demo` / `async_string_share`・`bench/async_bench`・`ffi/async_cs_calls` / `async_native_call`）で、行の数も
+      行の集まりも同じで**塊の出る順だけ**が違った（worker スレッドがタスクをそれぞれコンパイルする）。1-1 の
+      `examples/interop/async_cs_calls`（713 / 714）も同じ原因。⇒ 塊を並べ替えて比べるようにした。並びはコンパイルの順
+      ＝実行の順で、実行の順が変われば出力が変わるので `compare_outputs` が見る。直した後は 2 回とも 762 / 762。
+    - `compare_import_paths` 13 / 13。
+    - 同じソースから 2 回作った exe（ハッシュが違う）どうし: 762 / 762（出力・バイトコード）、13 / 13。
+  - 正の対照: 2 か所を変えた exe を作った（int の `%` のゼロ除算の文言に `POSCTL` を足す・逆アセンブルの `IBIN_LC` の表示を
+    変える）。`compare_outputs` は文言を照らす 1 件（`bench/numeric_ops_equivalence`）だけを、`compare_bytecode` は
+    `IBIN_LC` を含む 449 件を差に出し、どちらも exit 1。この exe の結果で scan の FAIL 行がダンプではなくトレースバックの
+    末尾を出すことも見た。
+  - 中継 DLL のキャッシュの印（`cache_stamp`）を変えた exe: 新しい側が温めでも作り直そうとして `WARNING` を出し、
+    cpp-lib の 9 件（`compare_import_paths` では 3 件）を差に出した。終わった後、`gate/` のキャッシュ 10 ファイルは中身も
+    更新時刻も始める前と同じだった。⚠ ただし、この環境では作り直しそのものができない（ルートの `ar_config.json` の
+    `cpp.msvc` が無いパス `C:/…` を指す。MSVC は `H:` にある）ので、**2 つの exe が別々のキャッシュを持つ**場合の入れ替え
+    （`the two exes get their own caches`）は走らせて確かめられていない。
 
 ### フェーズ 7: wasm の突き合わせ
 
@@ -696,7 +745,7 @@
 | 「毎回」のテストの実行回数（Rust 側） | 3 回 | 1 回 | 1 回（`gate/` の 762 件・6 並列） |
 | 「毎回」の `impl_python` の実行 | 約 700 件 × 170 ms 以上 | 0（凍結・D-9） | 0 |
 | 「毎回」のゲートの合計 | **573.2 秒**（1-1・今の exe で。`test_build_gate` 0.4・`scan` 80.3・`force` 175.0・`compare_python_impl` 317.5） | 1 分前後 | **約 30 秒**（`gates_every_time -Fresh`・3 回で 29.1〜30.6 秒。`test_build_gate` 0.3・実行 26〜27・判定 3）。保存した結果を読むだけなら 3.4 秒 |
-| 触ったときに走らせる A/B 系と wasm | 555 秒（1-1・`compare_wasm_frontend` 196.8・`compare_outputs` 135.0・`compare_bytecode` 218.1・`compare_import_paths` 5.0） | — | フェーズ 6・7 の対象 |
+| 触ったときに走らせる A/B 系と wasm | 555 秒（1-1・`compare_wasm_frontend` 196.8・`compare_outputs` 135.0・`compare_bytecode` 218.1・`compare_import_paths` 5.0） | — | A/B 系 3 本（フェーズ 6 の後）: 基準の exe の初回は `compare_outputs` 約 35 秒、その後の `compare_bytecode` 6.5 秒・`compare_import_paths` 約 4 秒（新しい側は「毎回」のゲートの保存を読む）。wasm はフェーズ 7 の対象 |
 
 - ⚠ 「今」の列は、計画を立てた後に直した exe（1-2 の `.arc`・2-1 の一時ディレクトリ）で測った値。計画を立てたときの exe なら
   `scan` は 156 秒だった。スクリプトはフェーズ 3 より前の版。

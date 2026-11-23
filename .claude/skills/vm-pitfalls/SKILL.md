@@ -303,8 +303,8 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   `gate/` の対象の決まりは 1 か所（`gate_judge.ps1` の `Get-GateTestFiles`: 再帰する。`lib/`・`*_mods/`・`debugger/`、
   `ffi/` と `modules/` のサブディレクトリ（名前が `_tests` で終わるものは除く）は補助として走らせない）。
   ⇒ `gate/` に新しいディレクトリを作ったら、`gate_expect.ps1` の件数が増えたことで拾われたかを確かめる。
-  上の非再帰の話は、まだ `examples/` を見る A/B 系（`compare_outputs` など・フェーズ 6）と `scan_examples -Root examples` /
-  `check_examples` に残る。
+  A/B 系（`compare_outputs` / `compare_bytecode` / `compare_import_paths`）も 2026-11-23 から `gate/` を見る（フェーズ 6・
+  `gate_ab.ps1`）。上の非再帰の話は `scan_examples -Root examples` / `check_examples` に残る。
 
 - **⚠⚠ 「clippy 増分 0」は緑の証明ではない**（#65）。受け入れ済みの baseline
   （当時 51 件）の中に **`replacing text with itself`** があり、それは
@@ -371,7 +371,7 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
 - **⚠⚠ 手で A/B するときは揮発値を正規化してから比較する**（#77）。
   例外系例題を `md5sum` で突き合わせたら 1 本が「差分」に見えたが、実体は
   `<ZeroDivisionError object at 0x1971969f8b0>` の**ヒープアドレス**だった。
-  [compare_outputs.ps1](../../../scripts/compare_outputs.ps1) は `Normalize-Volatile` で
+  [compare_outputs.ps1](../../../scripts/compare_outputs.ps1) は `ConvertTo-GateAbStable`（`gate_ab.ps1`）で
   `0x…` と 10 桁以上の整数（`id()`）を潰している。**手作業はこれを飛ばすので偽の差分が出る**。
   ⇒ 手 A/B は `sed -E 's/0x[0-9a-fA-F]+/0xADDR/g'` を通してから比較する。
 
@@ -460,8 +460,9 @@ Phase R（AST 解決層）・Phase V（バイトコード VM）の実装で**実
   手は **`Start-Process -RedirectStandardOutput/-RedirectStandardError` でファイルへ落として
   終了後に読む**（ファイルハンドルは孫が持っていても読み出しを妨げない・
   [compare_import_paths.ps1](../../../scripts/compare_import_paths.ps1)）。
-  ⚠ [compare_bytecode.ps1](../../../scripts/compare_bytecode.ps1) が `js_proc_*` / `cs_proc_app` を
-  skip リストに入れているのは**この理由**（当時は理由を書いていなかったので #58 で踏み直した）。
+  ⚠ 以前の [compare_bytecode.ps1](../../../scripts/compare_bytecode.ps1) が `js_proc_*` / `cs_proc_app` を
+  skip リストに入れていたのは**この理由**（当時は理由を書いていなかったので #58 で踏み直した）。2026-11-23 から A/B 系は
+  共通ランナー（`gate_run.ps1`・cmd のリダイレクトでファイルへ落とす）で走らせるので、skip は無い。
 - **native exe の stderr を `2>&1` で受けると PS5.1 が ErrorRecord 化** して exit 0 でも失敗扱いに
   なる。`Start-Process -PassThru` の `ExitCode` も当てにならない
   （`System.Diagnostics.Process` を直接使う）。
