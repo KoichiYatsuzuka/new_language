@@ -2867,6 +2867,9 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
 /// いる値が表のとおりのクラスのインスタンスのときだけ番地・ほかは空）。先に積まれた誤りがある・親がインスタンスでないなら
 /// 全部空。アリーナには積まない。
 /// ⚠ 外れた件をここで読み直さない（field 79 と同じ理由）。生成コードがその件の IC のセルで field 58 を呼んで埋める。
+/// ⚠ 親も子も借りずに読む（`try_borrow_unguarded`・7-22）。可変に借りられているインスタンスはその件を空にする（今までの道へ）。
+///   以前は `borrow()` で借りていた: 借用の印を書いて戻す 2 回の書き込みと、`instance_block` の呼び出し・`out.fill` の
+///   `memset` が、1 回ごとの固定費だった（借りられていたら panic だった）
 extern "C" fn ar_attr_blocks(parent_h: i64, n: i32, reqs: *const AttrBlockReq, out: *mut *mut u64) {
     use std::sync::atomic::{AtomicU64, Ordering};
     if n <= 0 || reqs.is_null() || out.is_null() {
@@ -2875,18 +2878,32 @@ extern "C" fn ar_attr_blocks(parent_h: i64, n: i32, reqs: *const AttrBlockReq, o
     // SAFETY: 生成コードは `n` 件の表と `n` 個の `ptr` の置き場を渡す
     let reqs = unsafe { std::slice::from_raw_parts(reqs, n as usize) };
     let out = unsafe { std::slice::from_raw_parts_mut(out, n as usize) };
-    out.fill(std::ptr::null_mut());
+    let clear = |out: &mut [*mut u64]| {
+        for o in out.iter_mut() {
+            *o = std::ptr::null_mut();
+        }
+    };
     if parent_h < 3 {
+        clear(out);
         return;
     }
     with_state(|s| {
         let st = s.borrow();
         if st.error.is_some() {
+            clear(out);
             return;
         }
-        let Some(Value::Instance(rc)) = st.arena.get(parent_h as usize) else { return };
-        let inst = rc.borrow();
+        let Some(Value::Instance(rc)) = st.arena.get(parent_h as usize) else {
+            clear(out);
+            return;
+        };
+        // SAFETY: 読むだけで、読み終わるまで誰も可変に借りない（コールバックの中で利用者のコードを呼ばない）
+        let Ok(inst) = (unsafe { rc.try_borrow_unguarded() }) else {
+            clear(out);
+            return;
+        };
         for (r, slot) in reqs.iter().zip(out.iter_mut()) {
+            *slot = std::ptr::null_mut();
             if r.ic_cell.is_null() || r.class_cell.is_null() || r.desc.is_null() {
                 continue;
             }
@@ -3016,7 +3033,8 @@ extern "C" fn ar_attr_block(
             return std::ptr::null_mut();
         }
         let Some(Value::Instance(rc)) = st.arena.get(parent_h as usize) else { return std::ptr::null_mut() };
-        let inst = rc.borrow();
+        // SAFETY: 読むだけで、読み終わるまで誰も可変に借りない（可変に借りられていれば空・今までの道へ）
+        let Ok(inst) = (unsafe { rc.try_borrow_unguarded() }) else { return std::ptr::null_mut() };
         let Some((idx, _)) = inst.ic_slot(packed, true, || debug_field_name(name_ptr, name_len)) else {
             return std::ptr::null_mut();
         };
@@ -3064,6 +3082,7 @@ unsafe fn read_direct_desc<'a>(
 }
 
 /// field 78 の本体: インスタンスのクラスが生成コードの表のとおりなら、先頭の塊の番地。
+#[inline(always)]
 fn instance_block(
     rc: &std::rc::Rc<std::cell::RefCell<crate::interpreter::value::InstanceData>>,
     desc: *const crate::interpreter::value::DirectClassDesc,
@@ -3072,21 +3091,35 @@ fn instance_block(
     use std::sync::atomic::{AtomicU64, Ordering};
     // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（8 バイト境界）で、`AtomicU64` と同じ並び。
     let cell = unsafe { &*(cell as *const AtomicU64) };
-    {
-        let inst = rc.borrow();
-        let want = direct_cell_value(inst.class.class_id);
-        if cell.load(Ordering::Relaxed) != want {
-            // SAFETY: `desc` は生成コードが DLL の中に置いた表
-            let Some((name, fields)) = (unsafe { read_direct_desc(desc) }) else { return std::ptr::null_mut() };
-            if !inst.class.matches_direct_desc(name, &fields) {
-                return std::ptr::null_mut();
-            }
-            cell.store(want, Ordering::Relaxed);
-        }
+    // SAFETY: 読むだけで、読み終わるまで誰も可変に借りない
+    let Ok(inst) = (unsafe { rc.try_borrow_unguarded() }) else { return std::ptr::null_mut() };
+    // ⚠ クラスは `inst.class` の番号で見る。塊の先頭の語の番号で見る形を試すと k1 が 0.94x になった（`class` は
+    //   どのインスタンスでも同じで速い記憶にあるが、塊はインスタンスごとの行で、ここでその行を待つことになる・7-22）
+    let want = direct_cell_value(inst.class.class_id);
+    if cell.load(Ordering::Relaxed) != want && !fill_direct_cell(inst, desc, cell, want) {
+        return std::ptr::null_mut();
     }
-    // SAFETY: 借用は上で返した。塊（`Box<[u64]>`）はインスタンスが生きている間動かない（作るのは生成と深いコピーだけ）。
+    // SAFETY: 塊（`Box<[u64]>`）はインスタンスが生きている間動かない（作るのは生成と深いコピーだけ）。
     // 生成コードは、この番地を使う間そのインスタンスを借りている者がいない所でだけ読み書きする（D-13 ④）。
     unsafe { (*rc.as_ptr()).raw.as_mut_ptr() }
+}
+
+/// [`instance_block`] のセルが外れたとき: 生成コードの表とクラスを突き合わせ、合えばセルを埋めて `true`。
+#[cold]
+#[inline(never)]
+fn fill_direct_cell(
+    inst: &crate::interpreter::value::InstanceData,
+    desc: *const crate::interpreter::value::DirectClassDesc,
+    cell: &std::sync::atomic::AtomicU64,
+    want: u64,
+) -> bool {
+    // SAFETY: `desc` は生成コードが DLL の中に置いた表
+    let Some((name, fields)) = (unsafe { read_direct_desc(desc) }) else { return false };
+    if !inst.class.matches_direct_desc(name, &fields) {
+        return false;
+    }
+    cell.store(want, std::sync::atomic::Ordering::Relaxed);
+    true
 }
 
 extern "C" fn ar_inst_block(h: i64, desc: *const crate::interpreter::value::DirectClassDesc, cell: *mut u64) -> *mut u64 {
@@ -3553,11 +3586,13 @@ mod tests {
             ..ClassValue::synthetic("H", alloc_class_id())
         });
         let mut pinst = InstanceData::new_empty(parent.clone(), 0);
-        assert!(pinst.store_field(0, Value::Instance(new_inst(&vec2)), true));
+        let v_child = new_inst(&vec2);
+        assert!(pinst.store_field(0, Value::Instance(v_child.clone()), true));
         assert!(pinst.store_field(1, Value::Instance(new_inst(&vec2)), true));
         assert!(pinst.store_field(2, Value::Instance(new_inst(&swapped)), true));
         assert!(pinst.store_field(3, Value::Int(3), true));
-        let ph = push_handle(Value::Instance(Rc::new(RefCell::new(pinst))));
+        let prc = Rc::new(RefCell::new(pinst));
+        let ph = push_handle(Value::Instance(prc.clone()));
 
         #[repr(C)]
         struct Table(DirectClassDesc, [DirectFieldDesc; 2]);
@@ -3610,6 +3645,31 @@ mod tests {
             ar_attr_blocks(parent_h, 2, reqs.as_ptr(), out.as_mut_ptr());
             assert!(out.iter().all(|p| p.is_null()));
         }
+        // 借りられているインスタンス（7-22・借りずに読む）: 読むだけの借用は通る。可変の借用はその件だけ空（親なら全部空）で、
+        // panic しない。field 79 も同じ。借用を返せば元どおり
+        let blocks = || {
+            let mut out = [1usize as *mut u64; 2];
+            ar_attr_blocks(ph, 2, reqs.as_ptr(), out.as_mut_ptr());
+            out
+        };
+        {
+            let _shared = v_child.borrow();
+            assert_eq!(&blocks()[..], &want[..2], "a shared borrow does not stop the read");
+        }
+        {
+            let _held = v_child.borrow_mut();
+            let out = blocks();
+            assert!(out[0].is_null(), "a mutably borrowed child gives null");
+            assert_eq!(out[1], want[1]);
+            assert!(one("v", &mut ic79[0], &mut cc79[0]).is_null());
+        }
+        {
+            let _held = prc.borrow_mut();
+            assert!(blocks().iter().all(|p| p.is_null()), "a mutably borrowed parent gives nulls");
+            assert!(one("w", &mut ic79[1], &mut cc79[1]).is_null());
+        }
+        assert_eq!(&blocks()[..], &want[..2]);
+        assert_eq!(one("v", &mut ic79[0], &mut cc79[0]), want[0]);
         set_native_error("ValueError: earlier".to_string());
         let mut out = [1usize as *mut u64; 2];
         ar_attr_blocks(ph, 2, reqs.as_ptr(), out.as_mut_ptr());
@@ -3693,6 +3753,16 @@ mod tests {
         assert!(ar_inst_block(TL_NONE, desc, &mut cell).is_null());
         assert!(ar_inst_block(h, std::ptr::null(), &mut cell).is_null());
         assert!(ar_inst_block(h, desc, std::ptr::null_mut()).is_null());
+        // 可変に借りられているインスタンスは空で、panic しない（借りずに読む・7-22）。借用を返せば同じ番地
+        let rc = match clone_value_at(h) {
+            Value::Instance(rc) => rc,
+            other => panic!("not an instance: {other:?}"),
+        };
+        {
+            let _held = rc.borrow_mut();
+            assert!(ar_inst_block(h, desc, &mut cell).is_null(), "a mutably borrowed instance gives null");
+        }
+        assert_eq!(ar_inst_block(h, desc, &mut cell), p);
         // 先に積まれたエラーがあれば空（エラーはそのまま残る）
         set_native_error("ValueError: earlier".to_string());
         assert!(ar_inst_block(h, desc, &mut cell).is_null());
