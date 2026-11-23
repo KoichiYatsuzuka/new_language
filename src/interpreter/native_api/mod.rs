@@ -569,6 +569,13 @@ fn i32_to_binop(op: i32) -> Option<crate::ast::BinOp> {
 
 // ── ArCallbacks struct ───────────────────────────────────────────────────────
 
+// `.arc` の読み取りが照らす表の大きさ（`arc_format::CALLBACK_TABLE_LEN`・known_bugs.md #29）は、この表の欄の数と
+// 同じでなければならない（欄はすべて関数の番地）。欄を足して向こうを足し忘れたらビルドを止める。
+const _: () = assert!(
+    std::mem::size_of::<ArCallbacks>() / std::mem::size_of::<usize>() == crate::arc_format::CALLBACK_TABLE_LEN as usize,
+    "ArCallbacks gained or lost a field: update arc_format::CALLBACK_TABLE_LEN"
+);
+
 /// ネイティブ DLL に `ar_init` 経由で渡される C 互換の関数ポインタ構造体。
 /// レイアウトは `codegen.rs` が生成する `ArCallbacks` 構造体と完全に一致しなければならない。
 #[repr(C)]

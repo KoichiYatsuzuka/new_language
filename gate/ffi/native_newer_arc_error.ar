@@ -1,0 +1,12 @@
+# native_newer_arc_error.ar — この exe より新しい arrow でコンパイルした `.arc` を読むと誤りになる（負例・known_bugs.md #29）
+#
+# `.arc` の version 3 は、埋め込んだ DLL の生成コードが前提にするコールバックの表の大きさを持ち、読み取り
+# （`arc_format::parse`）がこの arrow の表（`CALLBACK_TABLE_LEN`）より大きければ import の誤りにする（何も実行しない）。
+# 以前は照らさず、表の外の番地を呼んでアクセス違反で落ちた。VS Code 拡張も同じ読み取りなので同じ誤りを出す。
+# `newer_arc/newer.arc` は `fn twice` を `--compile` した `.arc` の表の大きさを 9999 に書き換えたもの（元の `.ar` は置かない:
+# 隣に `.ar` があると埋め込みソースと照らして `.ar` を使うことがある）。⚠ 作り直すと誤りにならなくなる。
+# もとは examples/interop/newer_arc_error.ar。
+
+import newer_arc.newer as n   # expect: parse - "compiled by a newer arrow"
+
+print("unreachable:", n.twice(21))

@@ -9,7 +9,7 @@ use std::process::Command;
 
 use super::llvm_codegen as codegen;
 use super::stub_gen;
-use crate::arc_format::{MAGIC, VERSION_V0, VERSION_V1};
+use crate::arc_format::{MAGIC, VERSION_V0, VERSION_V3};
 use crate::ast::Stmt;
 use crate::type_check::AstAnnotations;
 
@@ -18,10 +18,10 @@ use crate::type_check::AstAnnotations;
 // Populated by load_tlc(); consumed by exec.rs.
 // ---------------------------------------------------------------------------
 
-/// Payload stored in the native cache and embedded in .arc v1.
+/// Payload stored in the native cache and embedded in .arc v1 / v3.
 #[derive(Clone)]
 pub enum NativePayload {
-    /// v1: raw shared-library bytes, written to a temp file and loaded via libloading.
+    /// v1 / v3: raw shared-library bytes, written to a temp file and loaded via libloading.
     Dll(Vec<u8>),
 }
 
@@ -48,7 +48,7 @@ pub fn cache_native(module_name: &str, exports: Vec<codegen::FnExport>, dll_byte
 /// Compile `source` (already parsed into `stmts`) and write `.arc` + `.ars`
 /// next to the original `source_path`.
 ///
-/// If native compilation succeeds, the `.arc` is written as **version 1**
+/// If native compilation succeeds, the `.arc` is written as **version 3** (version 1 plus the callback-table size, known_bugs.md #29)
 /// with the DLL bytes embedded inside it.  No separate `_tl.*` file is
 /// created.  If `rustc` is unavailable or no functions are eligible, the
 /// `.arc` is written as version 0 (source-only) and a warning is printed.
@@ -78,9 +78,9 @@ pub fn compile(
 
     // Attempt native compilation.
     match compile_native(stmts, annotations) {
-        Ok((payload, exports)) => {
+        Ok((payload, exports, callbacks)) => {
             let NativePayload::Dll(bytes) = &payload;
-            write_tlc_native(source, stem, &exports, bytes, VERSION_V1, &tlc_path)?;
+            write_tlc_native(source, stem, &exports, bytes, callbacks, &tlc_path)?;
             println!(
                 "NativeLib: {} function(s) (DLL) embedded in {}",
                 exports.len(), tlc_path.display()
@@ -263,13 +263,17 @@ fn sweep_stale_private_dirs(root: &Path, prefix: &str) {
 
 /// Load a `.arc` file and return `(module_name, source_text)`.
 ///
-/// If the file is v1, the embedded native data is placed in the
+/// If the file is v1 / v3, the embedded native data is placed in the
 /// thread-local `NATIVE_CACHE` so that `exec.rs` can pick it up when
 /// the module is later imported.
 ///
 /// ⚠ 「`.arc` が古いかどうか」の判定には使わない（古いと判った後に DLL がキャッシュに残る＝
 ///   新しいソース × 古い DLL という最悪の組み合わせになる）。判定は形式を読むだけの
 ///   `crate::arc_format::read` で行う（`parser/imports/ar_modules.rs`）。
+///
+/// ⚠ DLL がこの exe の表より大きいコールバックの表を前提にする（この exe より新しい arrow でコンパイルした）`.arc` は
+///   読み取り（`arc_format::parse`）が誤りにするので、ここへは来ない（known_bugs.md #29）。以前は照らさず、DLL が
+///   表の外の番地を呼んでアクセス違反で落ちた。
 pub fn load_tlc(path: &Path) -> std::io::Result<(String, String)> {
     let arc = crate::arc_format::read(path)?;
     let name = arc.module_name;
@@ -296,9 +300,10 @@ pub fn load_tlc(path: &Path) -> std::io::Result<(String, String)> {
 fn compile_native(
     stmts: &[Stmt],
     annotations: &AstAnnotations,
-) -> Result<(NativePayload, Vec<codegen::FnExport>), String> {
+) -> Result<(NativePayload, Vec<codegen::FnExport>, u32), String> {
     let (llvm_ir, exports) = codegen::generate_llvm_module(stmts, annotations)
         .ok_or_else(|| "no codegen-eligible functions".to_string())?;
+    let callbacks = codegen::callbacks_required(&llvm_ir)?;
 
     let fn_names: Vec<&str> = exports.iter().map(|e| e.name.as_str()).collect();
     eprintln!("NativeLib(clang): compiling {} function(s): {}", fn_names.len(), fn_names.join(", "));
@@ -327,7 +332,7 @@ fn compile_native(
     });
     // clang の中間・出力ごと消す（読み込んでいないので消せる）
     let _ = std::fs::remove_dir_all(&tmp_dir);
-    Ok((NativePayload::Dll(dll_bytes?), exports))
+    Ok((NativePayload::Dll(dll_bytes?), exports, callbacks))
 }
 
 /// Invoke `clang -O3 -shared` to compile `ll_path` → `dll_path`.
@@ -383,20 +388,22 @@ fn write_tlc_v0(source: &str, module_name: &str, path: &Path) -> std::io::Result
     std::fs::write(path, buf)
 }
 
-/// ネイティブペイロード(DLL バイト列)付きの `.arc` を書き出す。
+/// ネイティブペイロード(DLL バイト列)付きの `.arc`（version 3）を書き出す。`callbacks` は DLL が前提にする
+/// コールバックの表の大きさ（[`codegen::callbacks_required`]・known_bugs.md #29）。
 fn write_tlc_native(
     source: &str,
     module_name: &str,
     exports: &[codegen::FnExport],
     payload: &[u8],
-    version: u32,
+    callbacks: u32,
     path: &Path,
 ) -> std::io::Result<()> {
     let mut buf = Vec::new();
     buf.extend_from_slice(MAGIC);
-    buf.extend_from_slice(&version.to_le_bytes());
+    buf.extend_from_slice(&VERSION_V3.to_le_bytes());
     write_len_prefixed(&mut buf, module_name.as_bytes());
     write_len_prefixed(&mut buf, source.as_bytes());
+    buf.extend_from_slice(&callbacks.to_le_bytes());
     buf.extend_from_slice(&(exports.len() as u32).to_le_bytes());
     for exp in exports {
         write_len_prefixed(&mut buf, exp.name.as_bytes());
@@ -415,6 +422,63 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// version 3 はコールバックの表の大きさを書き、読み込みはこの exe の表より大きければ誤りにする（known_bugs.md #29）。
+    /// 表と同じ大きさまでは読む。大きさを持たない version 1 は照らさない。
+    #[test]
+    fn load_tlc_refuses_a_dll_needing_more_callbacks() {
+        let d = scratch("arc_v3");
+        let have = crate::arc_format::CALLBACK_TABLE_LEN;
+        let exports = vec![codegen::FnExport { name: "f".into(), n_params: 1 }];
+        let ok = d.join("ok.arc");
+        write_tlc_native("fn f(let x: int) -> int:\n    return x\n", "ok", &exports, b"dll", have, &ok).unwrap();
+        let arc = crate::arc_format::read(&ok).unwrap();
+        assert_eq!(arc.native.as_ref().map(|(e, dll)| (e.len(), dll.as_slice())), Some((1, &b"dll"[..])));
+        assert_eq!(load_tlc(&ok).unwrap().0, "ok");
+        let _ = take_native_bytes("ok");
+
+        let newer = d.join("newer.arc");
+        write_tlc_native("", "newer", &exports, b"dll", have + 1, &newer).unwrap();
+        let err = load_tlc(&newer).unwrap_err().to_string();
+        assert!(err.contains("compiled by a newer arrow") && err.contains("--compile"), "{err}");
+        assert!(take_native_bytes("newer").is_none(), "a refused DLL must not be registered");
+
+        // version 1（大きさを持たない）: 書いていた形をそのまま作って読む
+        let mut v1 = Vec::new();
+        v1.extend_from_slice(MAGIC);
+        v1.extend_from_slice(&crate::arc_format::VERSION_V1.to_le_bytes());
+        write_len_prefixed(&mut v1, b"old");
+        write_len_prefixed(&mut v1, b"");
+        v1.extend_from_slice(&0u32.to_le_bytes());
+        write_len_prefixed(&mut v1, b"dll");
+        let arc = crate::arc_format::parse(&v1).unwrap();
+        assert_eq!(arc.native.map(|(e, dll)| (e.len(), dll)), Some((0, b"dll".to_vec())));
+
+        // version 2（取り除いた JIT のビットコードの形）は今も読まない（新しい形と読み違えない）
+        let mut v2 = v1.clone();
+        v2[4..8].copy_from_slice(&2u32.to_le_bytes());
+        let err = crate::arc_format::parse(&v2).err().expect("version 2 must be refused");
+        assert!(err.contains("unsupported .arc version 2"), "{err}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// 生成した IR が使う欄の最大の番号 + 1 を数え、表の型（`%ArCallbacks`）の欄の数はこの exe の表と同じ。
+    #[test]
+    fn callbacks_required_counts_the_highest_field() {
+        let ir = "  %a = getelementptr inbounds %ArCallbacks, ptr %cb, i32 0, i32 3\n  %b = load ptr, ptr %a\n  \
+                  %c = getelementptr inbounds %ArCallbacks, ptr %cb, i32 0, i32 41\n";
+        assert_eq!(codegen::callbacks_required(ir), Ok(42));
+        assert_eq!(codegen::callbacks_required("define void @f() {\n  ret void\n}\n"), Ok(0));
+        assert!(codegen::callbacks_required("  %a = getelementptr inbounds %ArCallbacks, ptr %cb, i32 0, i32 %n\n").is_err());
+        let src = "fn f(let s: str) -> str:\n    return s + \"!\"\n";
+        let tokens = crate::lexer::Lexer::new(src, "").tokenize();
+        let stmts = crate::parser::Parser::new(tokens, None).parse_program().expect("parse error");
+        let (ir, _) = codegen::generate_llvm_module(&stmts, &AstAnnotations::default()).expect("eligible functions");
+        let ty = ir.lines().find(|l| l.starts_with("%ArCallbacks = type")).expect("callback table type");
+        assert_eq!(ty.matches("ptr").count() as u32, crate::arc_format::CALLBACK_TABLE_LEN);
+        let need = codegen::callbacks_required(&ir).unwrap();
+        assert!(need > 0 && need <= crate::arc_format::CALLBACK_TABLE_LEN, "{need}");
     }
 
     /// 同じ中身なら書き直さない・違う中身なら書き直す（7-8）
