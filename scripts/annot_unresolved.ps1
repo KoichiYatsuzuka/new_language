@@ -1,55 +1,60 @@
 ﻿# annot_unresolved.ps1 -- measure where Unresolved annotations come from (#15b payoff).
-# Runs every example with AR_ANNOT_DIFF=1 and aggregates the AnnotUnresolvedSrc /
-# AnnotBinop lines that the type checker emits on stderr.
+# Runs every test with AR_ANNOT_DIFF=1 and aggregates the AnnotUnresolvedSrc /
+# AnnotBinop lines that arrow.exe prints on stderr after the static checks.
 #
-# ASCII-only on purpose: PowerShell 5.1 reads BOM-less .ps1 as ANSI.
+# Since 2026-11-24 (gate_speed_plan.md 8-1): the files run through the common runner (gate_run.ps1):
+# in parallel, output to files, results saved by the exe's hash (-Fresh runs again). It used to run the
+# examples one at a time (155.6 s -> 50.2 s, the same totals).
+#
+# ⚠ The default population stays examples/ (this is a measurement, not a pass/fail gate). On gate/
+#   (-Root gate: the tests of Get-GateTestFiles) the counts are dominated by gate/lib/check.ar, which
+#   almost every test imports: it alone adds 3 Unresolved operands and 19 mixed binops per run, so
+#   gate/ gave 1475 Unresolved against 145 for examples/ (8-1).
+#
+# ⚠ AR_ANNOT_DIFF is not added to the shared suite run (Invoke-GateSuite): the lines would end up in the
+#   stderr that compare_outputs compares, and a change in these internal counts would look like a change
+#   in behaviour.
+#
+# The file has a UTF-8 BOM (it contains Japanese comments; PowerShell 5.1 reads BOM-less .ps1 as ANSI).
 
 param(
     [int]$TimeoutSec = 20,
-    [string]$Filter = '*.ar'
+    [string]$Filter = '*.ar',
+    [string]$Root = '',
+    [int]$Jobs = 0,
+    [switch]$Fresh
 )
 
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
 $exe  = Join-Path $repo 'target\release\arrow.exe'
 if (-not (Test-Path $exe)) { throw "not built: $exe" }
+. (Join-Path $PSScriptRoot 'gate_run.ps1')
+. (Join-Path $PSScriptRoot 'gate_judge.ps1')
 
-# Skips mirror _archive/run_examples.ps1 (env-dependent / interactive / generated artifacts).
-$skip = @('importation.ar', 'rs_crates', 'archived', 'cs_form', 'cs_proc', 'js_proc')
+if (-not $Root) { $Root = Join-Path $repo 'examples' }
+$rootDir = (Resolve-Path $Root).Path.TrimEnd('\')
+if ($rootDir -eq (Join-Path $repo 'examples')) {
+    # Skips mirror _archive/run_examples.ps1 (env-dependent / interactive / generated artifacts).
+    $skip = @('importation.ar', 'rs_crates', 'archived', 'cs_form', 'cs_proc', 'js_proc')
+    $files = @(Get-ChildItem -Path $rootDir -Recurse -Filter $Filter |
+        Where-Object { $p = $_.FullName; -not ($skip | Where-Object { $p -like "*$_*" }) })
+} else {
+    $files = @(Get-GateTestFiles $rootDir | Where-Object { $_.Name -like $Filter })
+}
+$files = @($files | Sort-Object FullName | ForEach-Object { $_.FullName })
 
-$files = Get-ChildItem -Path (Join-Path $repo 'examples') -Recurse -Filter $Filter |
-    Where-Object { $p = $_.FullName; -not ($skip | Where-Object { $p -like "*$_*" }) }
+$res = Invoke-GateRun -Exe $exe -Root $rootDir -Files $files -WorkDir file -ExtraEnv @{ AR_ANNOT_DIFF = '1' } `
+    -TimeoutSec $TimeoutSec -Jobs $Jobs -Fresh:$Fresh
 
 $srcTotals   = @{}
 $binopTotals = @{ specialized = 0; both = 0; one = 0; mixed = 0 }
 $ran = 0; $failed = 0
 
-foreach ($f in $files) {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName  = $exe
-    $psi.Arguments = "-src `"$($f.FullName)`""
-    $psi.WorkingDirectory     = $f.DirectoryName
-    $psi.RedirectStandardError  = $true
-    $psi.RedirectStandardOutput = $true
-    $psi.UseShellExecute = $false
-    $psi.EnvironmentVariables['AR_ANNOT_DIFF'] = '1'
-
-    $proc = New-Object System.Diagnostics.Process
-    $proc.StartInfo = $psi
-    [void]$proc.Start()
-    $errTask = $proc.StandardError.ReadToEndAsync()
-    $outTask = $proc.StandardOutput.ReadToEndAsync()
-
-    if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-        try { $proc.Kill() } catch {}
-        $failed++
-        continue
-    }
-    $stderr = $errTask.Result
-    [void]$outTask.Result
+foreach ($r in $res) {
+    if ($r.TimedOut) { $failed++; continue }
     $ran++
-
-    foreach ($line in ($stderr -split "`r?`n")) {
+    foreach ($line in ((Read-GateText $r.ErrPath) -split "`r?`n")) {
         if ($line -match '^AnnotUnresolvedSrc:\s*(.*)$') {
             foreach ($pair in ($matches[1] -split '\s+')) {
                 if ($pair -match '^(.+)=(\d+)$') {

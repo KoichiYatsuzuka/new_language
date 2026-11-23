@@ -12,7 +12,8 @@
 #   ./scripts/tw_stats.ps1 -Root examples                             # 今までの例題（archived を除く全部）
 #   ⚠ gate/ のときは共通ランナーと同じテストの一覧（Get-GateTestFiles: lib/・*_mods/・ffi/ と modules/ の補助・
 #     debugger/ を除く）。debugger/ の .ar は入力を待つ（このスクリプトは標準入力を渡さない）ので外している。
-param([int]$Timeout = 20, [switch]$SkipBuild, [string]$Root = '')
+#   -Jobs で並列数（0 = 論理コアの半分）、-Fresh で保存した結果を使わず走らせ直す（8-1）。
+param([int]$Timeout = 20, [switch]$SkipBuild, [string]$Root = '', [int]$Jobs = 0, [switch]$Fresh)
 
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot   # scripts/ の 1 つ上 = リポジトリ直下
@@ -44,24 +45,16 @@ if ($rootDir -eq (Join-Path $repo 'examples')) {
 $toplevel = @{}; $modbody = @{}; $infn = @{}; $vmc = @{}; $inelig = @{}; $cap = @{}; $bailFn = @{}; $bailTop = @{}; $twcf = @{}
 $ran = 0; $failed = 0
 
-foreach ($f in $files) {
-    $psi = New-Object System.Diagnostics.ProcessStartInfo
-    $psi.FileName = $exe
-    $psi.Arguments = "-src `"$($f.FullName)`""
-    $psi.WorkingDirectory = $f.DirectoryName
-    $psi.RedirectStandardOutput = $true
-    $psi.RedirectStandardError = $true
-    $psi.UseShellExecute = $false
-    $psi.EnvironmentVariables['AR_TW_STATS'] = '1'
-
-    $p = New-Object System.Diagnostics.Process
-    $p.StartInfo = $psi
-    [void]$p.Start()
-    $errTask = $p.StandardError.ReadToEndAsync()
-    $outTask = $p.StandardOutput.ReadToEndAsync()
-    if (-not $p.WaitForExit($Timeout * 1000)) { try { $p.Kill() } catch {}; $failed++; continue }
-    $stderr = $errTask.Result
-    [void]$outTask.Result
+# 共通ランナー（gate_run.ps1・gate_speed_plan.md 8-1）で走らせる: 並列・出力はファイルへ（パイプを握る孫プロセスで
+# 止まらない）・結果は exe のハッシュで保存（-Fresh で走らせ直す）。以前は 1 本ずつ走らせていた（gate/ で 119 秒）。
+. (Join-Path $PSScriptRoot 'gate_run.ps1')
+# ⚠ ランナーは時間切れのとき taskkill を呼ぶ。`Stop` のままだと PS5.1 がその stderr を終了エラーにするので緩める。
+$ErrorActionPreference = 'Continue'
+$res = @(Invoke-GateRun -Exe $exe -Root $rootDir -Files @($files | Sort-Object FullName | ForEach-Object { $_.FullName }) -WorkDir file `
+    -ExtraEnv @{ AR_TW_STATS = '1' } -TimeoutSec $Timeout -Jobs $Jobs -Fresh:$Fresh)
+foreach ($r in $res) {
+    if ($r.TimedOut) { $failed++; continue }
+    $stderr = Read-GateText $r.ErrPath
     $ran++
 
     foreach ($line in ($stderr -split "`n")) {

@@ -36,7 +36,9 @@ param(
     [switch]$SkipBuild,
     [switch]$Pairs,
     [string]$Exclude = '',
-    [string]$Root = ''   # 既定は gate/（5-6）。-Root examples で今までの例題
+    [string]$Root = '',  # 既定は gate/（5-6）。-Root examples で今までの例題
+    [int]$Jobs = 0,      # 共通ランナーの並列数（0 = 論理コアの半分・8-1）
+    [switch]$Fresh       # 保存した結果を使わず走らせ直す
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,46 +63,43 @@ $Root = (Resolve-Path $Root).Path.TrimEnd('\')
 if (-not $Exclude) {
     $Exclude = if ($Root -eq (Join-Path $repo 'examples')) { '\\archived\\' } else { '\\lib\\|_mods\\' }
 }
-$files = Get-ChildItem -Path $Root -Filter *.ar -Recurse |
-         Where-Object { $_.FullName -notmatch $Exclude }
+$files = @(Get-ChildItem -Path $Root -Filter *.ar -Recurse |
+         Where-Object { $_.FullName -notmatch $Exclude } | Sort-Object FullName)
 
 $stmt = @{}; $expr = @{}; $ctx = @{}; $pair = @{}
 $allStmt = @(); $allExpr = @()
 $ran = 0; $failed = 0
 $failedFiles = @()
 
-# 出力を落とす一時ディレクトリ。⚠ パイプで受けない方針に合わせてファイル経由にする
-# （このモードは孫プロセスを起こさないが、経路を 1 本にしておく）。
-$tmp = Join-Path ([System.IO.Path]::GetTempPath()) ("arrow_syntax_cov_" + [guid]::NewGuid().ToString('N'))
-[void](New-Item -ItemType Directory -Path $tmp)
+# 共通ランナー（gate_run.ps1・gate_speed_plan.md 8-1）で走らせる: 並列・出力はファイルへ・結果は exe のハッシュで保存
+# （-Fresh で走らせ直す）。以前は 1 本ずつ Start-Process で走らせていた（gate/ で 70 秒）。
+# ⚠ **作業ディレクトリを 2 通り試す**。`import` は**エントリスクリプトの dir 基準**だが、
+#    `ar_config.json`（`import[rs]` の crates_path 等）は **cwd からの祖先ウォーク**で探す
+#    （#69/#74）。片方でしか解決できない例題が実在するので、**測れた方を採る**。
+#    ⇒ まず全部をファイルの dir で走らせ、測れなかったものだけをリポジトリ直下で走らせ直す。
+. (Join-Path $PSScriptRoot 'gate_run.ps1')
+# ⚠ ランナーは時間切れのとき taskkill を呼ぶ。`Stop` のままだと PS5.1 がその stderr を終了エラーにするので緩める。
+$prevEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+$covEnv = @{ AR_SYNTAX_COV = '1' }
+$errByFile = @{}
+$first = @(Invoke-GateRun -Exe $exe -Root $Root -Files @($files | ForEach-Object { $_.FullName }) -WorkDir file `
+    -ExtraEnv $covEnv -TimeoutSec $Timeout -Jobs $Jobs -Fresh:$Fresh)
+$retry = @()
+foreach ($r in $first) {
+    $errByFile[$r.File] = if ($r.TimedOut) { 'TIMEOUT' } else { Read-GateText $r.ErrPath }
+    if ($errByFile[$r.File] -notmatch 'SyntaxCov\[') { $retry += $r.File }
+}
+if ($retry.Count -gt 0) {
+    foreach ($r in @(Invoke-GateRun -Exe $exe -Root $Root -Files $retry -WorkDir $repo -ExtraEnv $covEnv -TimeoutSec $Timeout -Jobs $Jobs -Fresh:$Fresh)) {
+        # 以前と同じく、時間切れなら TIMEOUT、そうでなければ 2 回目の stderr を理由に使う
+        $errByFile[$r.File] = if ($r.TimedOut) { 'TIMEOUT' } else { Read-GateText $r.ErrPath }
+    }
+}
+$ErrorActionPreference = $prevEap
 
-try {
     foreach ($f in $files) {
-        # ⚠ **作業ディレクトリを 2 通り試す**。`import` は**エントリスクリプトの dir 基準**だが、
-        #    `ar_config.json`（`import[rs]` の crates_path 等）は **cwd からの祖先ウォーク**で探す
-        #    （#69/#74）。片方でしか解決できない例題が実在するので、**測れた方を採る**。
-        #    ⚠ 既存ゲートも割れている: `force_gate` はファイルの dir・`scan_examples` はリポジトリ直下。
-        $stderr = ''
-        foreach ($wd in @($f.DirectoryName, $repo)) {
-            $outFile = Join-Path $tmp 'out.txt'
-            $errFile = Join-Path $tmp 'err.txt'
-            $prevVal = $env:AR_SYNTAX_COV
-            $env:AR_SYNTAX_COV = '1'
-            try {
-                $p = Start-Process -FilePath $exe -ArgumentList @('-src', "`"$($f.FullName)`"") `
-                     -WorkingDirectory $wd -NoNewWindow -PassThru `
-                     -RedirectStandardOutput $outFile -RedirectStandardError $errFile
-                if (-not $p.WaitForExit($Timeout * 1000)) {
-                    try { $p.Kill() } catch {}
-                    $stderr = 'TIMEOUT'
-                    continue
-                }
-            } finally {
-                $env:AR_SYNTAX_COV = $prevVal
-            }
-            $stderr = if (Test-Path $errFile) { Get-Content -Raw -LiteralPath $errFile } else { '' }
-            if ($stderr -match 'SyntaxCov\[') { break }
-        }
+        $stderr = $errByFile[$f.FullName]
 
         if ([string]::IsNullOrEmpty($stderr) -or $stderr -notmatch 'SyntaxCov\[') {
             # パースできない例題（`_error.ar` は**わざと**落ちる）はカバレッジに寄与しない。
@@ -138,9 +137,6 @@ try {
             }
         }
     }
-} finally {
-    Remove-Item -Recurse -Force $tmp -ErrorAction SilentlyContinue
-}
 
 Write-Host ""
 Write-Host "examples parsed: $ran   (not measurable: $failed)" -ForegroundColor Cyan
