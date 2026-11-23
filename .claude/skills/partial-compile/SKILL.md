@@ -10,7 +10,7 @@ This produces two files next to the source:
 
 | Output file | Contents |
 |-------------|----------|
-| `{stem}.arc` | Compiled module: binary header + embedded source text, optionally with a native shared library embedded (v1 format) |
+| `{stem}.arc` | Compiled module: binary header + embedded source text, optionally with a native shared library embedded (v3 format; v1 is still read) |
 | `{stem}.ars` | Type stub: function/class/trait signatures with `...` bodies (used by the VS Code extension and the static type checker) |
 
 ## Canonical demo
@@ -69,7 +69,7 @@ This section describes the partial compile subsystem (`src/partial_compiler/`) i
 
 There is a single native backend, with a source-only fallback:
 
-1. **clang** — emits LLVM IR text, then shells out to `clang -O3 -shared` → v1 `.arc` (DLL embedded)
+1. **clang** — emits LLVM IR text, then shells out to `clang -O3 -shared` → v3 `.arc` (DLL embedded)
 2. **Source-only** — writes a v0 `.arc` (no native code) with a warning
 
 (An inkwell/JIT backend existed behind `feature = "llvm"`; it was removed — building it
@@ -123,8 +123,28 @@ for each fn:
 [dll_len]  dll_bytes: raw shared-library bytes
 ```
 
-v1 is the highest version `parse_tlc` accepts. (A v2 format carrying LLVM bitcode existed
-for the removed inkwell JIT backend; it is no longer written or read.)
+Still read (written by arrows before known_bugs.md #29); no longer written.
+
+### Version 3 — DLL embedded, with the callback-table size
+
+v1 plus the size of the callback table the DLL's generated code assumes (highest field it uses + 1,
+`llvm_codegen::callbacks_required`), right after the v0 header:
+
+```
+... (v0 header, version 3) ...
+[4 bytes]  n_callbacks : u32 LE
+... (v1 from n_fns on) ...
+```
+
+`arc_format::parse` refuses a v3 file whose `n_callbacks` exceeds `arc_format::CALLBACK_TABLE_LEN`
+("compiled by a newer arrow … recompile it with `arrow --compile`", a static import error in the CLI and the
+VS Code extension alike). The table only grows at the end, so before #29 an older exe reading a newer `.arc`
+called past its table and crashed (0xC0000005). ⚠ When you add a callback field, bump
+`CALLBACK_TABLE_LEN` — a compile-time `assert!` in `native_api/mod.rs` stops the build otherwise.
+Exes before v3 refuse v3 files (`unsupported .arc version 3`) instead of crashing.
+
+⚠ **Version 2 is skipped** and still refused: a v2 format carrying LLVM bitcode existed for the removed inkwell
+JIT backend (dropped in `a8035d95`), so a leftover file must not be misread as the new layout.
 
 ---
 
@@ -136,7 +156,7 @@ Entry point called by `main.rs` when `--compile` is given.
 
 1. **Stub** — always runs first: calls `stub_gen::generate_stub(stmts)` and writes `{stem}.ars`.
 2. **Native** — calls `compile_native(stmts)`: `llvm_codegen::generate_llvm_module(stmts)` → `clang` → `NativePayload::Dll`
-3. **Write** — calls `write_tlc_native(…)` (v1) or `write_tlc_v0` (source-only) depending on outcome.
+3. **Write** — calls `write_tlc_native(…)` (v3) or `write_tlc_v0` (source-only) depending on outcome.
 4. Returns `(hvc_path, hvs_path)`.
 
 ### `load_tlc(path)`
@@ -144,7 +164,7 @@ Entry point called by `main.rs` when `--compile` is given.
 Called by the parser/importer when a `.arc` file is found.
 
 1. Reads and parses binary data via `parse_tlc`.
-2. If v1 or v2: inserts `(exports, NativePayload)` into `NATIVE_CACHE`.
+2. If v1 or v3: inserts `(exports, NativePayload)` into `NATIVE_CACHE`.
 3. Returns `(module_name, source_text)` — the source is then parsed and type-checked normally.
 
 ### Thread-local cache

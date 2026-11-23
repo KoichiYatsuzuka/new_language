@@ -1456,6 +1456,23 @@ fn ffi_embeddable(e: &EligibleFn<'_>, annotations: &AstAnnotations) -> bool {
     }
 }
 
+/// 生成した IR が前提にするコールバックの表の大きさ（使う欄の最大の番号 + 1・欄を使わなければ 0）。`.arc` の
+/// version 3 に書き、読み取りが exe の表（`arc_format::CALLBACK_TABLE_LEN`）と照らす（known_bugs.md #29）。
+/// 生成コードは表を `getelementptr inbounds %ArCallbacks, ptr .., i32 0, i32 N` でしか引かない（`call_cb` と
+/// 同じ形を出す所すべて）ので、その行の `N` を数える。⚠ 読めない `N` は誤りにする（照らせない `.arc` を書かない）。
+pub fn callbacks_required(ir: &str) -> Result<u32, String> {
+    let mut need = 0u32;
+    for line in ir.lines() {
+        let Some(at) = line.find("getelementptr inbounds %ArCallbacks, ptr ") else { continue };
+        let n = line[at..]
+            .rsplit_once(", i32 ")
+            .and_then(|(_, n)| n.trim().parse::<u32>().ok())
+            .ok_or_else(|| format!("cannot read the callback field of generated IR line `{}`", line.trim()))?;
+        need = need.max(n + 1);
+    }
+    Ok(need)
+}
+
 pub fn generate_llvm_module(
     stmts: &[Stmt],
     annotations: &AstAnnotations,

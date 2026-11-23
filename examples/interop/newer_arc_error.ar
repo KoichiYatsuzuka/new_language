@@ -1,0 +1,17 @@
+# newer_arc_error.ar — この exe より新しい arrow でコンパイルした `.arc` を読むと誤りになる（known_bugs.md #29）
+#
+# `.arc` の version 3 は、埋め込んだ DLL の生成コードが前提にするコールバックの表の大きさを持つ。表は末尾に欄を足して
+# 伸びるので、読む exe の表がそれより短いと、DLL は表の外の番地を呼んでしまう。以前は照らさず、新しい exe が作った
+# `.arc` を古い exe が読むとアクセス違反（0xC0000005）で落ちた。今は `.arc` の読み取り（`arc_format::parse`）が照らし、
+# import の静的な誤り（ParseError）になって何も実行しない（VS Code 拡張も同じ誤りを import の行に出す）:
+#   cannot load compiled module 'newer_arc.newer': it was compiled by a newer arrow
+#   (its native code needs 9999 callbacks, this arrow has N); recompile it with `arrow --compile`
+# ⚠ version 3 より前の exe は、この `.arc` を `unsupported .arc version 3` で読まない（落ちない）。
+#
+# `newer_arc/newer.arc` は `fn twice` を `--compile` した `.arc` の表の大きさを 9999 に書き換えたもの（元の `.ar` は
+# 置かない: 隣に `.ar` があると、埋め込みソースと照らして `.ar` を使うことがある・stale_arc_check.ar）。
+# ⚠ 作り直すと表の大きさが本当の値に戻り、この例題は誤りにならなくなる。
+
+import newer_arc.newer as n
+
+print(n.twice(21))
