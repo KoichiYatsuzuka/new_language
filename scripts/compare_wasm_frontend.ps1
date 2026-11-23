@@ -17,15 +17,32 @@
 #
 # Until 3-3 the editor did not read imports, and the rule was "wasm may report fewer".
 #
-# ASCII-only on purpose: PowerShell 5.1 reads BOM-less .ps1 as ANSI.
+# Since 2026-11-24 (gate_speed_plan.md phase 7):
+#   * The target is gate/ (every .ar under it, the modules tests import included); -Root examples
+#     gives the old set (examples/ recursively, without archived/).
+#   * The wasm side runs in ONE process (dump_diags.js --list), not one per file. -PerFile starts one
+#     per file as before (to look for state left over from the previous file; 7-3 found none).
+#   * The exe side runs through the common runner (gate_run.ps1, AR_CHECK_ONLY=1), in parallel, and
+#     its results are saved by the exe's hash (-Fresh runs it again).
+#   * A file whose exe check timed out, or whose wasm analysis failed, now fails the gate (it used to
+#     be counted as skipped and pass).
+#
+# The file has a UTF-8 BOM (it contains Japanese comments; PowerShell 5.1 reads BOM-less .ps1 as ANSI).
 
 param(
     [int]$TimeoutSec = 30,
+    [string]$Root = '',
+    [int]$Jobs = 0,
+    [switch]$Fresh,
+    [switch]$PerFile,
     [switch]$VerboseDiff
 )
 
 $ErrorActionPreference = 'Continue'
 $repo = Split-Path -Parent $PSScriptRoot
+. (Join-Path $PSScriptRoot 'gate_run.ps1')
+if ([string]::IsNullOrEmpty($Root)) { $Root = Join-Path $repo 'gate' }
+$rootDir = (Resolve-Path $Root).Path.TrimEnd('\')
 $exe  = Join-Path $repo 'target\release\arrow.exe'
 $wasm = Join-Path $repo 'crates\arrow-frontend\target\wasm32-unknown-unknown\release\arrow_frontend.wasm'
 $dump = Join-Path $repo 'crates\arrow-frontend\dump_diags.js'
@@ -161,42 +178,84 @@ function Normalize-ParseMessage([string]$msg) {
     return $m
 }
 
-$files = Get-ChildItem -Path (Join-Path $repo 'examples') -Recurse -Filter '*.ar' |
-    Where-Object { $_.FullName -notlike '*\archived\*' } |
-    Sort-Object FullName
+# Every .ar under the root (gate/: the tests, their modules and lib/ -- the editor opens those too).
+# examples/: recursively without archived/ (the set before phase 7).
+$files = @(Get-ChildItem -Path $rootDir -Recurse -Filter '*.ar' |
+    Where-Object { $_.FullName -notlike '*\archived\*' -and -not $_.Name.StartsWith('_tmp_') } |
+    Sort-Object FullName)
 
 Write-Host ''
-Write-Host 'compare_wasm_frontend -- arrow.exe vs wasm editor frontend' -ForegroundColor Cyan
+Write-Host ("compare_wasm_frontend -- arrow.exe vs wasm editor frontend ({0}, {1} files)" -f $rootDir, $files.Count) -ForegroundColor Cyan
 Write-Host ('-' * 78)
 
 $checked = 0; $agreed = 0; $missed = 0; $invented = 0; $parseFail = 0; $skipped = 0
 $inventedList = New-Object System.Collections.Generic.List[string]
 $missedList = New-Object System.Collections.Generic.List[string]
-# arrow.exe stops after the static checks (src/main.rs) -- the examples are never executed.
-$checkOnly = @{ AR_CHECK_ONLY = '1' }
 $parseFailList = New-Object System.Collections.Generic.List[string]
+$skippedList = New-Object System.Collections.Generic.List[string]
+
+# --- wasm side: all files in one process (7-1), or one process per file (-PerFile) ------------
+$envv = if ($node.Electron) { @{ ELECTRON_RUN_AS_NODE = '1' } } else { $null }
+$wasmByFile = @{}
+$swWasm = [Diagnostics.Stopwatch]::StartNew()
+if ($PerFile) {
+    foreach ($f in $files) {
+        $w = Invoke-Child $node.Exe ('"{0}" "{1}" "{2}"' -f $dump, $wasm, $f.FullName) $repo $envv
+        if ($w.TimedOut) { $wasmByFile[$f.FullName] = [pscustomobject]@{ error = 'timed out' }; continue }
+        try { $wasmByFile[$f.FullName] = ($w.Out | ConvertFrom-Json) }
+        catch { $wasmByFile[$f.FullName] = [pscustomobject]@{ error = "bad JSON: $($w.Err.Trim())" } }
+    }
+} else {
+    $tmpDir = Join-Path ([IO.Path]::GetTempPath()) ('ar_wasm_' + [guid]::NewGuid().ToString('N'))
+    $null = New-Item -ItemType Directory -Path $tmpDir
+    $listFile = Join-Path $tmpDir 'files.txt'
+    $outFile = Join-Path $tmpDir 'diags.jsonl'
+    [IO.File]::WriteAllLines($listFile, [string[]]@($files | ForEach-Object { $_.FullName }), (New-Object Text.UTF8Encoding($false)))
+    # The whole list gets the per-file limit for every file (the analysis takes milliseconds; the limit only
+    # stops a hang).
+    $saveTimeout = $TimeoutSec
+    $TimeoutSec = [Math]::Max($TimeoutSec, $TimeoutSec * [Math]::Ceiling($files.Count / 10))
+    $w = Invoke-Child $node.Exe ('"{0}" "{1}" --list "{2}" --out "{3}"' -f $dump, $wasm, $listFile, $outFile) $repo $envv
+    $TimeoutSec = $saveTimeout
+    if ($w.TimedOut -or $w.Code -ne 0 -or -not (Test-Path $outFile)) {
+        Write-Host ("WASM-RUN: FAILED (timed out: {0}, exit {1}) {2}" -f $w.TimedOut, $w.Code, $w.Err.Trim()) -ForegroundColor Red
+        exit 1
+    }
+    foreach ($line in [IO.File]::ReadAllLines($outFile, [Text.Encoding]::UTF8)) {
+        if ($line.Trim() -eq '') { continue }
+        $o = $line | ConvertFrom-Json
+        $wasmByFile[$o.file] = $o
+    }
+    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+}
+Write-Host ("wasm: analysed {0} file(s) in {1:N1}s ({2})" -f $wasmByFile.Count, $swWasm.Elapsed.TotalSeconds, $(if ($PerFile) { 'one process per file' } else { 'one process' })) -ForegroundColor DarkGray
+
+# --- exe side: arrow.exe stops after the static checks (AR_CHECK_ONLY=1, src/main.rs) -- nothing is executed.
+# Common runner (7-2): files in parallel, output to files, results saved by the exe's hash.
+$exeRes = @(Invoke-GateRun -Exe $exe -Root $rootDir -Files @($files | ForEach-Object { $_.FullName }) -WorkDir file `
+    -ExtraEnv @{ AR_CHECK_ONLY = '1' } -TimeoutSec $TimeoutSec -Jobs $Jobs -Fresh:$Fresh)
+$exeByFile = @{}
+foreach ($r in $exeRes) { $exeByFile[$r.File] = $r }
 
 foreach ($f in $files) {
-    $rel = $f.FullName.Substring($repo.Length + 1)
-
-    # --- wasm side ---
-    $args = '"{0}" "{1}" "{2}"' -f $dump, $wasm, $f.FullName
-    $envv = if ($node.Electron) { @{ ELECTRON_RUN_AS_NODE = '1' } } else { $null }
-    $w = Invoke-Child $node.Exe $args $repo $envv
-    if ($w.TimedOut) { Write-Host ("TIMEOUT(wasm) {0}" -f $rel) -ForegroundColor Red; $skipped++; continue }
-
-    $wj = $null
-    try { $wj = $w.Out | ConvertFrom-Json } catch {
-        Write-Host ("BAD-JSON     {0}  {1}" -f $rel, $w.Err.Trim()) -ForegroundColor Red
-        $skipped++; continue
+    $rel = $f.FullName.Substring($rootDir.Length + 1)
+    $wj = $wasmByFile[$f.FullName]
+    $er = $exeByFile[$f.FullName]
+    if ($null -eq $wj -or $null -ne $wj.error) {
+        $why = if ($null -eq $wj) { 'no result' } else { $wj.error }
+        Write-Host ("WASM-FAILED  {0}  {1}" -f $rel, $why) -ForegroundColor Red
+        $skipped++; $skippedList.Add("$rel  wasm: $why"); continue
     }
+    if ($er.TimedOut) {
+        Write-Host ("TIMEOUT(exe)  {0}" -f $rel) -ForegroundColor Red
+        $skipped++; $skippedList.Add("$rel  exe: timed out"); continue
+    }
+    $e = @{ Out = (Read-GateText $er.OutPath); Err = (Read-GateText $er.ErrPath) }
 
     if (-not $wj.ok) {
         # The editor frontend could not parse it. That is only correct if arrow.exe
         # cannot parse it either -- otherwise the editor rejects code the compiler
         # accepts, which is just as bad as inventing type errors.
-        $e = Invoke-Child $exe ('-src "{0}"' -f $f.FullName) $f.DirectoryName $checkOnly
-        if ($e.TimedOut) { Write-Host ("TIMEOUT(exe)  {0}" -f $rel) -ForegroundColor Yellow; $skipped++; continue }
         $exeText = (($e.Out + "`n" + $e.Err) -replace "$([char]27)\[[0-9;]*m", '')
         if ($exeText -match 'ParseError:') {
             # Both reject it. Compare the message tail so a divergence in *why*
@@ -238,8 +297,6 @@ foreach ($f in $files) {
     }
 
     # arrow.exe runs on every file (check only), so a file the editor finds clean is compared too.
-    $e = Invoke-Child $exe ('-src "{0}"' -f $f.FullName) $f.DirectoryName $checkOnly
-    if ($e.TimedOut) { Write-Host ("TIMEOUT(exe)  {0}" -f $rel) -ForegroundColor Yellow; $skipped++; continue }
 
     # An import arrow.exe could not resolve: it stops with a ParseError. The editor does not stop
     # (editor_import_resolution_plan.md 3-2): it reports the import as a 'ParseError' diagnostic and
@@ -292,7 +349,13 @@ Write-Host ("agreed        : {0}" -f $agreed) -ForegroundColor Green
 Write-Host ("wasm MISSED   : {0}   <- must be 0" -f $missed) -ForegroundColor $(if ($missed -eq 0) { 'Green' } else { 'Red' })
 Write-Host ("wasm INVENTED : {0}   <- must be 0" -f $invented) -ForegroundColor $(if ($invented -eq 0) { 'Green' } else { 'Red' })
 Write-Host ("parse mismatch: {0}   <- must be 0" -f $parseFail) -ForegroundColor $(if ($parseFail -eq 0) { 'Green' } else { 'Red' })
-Write-Host ("skipped       : {0}" -f $skipped)
+Write-Host ("not compared  : {0}   <- must be 0 (wasm failed / exe timed out)" -f $skipped) -ForegroundColor $(if ($skipped -eq 0) { 'Green' } else { 'Red' })
+
+if ($skippedList.Count -gt 0) {
+    Write-Host ''
+    Write-Host 'NOT COMPARED:' -ForegroundColor Red
+    foreach ($x in $skippedList) { Write-Host "  $x" }
+}
 
 if ($parseFailList.Count -gt 0) {
     Write-Host ''
@@ -309,5 +372,5 @@ if ($missedList.Count -gt 0) {
     Write-Host 'MISSED ERRORS (arrow.exe reports them, the editor does not):' -ForegroundColor Red
     foreach ($x in $missedList) { Write-Host "  $x" }
 }
-if ($invented -gt 0 -or $missed -gt 0 -or $parseFail -gt 0) { exit 1 }
+if ($invented -gt 0 -or $missed -gt 0 -or $parseFail -gt 0 -or $skipped -gt 0) { exit 1 }
 exit 0

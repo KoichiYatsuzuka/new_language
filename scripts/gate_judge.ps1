@@ -69,7 +69,7 @@ $script:GateExampleSkip = @(
 # ⚠⚠ **`archived/` と `practical_examples/` は意図的に対象外**（タスク 9.3・利用者の決定）。
 #    `$categoryDirs` を使うスクリプト（scan_examples -Root examples / check_examples / compare_python_impl）は
 #    9 カテゴリだけを走査する（A/B 系は 6-1 から gate/ を見る）。
-#    ⚠ `force_gate.ps1 -Root examples` と `compare_wasm_frontend.ps1` は `examples/` を `-Recurse` で
+#    ⚠ `force_gate.ps1 -Root examples` と `compare_wasm_frontend.ps1 -Root examples` は `examples/` を `-Recurse` で
 #      舐めるので上記 2 つも**含む**が、どちらも「例題が成功するか」は見ていない
 #      （バイトコード化の可否／2 実装の診断の一致）。⇒ **壊れていても素通りする。**
 #    ⚠⚠ **新しい検査の影響を測るときは母集団をこの 9 カテゴリに限ること。**
