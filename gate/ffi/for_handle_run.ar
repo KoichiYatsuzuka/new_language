@@ -1,0 +1,195 @@
+# for_handle_run.ar — コンパイル済みコードの `for` は、ループに入るときに要素を全部積み、周ごとにハンドルの並びを読む
+# （copy_alloc_speed_plan.md 7-20）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/for_handle_run_module.ar
+#   2. cargo run --release -- examples/interop/for_handle_run.ar
+#
+# 写す型（リスト・文字列・タプル・辞書のキー）は、入口の `iter_begin` が要素を積んでハンドルの並びを返し、生成コードが周ごとに
+# 読む（要素を取るコールバックを呼ばない）。写さない型（集合・ジェネレータ）は今までどおり 1 つずつ取る。確かめること:
+#   - 本体が値を積まないループでも、ループ変数から番地で書く先は周ごとの要素（前の周の番地を使い回さない）
+#   - 要素の種類（None・小さい整数・大きい整数・文字列・インスタンス）・文字列・タプル・辞書のキー・集合・ジェネレータ
+#   - 反復はループに入ったときの要素（途中でリストを空にする・足す・変数へ別のリストを入れる）
+#   - break / continue / 入れ子のループの中からの return・for 式（loop_yield）・ループ変数をループの後まで持つ・空のリスト
+#   - ループの途中の例外: 投げた周の残りと後の周は何も書かない
+#   - 積み方（7-21）: 空き欄へその場で複製を書く種類（インスタンス・文字列・float・整数）・`Value::clone` で写す種類
+#     （リスト）・決まったハンドル（None・真偽値・小さい整数）が混ざっても要素ごとに別の欄・写しから動かして積む型
+#     （タプル）・要素の参照を足してあるので途中でリストを空にしても後の周の文字列が残る
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/for_handle_run.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import test_modules.for_handle_run_module as m
+
+fn check_f(let label: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError(label + ": expected " + str(want) + ", got " + str(got))
+    emit([str(label + " OK")])
+
+fn check_i(let label: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError(label + ": expected " + str(want) + ", got " + str(got))
+    emit([str(label + " OK")])
+
+fn check_s(let label: str, let got: str, let want: str) -> None:
+    if got != want:
+        raise ValueError(label + ": expected '" + want + "', got '" + got + "'")
+    emit([str(label + " OK")])
+
+fn items() -> list[m.Item]:
+    return [m.Item(m.V(0.0, 0.0), "a", 1), m.Item(m.V(0.0, 0.0), "b", 2), m.Item(m.V(0.0, 0.0), "c", 3),
+            m.Item(m.V(0.0, 0.0), "d", 9), m.Item(m.V(0.0, 0.0), "e", 5)]
+
+# 3 周する（関数の中のループと合わせて、2 周目からは IC のセルが埋まっている）
+for r in range(3):
+    emit([str("round " + str(r))])
+    mut vs: list[m.V] = [m.V(1.0, 0.0), m.V(2.0, 0.0), m.V(3.0, 0.0)]
+    check_f("shift_all", m.shift_all(vs, 0.5), 376.5)
+    check_f("each element was written", vs[0].x * 100.0 + vs[1].x * 10.0 + vs[2].x, 178.5)
+
+    mut xs: list[Option[int]] = [None, 3, None, 1000000, 0]
+    check_s("None, small and big ints", m.count_kinds(xs), "None,3,None,1000000,0,2")
+    check_s("str", m.reversed_chars("abc"), "cba")
+    check_i("tuple", m.tuple_sum((1, 2, 3)), 123)
+    check_i("dict keys", m.key_len({"a": 1, "bb": 2, "ccc": 3}), 14)
+    check_i("set (one at a time)", m.set_sum({1, 2, 3}), 6)
+    check_i("generator (one at a time)", m.evens_sum(4), 246)
+
+    mut cs: list[m.V] = [m.V(1.0, 0.0), m.V(2.0, 0.0), m.V(3.0, 0.0)]
+    check_i("clearing the list does not stop the loop", m.clear_while_looping(cs), 301)
+    check_f("and the list holds what the loop appended", cs[0].x, 9.0)
+    mut rs: list[m.V] = [m.V(1.0, 0.0), m.V(2.0, 0.0)]
+    check_f("rebinding the variable does not stop the loop", m.rebind_while_looping(rs), 30.0)
+
+    check_f("return from the loop", m.first_over(vs, 2.0), 2.5)
+    check_f("no element over the limit", m.first_over(vs, 9.0), -1.0)
+    check_s("continue and break", m.odd_tags(items()), "ac")
+    check_i("return from a nested loop", m.find_char(items(), "c"), 23)
+    check_i("not found", m.find_char(items(), "z"), -1)
+    check_f("nested loops", m.pair_sum([m.V(1.0, 0.0), m.V(2.0, 0.0)], [m.V(0.0, 3.0), m.V(0.0, 4.0)]), 21.0)
+    let d = m.doubled(vs)
+    check_f("for expression", d[0] * 100.0 + d[1] * 10.0 + d[2], 357.0)
+    check_f("the loop variable after the loop", m.last_x(vs), 3.5)
+    mut e: list[m.V] = []
+    check_i("empty list", m.empty_loop(e), 0)
+
+    mut ps: list[m.Item] = [m.Item(m.V(0.0, 0.0), "1", 0), m.Item(m.V(0.0, 0.0), "x", 0), m.Item(m.V(0.0, 0.0), "3", 0)]
+    mut raised = False
+    try:
+        m.parse_all(ps)
+    except ValueError:
+        raised = True
+    if not raised:
+        raise ValueError("parse_all: expected a ValueError")
+    check_f("an exception in the loop stops the writes (v.x)", ps[0].v.x * 100.0 + ps[1].v.x * 10.0 + ps[2].v.x, 100.0)
+    check_i("an exception in the loop stops the writes (n)", ps[0].n * 100 + ps[1].n * 10 + ps[2].n, 100)
+
+    # 7-21: 積み方の違う種類が混ざっても、要素ごとに別の欄
+    check_s("ints (small, big, negative)", m.int_kinds([255, 256, -1, 0, 1000000, 7]), "255,256,-1,0,1000000,7,")
+    check_f("floats", m.float_kinds([2.5, 0.0, -1.5]), -147.5)
+    check_s("strs", m.str_kinds(["a", "bb", ""]), "a|bb||")
+    check_s("bools", m.bool_kinds([True, False, True]), "TFT")
+    check_i("lists (Value::clone)", m.list_kinds([[1], [2, 3], []]), 120)
+    check_f("instances and None", m.maybe_v([m.V(1.0, 0.0), None, m.V(3.0, 0.0)]), 103.0)
+    check_s("tuple (moved from the snapshot)", m.tuple_kinds((1000, 5, -3)), "1000,5,-3,")
+    mut ss: list[str] = ["a" + str(r), "b" + str(r), "c" + str(r)]
+    check_s("strs survive clearing the list", m.strs_after_clear(ss), "a" + str(r) + "b" + str(r) + "c" + str(r) + "0")
+
+# ── 出力を照らす ──
+check_output([
+    "round 0",
+    "shift_all OK",
+    "each element was written OK",
+    "None, small and big ints OK",
+    "str OK",
+    "tuple OK",
+    "dict keys OK",
+    "set (one at a time) OK",
+    "generator (one at a time) OK",
+    "clearing the list does not stop the loop OK",
+    "and the list holds what the loop appended OK",
+    "rebinding the variable does not stop the loop OK",
+    "return from the loop OK",
+    "no element over the limit OK",
+    "continue and break OK",
+    "return from a nested loop OK",
+    "not found OK",
+    "nested loops OK",
+    "for expression OK",
+    "the loop variable after the loop OK",
+    "empty list OK",
+    "an exception in the loop stops the writes (v.x) OK",
+    "an exception in the loop stops the writes (n) OK",
+    "ints (small, big, negative) OK",
+    "floats OK",
+    "strs OK",
+    "bools OK",
+    "lists (Value::clone) OK",
+    "instances and None OK",
+    "tuple (moved from the snapshot) OK",
+    "strs survive clearing the list OK",
+    "round 1",
+    "shift_all OK",
+    "each element was written OK",
+    "None, small and big ints OK",
+    "str OK",
+    "tuple OK",
+    "dict keys OK",
+    "set (one at a time) OK",
+    "generator (one at a time) OK",
+    "clearing the list does not stop the loop OK",
+    "and the list holds what the loop appended OK",
+    "rebinding the variable does not stop the loop OK",
+    "return from the loop OK",
+    "no element over the limit OK",
+    "continue and break OK",
+    "return from a nested loop OK",
+    "not found OK",
+    "nested loops OK",
+    "for expression OK",
+    "the loop variable after the loop OK",
+    "empty list OK",
+    "an exception in the loop stops the writes (v.x) OK",
+    "an exception in the loop stops the writes (n) OK",
+    "ints (small, big, negative) OK",
+    "floats OK",
+    "strs OK",
+    "bools OK",
+    "lists (Value::clone) OK",
+    "instances and None OK",
+    "tuple (moved from the snapshot) OK",
+    "strs survive clearing the list OK",
+    "round 2",
+    "shift_all OK",
+    "each element was written OK",
+    "None, small and big ints OK",
+    "str OK",
+    "tuple OK",
+    "dict keys OK",
+    "set (one at a time) OK",
+    "generator (one at a time) OK",
+    "clearing the list does not stop the loop OK",
+    "and the list holds what the loop appended OK",
+    "rebinding the variable does not stop the loop OK",
+    "return from the loop OK",
+    "no element over the limit OK",
+    "continue and break OK",
+    "return from a nested loop OK",
+    "not found OK",
+    "nested loops OK",
+    "for expression OK",
+    "the loop variable after the loop OK",
+    "empty list OK",
+    "an exception in the loop stops the writes (v.x) OK",
+    "an exception in the loop stops the writes (n) OK",
+    "ints (small, big, negative) OK",
+    "floats OK",
+    "strs OK",
+    "bools OK",
+    "lists (Value::clone) OK",
+    "instances and None OK",
+    "tuple (moved from the snapshot) OK",
+    "strs survive clearing the list OK",
+    "",
+], "for_handle_run")

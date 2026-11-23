@@ -1,0 +1,27 @@
+class Cell:
+    mut n: int
+    mut tag: str
+    fn __init__(mut self, n: int, tag: str) -> None:
+        ...
+
+
+fn peak_alive(xs: list[int]) -> int:
+    ...
+
+fn first_big(xs: list[int], lim: int) -> int:
+    ...
+
+fn odd_sum(xs: list[int]) -> int:
+    ...
+
+fn grid(xs: list[int], ys: list[int]) -> int:
+    ...
+
+fn grow(mut xs: list[int]) -> int:
+    ...
+
+fn bump_all(mut cs: list[Cell]) -> int:
+    ...
+
+fn last_tag(cs: list[Cell]) -> str:
+    ...

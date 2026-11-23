@@ -1,0 +1,133 @@
+# nested_assign_checked.ar — コンパイル済みコードは `a.b.x = <数の式>` の読み書きする番地を先に確かめる（copy_alloc_speed_plan.md 7-17）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/nested_assign_checked_module.ar
+#   2. cargo run --release -- examples/interop/nested_assign_checked.ar
+#
+# 値が raw レイアウトのクラスの数値のフィールドを読む `a.b.x = ..` は、書き込み先と読み出し先の番地を先に確かめ、速い道は
+# 検査なしで読んで書く。遅い道（外れた読み書き・ガードが外れた名前による呼び出し）が積んだ値は道の中で巻き戻す。確かめること:
+#   - 跳ね返りの形（同じ番地を読んで書く）・2 つの入れ子の受け手・`int` のフィールド・`int` → `float`・ローカル変数を読む
+#   - 未初期化のフィールドへ書けば読めるようになる・未初期化のフィールドを読むのは今までどおりの誤り
+#   - 名前による呼び出しの結果を使う箇所は巻き戻さない（本体の同じ名前のクラスを入れてガードを外す）
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/nested_assign_checked.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import test_modules.nested_assign_checked_module as m
+
+# 本体の `K`: モジュールの `K` と名前もフィールドも同じで、メソッドの中身だけ違う
+class K:
+    mut n: int
+    mut tag: str
+
+    fn label(let self) -> str:
+        return "p" + self.tag
+
+    fn touch(mut self, let s: str) -> None:
+        self.n += 10 * len(s)
+
+    fn count(let self) -> int:
+        return self.n + 1000
+
+fn check(let label: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError(label + ": expected " + str(want) + ", got " + str(got))
+    emit([str(label + " OK")])
+
+fn check_str(let label: str, let got: str, let want: str) -> None:
+    if got != want:
+        raise ValueError(label + ": expected '" + want + "', got '" + got + "'")
+    emit([str(label + " OK")])
+
+# 3 周する（関数の中のループと合わせて、2 周目からは IC のセルが埋まっている）
+for r in range(3):
+    emit([str("round " + str(r))])
+    mut h = m.fresh()
+    check("flips", m.flips(h, 3), -1001.0)
+    check("flips leaves the field", h.v.x, -1.0)
+    h = m.fresh()
+    check("mixes", m.mixes(h, 4), 2.5)
+    check("mixes leaves the other receiver", h.w.x, 0.5)
+    h = m.fresh()
+    check("counts", float(m.counts(h, 4)), 59.0)
+    h = m.fresh()
+    check("promotes", m.promotes(h, 3), 12.0)
+    check("promotes leaves a float", h.w.y * 2.0, 10.0)
+    h = m.fresh()
+    check("from_local", m.from_local(h, 3), 7004.0)
+    check("init_by_write", m.init_by_write(4), 12.0)
+
+    # 未初期化のフィールドを読む: 今までどおりの誤り
+    h = m.fresh()
+    mut msg = ""
+    try:
+        let t = m.read_uninit(h, 3)
+    except AttributeError as e:
+        msg = str(e)
+    if msg != "'Q' object has no attribute 'y'":
+        raise ValueError("read_uninit: expected the uninitialized-field error, got '" + msg + "'")
+    emit([str("read_uninit raised: " + msg)])
+    check("read_uninit leaves the field", h.q.x, 1.5)
+
+    h = m.fresh()
+    check_str("labels", m.labels(h, 3), "mamama6")
+
+    # 本体の `K` を入れる: ガードが外れて名前で呼ぶ（本体のメソッドが走る）
+    h = m.fresh()
+    mut put_ok = True
+    try:
+        m.put_k(h, K(0, "a"))
+    except TypeError as e:
+        # `mustbe` がモジュールの型を区別するようになったら（known_bugs.md #30）、この形は作れない
+        put_ok = False
+        emit([str("put_k refused: " + str(e))])
+    if put_ok:
+        check_str("labels of the main program's K", m.labels(h, 3), "papapa1060")
+
+# ── 出力を照らす ──
+check_output([
+    "round 0",
+    "flips OK",
+    "flips leaves the field OK",
+    "mixes OK",
+    "mixes leaves the other receiver OK",
+    "counts OK",
+    "promotes OK",
+    "promotes leaves a float OK",
+    "from_local OK",
+    "init_by_write OK",
+    "read_uninit raised: 'Q' object has no attribute 'y'",
+    "read_uninit leaves the field OK",
+    "labels OK",
+    "labels of the main program's K OK",
+    "round 1",
+    "flips OK",
+    "flips leaves the field OK",
+    "mixes OK",
+    "mixes leaves the other receiver OK",
+    "counts OK",
+    "promotes OK",
+    "promotes leaves a float OK",
+    "from_local OK",
+    "init_by_write OK",
+    "read_uninit raised: 'Q' object has no attribute 'y'",
+    "read_uninit leaves the field OK",
+    "labels OK",
+    "labels of the main program's K OK",
+    "round 2",
+    "flips OK",
+    "flips leaves the field OK",
+    "mixes OK",
+    "mixes leaves the other receiver OK",
+    "counts OK",
+    "promotes OK",
+    "promotes leaves a float OK",
+    "from_local OK",
+    "init_by_write OK",
+    "read_uninit raised: 'Q' object has no attribute 'y'",
+    "read_uninit leaves the field OK",
+    "labels OK",
+    "labels of the main program's K OK",
+    "",
+], "nested_assign_checked")

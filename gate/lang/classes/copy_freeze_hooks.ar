@@ -1,0 +1,147 @@
+# copy_freeze_hooks.ar — `__copy__` / `__freeze__` はクラスごとの印で引く（copy_alloc_speed_plan.md 7-1）
+#
+# 値の複製（`let` 仮引数へ `mut` の値を渡す・`x.copy()`）と束縛のフリーズ（`let y = x` / `freeze x`）は、
+# 値のクラスが `__copy__` / `__freeze__` を持つかを毎回メソッドの表から名前で引いていた（呼ぶたびに名前のハッシュ）。
+# 7-1 からはクラスが初めて聞かれたときに表から求めて覚える（`ClassValue::hook_bits`）。
+# この例題は、覚えた答えが違うとフックが呼ばれず失敗する: クラスの作り方（普通のクラス・テンプレートの具体化・
+# 非同期のタスクへ送ったクラスの写し `ClassValue::deep_clone`）ごとに、フックが呼ばれることと、持たないクラスは
+# 今までどおり深いコピーになることを確かめる。
+# フックは値に印を付ける（`__copy__` は n に 100 を足した写しを返す・`__freeze__` は n に 1000 を足す）。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/classes/copy_freeze_hooks.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+fn check(let what: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise RuntimeError(what + ": expected " + str(want) + ", got " + str(got))
+
+class Plain:
+    mut n: int
+
+class Copied:
+    mut n: int
+
+    fn __copy__(let self) -> Copied:
+        mut c = Copied(self.n + 100)
+        return c
+
+class Frozen:
+    mut n: int
+
+    fn __freeze__(mut self) -> None:
+        self.n = self.n + 1000
+
+class Both:
+    mut n: int
+
+    fn __copy__(let self) -> Both:
+        mut c = Both(self.n + 100)
+        return c
+
+    fn __freeze__(mut self) -> None:
+        self.n = self.n + 1000
+
+# 引数なしでは呼べない `__copy__` は使わない（深いコピーになる）
+class CopyNeedsArg:
+    mut n: int
+
+    fn __copy__(let self, let k: int) -> CopyNeedsArg:
+        mut c = CopyNeedsArg(k)
+        return c
+
+class Box[T]:
+    mut n: T
+
+    fn __copy__(let self) -> Box[T]:
+        mut c = Box[T](self.n)
+        c.n = c.n + 100
+        return c
+
+    fn __freeze__(mut self) -> None:
+        self.n = self.n + 1000
+
+fn n_plain(let p: Plain) -> int:
+    return p.n
+
+fn n_copied(let c: Copied) -> int:
+    return c.n
+
+fn n_both(let b: Both) -> int:
+    return b.n
+
+fn n_needs_arg(let c: CopyNeedsArg) -> int:
+    return c.n
+
+fn n_box(let b: Box[int]) -> int:
+    return b.n
+
+emit([str("=== a class without hooks: deep copies, nothing called ===")])
+mut p = Plain(1)
+check("let param of Plain", n_plain(p), 1)
+let p2 = p
+p.n = 2
+check("let y = x of Plain", p2.n, 1)
+check("Plain.copy()", p.copy().n, 2)
+
+emit([str("=== __copy__ ===")])
+mut c = Copied(1)
+check("let param of Copied", n_copied(c), 101)
+check("Copied.copy()", c.copy().n, 101)
+check("caller's Copied", c.n, 1)
+let c2 = c                                       # let y = x deep-copies without __copy__
+check("let y = x of Copied", c2.n, 1)
+
+emit([str("=== __freeze__ ===")])
+mut f = Frozen(1)
+let g = f
+check("let y = x of Frozen", g.n, 1001)
+check("caller's Frozen", f.n, 1)
+mut fs: list[Frozen] = [Frozen(1), Frozen(2)]
+let gs = fs                                      # the instances in the list are frozen too
+check("let ys = xs of Frozen [0]", gs[0].n, 1001)
+check("let ys = xs of Frozen [1]", gs[1].n, 1002)
+freeze f
+check("freeze f", f.n, 1001)
+
+emit([str("=== both hooks ===")])
+mut b = Both(1)
+check("let param of Both", n_both(b), 101)
+let b2 = b
+check("let y = x of Both", b2.n, 1001)
+
+emit([str("=== __copy__ that needs an argument ===")])
+mut na = CopyNeedsArg(7)
+check("let param of CopyNeedsArg", n_needs_arg(na), 7)
+
+emit([str("=== a template instance ===")])
+mut bx = Box[int](1)
+check("let param of Box[int]", n_box(bx), 101)
+let bx2 = bx
+check("let y = x of Box[int]", bx2.n, 1001)
+
+emit([str("=== inside an async task (the task gets copies of the classes) ===")])
+mut mng = AsyncManager(num_thread=1)
+mng <- async->int:
+    mut tf = Frozen(5)
+    let tg = tf
+    mut tc = Copied(5)
+    block_return tg.n + n_copied(tc) * 10000
+mng.wait_for_finish()
+if mng.error_list[0] is not None:
+    raise RuntimeError("task failed: " + str(mng.error_list[0]))
+check("task result", mng.results[0] mustbe int, 1005 + 105 * 10000)
+
+emit([str("copy_freeze_hooks ok")])
+
+# ── 出力を照らす ──
+check_output([
+    "=== a class without hooks: deep copies, nothing called ===",
+    "=== __copy__ ===",
+    "=== __freeze__ ===",
+    "=== both hooks ===",
+    "=== __copy__ that needs an argument ===",
+    "=== a template instance ===",
+    "=== inside an async task (the task gets copies of the classes) ===",
+    "copy_freeze_hooks ok",
+    "",
+], "copy_freeze_hooks")

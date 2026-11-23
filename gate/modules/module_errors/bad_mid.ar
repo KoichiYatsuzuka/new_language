@@ -1,0 +1,8 @@
+# bad_mid.ar — module_errors_error.ar が import し、自分も bad_leaf.ar を import するモジュール
+#
+# 入れ子の import の誤り（bad_leaf.ar の 2 件）も、入口から検査したときに挙がる（known_bugs.md の #21）。
+# import の所で止まらず、このファイルの残りの誤りも続けて挙がる。
+
+from . import bad_leaf
+
+let count: int = "three"                # ⛔ 型が合わない

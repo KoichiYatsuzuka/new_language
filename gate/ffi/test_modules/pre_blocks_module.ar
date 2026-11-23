@@ -1,0 +1,75 @@
+# pre_blocks_module.ar — examples/interop/pre_blocks.ar が読むモジュール（copy_alloc_speed_plan.md 7-19）
+#
+# `mut self` のメソッドが同じクラスのメソッドを `self.m(..)` で直接呼ぶとき、呼ぶ側が覚えている `self.v` / `self.w` の番地を
+# 呼ばれる側へ渡し、呼ばれる側はそれを使って始める（取り直さない）。渡すのは呼ぶ直前に正しい番地だけで、間にほかの
+# 呼び出し（`self.v` を差し替えうる）があれば空を渡す（呼ばれる側が取り直す）。どの関数もループで何周も回す
+# （1 周目は読み出しの IC のセルが空で必ず外れる）。
+
+class V:
+    mut x: float
+    mut y: float
+
+# `name` があるので raw レイアウトでない（フィールドはインスタンスを持つ slot）
+class K:
+    mut v: V
+    mut w: V
+    mut name: str
+
+    # `self.v` と `self.w` を使う（呼ぶ側から 2 つの番地を受け取る）
+    fn flip(mut self) -> None:
+        self.v.x = 0.0 - self.v.x
+        self.w.y = self.w.y + self.v.x
+
+    fn shift(mut self, let d: float) -> None:
+        self.v.y = self.v.y + d
+
+    # `self.v` を作った値で差し替える（値を積むので、呼ぶ側は呼び出しを保存点と巻き戻しで囲む）
+    fn replace_v(mut self, let x: float) -> float:
+        self.v = V(x, x)
+        return x
+
+    # `self.v` を仮引数の値で差し替える（値を積まない: 呼ぶ側は巻き戻さないので、覚えた番地を捨てるのは
+    # 「直接呼び出しの後」の規則だけ）
+    fn set_v(mut self, mut nv: V) -> float:
+        self.v = nv
+        return nv.x
+
+    # 覚えた番地を渡す
+    fn step(mut self, let k: int) -> float:
+        mut i = 0
+        while i < k:
+            self.v.y = self.v.y + self.w.x
+            self.flip()
+            i += 1
+        return self.v.x * 1000.0 + self.v.y * 10.0 + self.w.y
+
+    # 引数の評価が `self.v` を差し替える: 呼ばれる側は新しい子を使う（呼ぶ側は空を渡す）。差し替える前の子は `mut old`
+    # （呼ぶ側が `k.v` を渡す。`mut` の仮引数は呼ぶ側の物を共有する）が生かしておく: 捨てられた塊はアロケータが先頭の語を
+    # 書き換えるので、古い番地を渡してもたまたま検査で外れて正しい値になってしまう。生かしておけば古い子へ書いてしまう
+    fn step_replace(mut self, mut old: V, mut nv: V) -> float:
+        self.v.y = self.v.y + self.w.x
+        self.shift(self.set_v(nv))
+        return self.v.x * 1000.0 + self.v.y + old.y * 100.0
+
+    # 呼ばれる側が `self.v` を差し替える: 呼ぶ側はその後で新しい子を読む（古い子は同じく `mut old` が生かしておく）
+    fn step_inner(mut self, mut old: V, mut nv: V) -> float:
+        self.v.y = self.v.y + 1.0
+        self.set_v(nv)
+        self.v.y = self.v.y + 1.0
+        return self.v.x * 1000.0 + self.v.y + old.y * 100.0
+
+    # 同じく、作った値で差し替える（値を積む呼び出し）
+    fn step_inner_new(mut self, mut old: V) -> float:
+        self.v.y = self.v.y + 1.0
+        self.replace_v(7.0)
+        self.v.y = self.v.y + 1.0
+        return self.v.x * 1000.0 + self.v.y + old.y * 100.0
+
+    # 受け手が `self` でない: 番地は渡さない
+    fn step_other(mut self, mut o: K) -> float:
+        self.v.y = self.v.y + 1.0
+        o.flip()
+        return o.v.x * 1000.0 + o.w.y
+
+fn fresh() -> K:
+    return K(V(1.0, 2.0), V(0.5, 0.25), "k")

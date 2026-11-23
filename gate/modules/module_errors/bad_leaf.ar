@@ -1,0 +1,8 @@
+# bad_leaf.ar — module_errors_error.ar が（bad_mid.ar を通して）import する、静的な誤りを持つモジュール
+#
+# このファイルを入口にしても、import した側から検査しても、同じ 2 件が出る（known_bugs.md の #21）。
+
+let label: str = 1                      # ⛔ 型が合わない
+
+fn never_called() -> None:
+    print(missing_in_leaf)              # ⛔ 未定義の名前（呼ばれなくても静的な誤り）

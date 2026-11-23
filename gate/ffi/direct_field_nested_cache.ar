@@ -1,0 +1,202 @@
+# direct_field_nested_cache.ar — コンパイル済みコードが入れ子の受け手の番地を使い回す（copy_alloc_speed_plan.md 7-13）
+#
+# `h.v.x` の `h.v` の番地は、関数の中で（変数, 属性）ごとに 1 回だけ取る。取り直すこと:
+#   - 親のフィールドを差し替える呼び出し（メソッド・代入・関数）の後。同じ親を別の名前から差し替えた後も
+#   - 親の変数を束縛し直した後・ループ変数が次の要素になった後
+#   - ループの一部の周でだけ差し替えた後
+# 同じ定義を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/direct_field_nested_cache_module.ar
+#   2. cargo run --release -- examples/interop/direct_field_nested_cache.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/direct_field_nested_cache.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import test_modules.direct_field_nested_cache_module as m
+
+class V:
+    mut x: float
+    mut y: float
+
+class H:
+    mut v: V
+    mut tag: str
+
+    fn swap(mut self, let k: float) -> None:
+        self.v = V(k, k)
+
+    fn sum_twice(let self) -> float:
+        return self.v.x + self.v.y + self.v.x
+
+fn replace(mut h: H, let k: float) -> None:
+    h.v = V(k, k + 1.0)
+
+fn after_method(mut old: V, mut h: H) -> float:
+    let a = h.v.x
+    h.swap(9.0)
+    return a * 100.0 + h.v.x + old.y * 1000.0
+
+fn after_assign(mut old: V, mut h: H) -> float:
+    let a = h.v.x
+    h.v = V(3.0, 4.0)
+    return a * 100.0 + h.v.x + h.v.y + old.y * 1000.0
+
+fn after_function(mut old: V, mut h: H) -> float:
+    let a = h.v.y
+    replace(h, 6.0)
+    return a * 100.0 + h.v.y + old.x * 1000.0
+
+fn two_names(mut old: V, mut a: H, mut b: H) -> float:
+    let x0 = a.v.x
+    b.v = V(5.0, 5.0)
+    return x0 * 100.0 + a.v.x + old.y * 1000.0
+
+fn rebind(mut h1: H, mut h2: H) -> float:
+    mut g = h1
+    let a = g.v.x
+    g = h2
+    return a * 100.0 + g.v.x
+
+fn loop_swap(mut old: V, mut h: H, let n: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < n:
+        s += h.v.x
+        if i % 3 == 2:
+            h.v = V(float(i), 0.0)
+        i += 1
+    return s + old.x * 1000.0
+
+fn write_after(mut old: V, mut h: H) -> float:
+    let y0 = h.v.y
+    h.v.x = 1.5
+    let x1 = h.v.x
+    h.swap(2.0)
+    h.v.y = 7.0
+    return y0 * 1000.0 + x1 * 100.0 + h.v.x * 10.0 + h.v.y + old.x * 10000.0 + old.y * 100000.0
+
+fn sum_all(mut hs: list[H]) -> float:
+    mut s = 0.0
+    for h in hs:
+        s += h.v.x + h.v.y
+    return s
+
+fn check(let label: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError(label + ": expected " + str(want) + ", got " + str(got))
+    emit([str(label + " OK")])
+
+# 期待値は VM の写しの値で、手で求めた値とも比べる。差し替える前の子（`old`）として、呼ぶ側の `x.v` をそのまま渡す。
+# ⚠ 同じ検査を 3 周する: `CB_ATTR_BLOCK` は箇所ごとの読み出しの IC のセルが空のうちは空を返し（遅い道がセルを埋める）、
+#   1 周目はどの箇所も番地を覚えない。2 周目から覚えた番地を使い回す。
+for r in range(3):
+    emit([str("round " + str(r))])
+    mut a1 = m.H(m.V(1.0, 2.0), "a")
+    mut a2 = H(V(1.0, 2.0), "a")
+    check("after_method (VM)", after_method(a2.v, a2), 2109.0)
+    check("after_method", m.after_method(a1.v, a1), 2109.0)
+    check("after_method leaves the new child", a1.v.y, 9.0)
+
+    mut b1 = m.H(m.V(1.0, 2.0), "b")
+    mut b2 = H(V(1.0, 2.0), "b")
+    check("after_assign (VM)", after_assign(b2.v, b2), 2107.0)
+    check("after_assign", m.after_assign(b1.v, b1), 2107.0)
+
+    mut c1 = m.H(m.V(1.0, 2.0), "c")
+    mut c2 = H(V(1.0, 2.0), "c")
+    check("after_function (VM)", after_function(c2.v, c2), 1207.0)
+    check("after_function", m.after_function(c1.v, c1), 1207.0)
+
+    mut d1 = m.H(m.V(1.0, 2.0), "d")
+    mut d2 = H(V(1.0, 2.0), "d")
+    check("two_names (VM)", two_names(d2.v, d2, d2), 2105.0)
+    check("two_names", m.two_names(d1.v, d1, d1), 2105.0)
+
+    mut e1 = m.H(m.V(1.0, 2.0), "e")
+    mut e2 = m.H(m.V(8.0, 9.0), "e")
+    check("rebind", m.rebind(e1, e2), rebind(H(V(1.0, 2.0), "e"), H(V(8.0, 9.0), "e")))
+    check("rebind (VM)", rebind(H(V(1.0, 2.0), "e"), H(V(8.0, 9.0), "e")), 108.0)
+
+    mut f1 = m.H(m.V(1.0, 2.0), "f")
+    mut f2 = H(V(1.0, 2.0), "f")
+    check("loop_swap (VM)", loop_swap(f2.v, f2, 10), 1032.0)
+    check("loop_swap", m.loop_swap(f1.v, f1, 10), 1032.0)
+
+    mut g1 = m.H(m.V(1.0, 2.0), "g")
+    mut g2 = H(V(1.0, 2.0), "g")
+    check("write_after (VM)", write_after(g2.v, g2), 217177.0)
+    check("write_after", m.write_after(g1.v, g1), 217177.0)
+    check("write_after leaves x", g1.v.x, 2.0)
+    check("write_after leaves y", g1.v.y, 7.0)
+
+    mut hs1: list[m.H] = [m.H(m.V(1.0, 2.0), "p"), m.H(m.V(3.0, 4.0), "q"), m.H(m.V(5.0, 6.0), "r")]
+    check("sum_all", m.sum_all(hs1), 21.0)
+
+    let k1 = m.H(m.V(1.0, 2.0), "k")
+    check("sum_twice", k1.sum_twice(), 4.0)
+
+# ── 出力を照らす ──
+check_output([
+    "round 0",
+    "after_method (VM) OK",
+    "after_method OK",
+    "after_method leaves the new child OK",
+    "after_assign (VM) OK",
+    "after_assign OK",
+    "after_function (VM) OK",
+    "after_function OK",
+    "two_names (VM) OK",
+    "two_names OK",
+    "rebind OK",
+    "rebind (VM) OK",
+    "loop_swap (VM) OK",
+    "loop_swap OK",
+    "write_after (VM) OK",
+    "write_after OK",
+    "write_after leaves x OK",
+    "write_after leaves y OK",
+    "sum_all OK",
+    "sum_twice OK",
+    "round 1",
+    "after_method (VM) OK",
+    "after_method OK",
+    "after_method leaves the new child OK",
+    "after_assign (VM) OK",
+    "after_assign OK",
+    "after_function (VM) OK",
+    "after_function OK",
+    "two_names (VM) OK",
+    "two_names OK",
+    "rebind OK",
+    "rebind (VM) OK",
+    "loop_swap (VM) OK",
+    "loop_swap OK",
+    "write_after (VM) OK",
+    "write_after OK",
+    "write_after leaves x OK",
+    "write_after leaves y OK",
+    "sum_all OK",
+    "sum_twice OK",
+    "round 2",
+    "after_method (VM) OK",
+    "after_method OK",
+    "after_method leaves the new child OK",
+    "after_assign (VM) OK",
+    "after_assign OK",
+    "after_function (VM) OK",
+    "after_function OK",
+    "two_names (VM) OK",
+    "two_names OK",
+    "rebind OK",
+    "rebind (VM) OK",
+    "loop_swap (VM) OK",
+    "loop_swap OK",
+    "write_after (VM) OK",
+    "write_after OK",
+    "write_after leaves x OK",
+    "write_after leaves y OK",
+    "sum_all OK",
+    "sum_twice OK",
+    "",
+], "direct_field_nested_cache")

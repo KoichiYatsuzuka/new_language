@@ -1,0 +1,94 @@
+# direct_field_write_module.ar — direct_field_write.ar のコンパイル済みの側（copy_alloc_speed_plan.md 8-4）
+#
+# 全フィールドが数値のクラスの `mut` の数値のフィールドへは、コンパイル済みコードがインスタンスの番地へ直接書く。
+# 不変のインスタンス・`let` のフィールド・型の合わない値は今までのコールバックへ回る（エラーの文面は変わらない）。
+
+class P:
+    mut x: float
+    mut n: int
+    let id: int
+
+    fn bump(mut self, let d: float) -> None:
+        self.x = self.x + d
+        self.n += 1
+
+class Holder:
+    mut p: P
+    mut tag: str
+
+# 幅ごとの格納（整数は幅に切り詰め、float32 は丸める）
+class Widths:
+    mut a: int8
+    mut b: uint8
+    mut c: int16
+    mut d: uint16
+    mut e: int32
+    mut f: uint32
+    mut g: int64
+    mut h: float32
+    mut i: float
+
+# `__init__` の中の最初の書き込み（まだ初期化の印が無い）。書くのはコンパイル済みの補助関数
+class Late:
+    mut x: float
+    mut n: int
+
+    fn __init__(mut self, let v: float) -> None:
+        fill(self, v)
+
+fn fill(mut t: Late, let v: float) -> None:
+    t.x = v
+    t.n = 7
+
+fn var_write(mut p: P, let v: float, let k: int) -> None:
+    p.x = v
+    p.n = k
+
+# `float` のフィールドに `int` を足す（結果は float。`p.x = k` のような `int` の代入は型検査が止める）
+fn promote(mut p: P, let k: int) -> None:
+    p.x = float(k)
+    p.x += 1
+
+fn compound(mut p: P) -> None:
+    p.x += 1.5
+    p.x *= 2.0
+    p.n -= 3
+
+fn nested_write(mut h: Holder, let v: float) -> None:
+    h.p.x = h.p.x + v
+    h.p.n += 10
+
+fn loop_write(mut ps: list[P]) -> None:
+    for p in ps:
+        p.x = p.x * 2.0
+        p.n = p.n + p.id
+
+fn method_write(mut p: P) -> None:
+    p.bump(0.25)
+
+fn widths_write(mut w: Widths, let k: int, let v: float) -> None:
+    w.a = k
+    w.b = k
+    w.c = k
+    w.d = k
+    w.e = k
+    w.f = k
+    w.g = k
+    w.h = v
+    w.i = v
+
+fn widths_text(mut w: Widths) -> str:
+    return str(w.a) + "," + str(w.b) + "," + str(w.c) + "," + str(w.d) + "," + str(w.e) + "," + str(w.f) + "," + str(w.g) + "," + str(w.h) + "," + str(w.i)
+
+fn late_sum(let v: float) -> float:
+    mut t = Late(v)
+    return t.x + float(t.n)
+
+# 書いた後で不変にした写しは変わらない（`let` の束縛は複製して凍らせる）
+fn frozen_copy(mut p: P) -> float:
+    let q = p
+    p.x = 100.0
+    return q.x
+
+fn p_text(mut p: P) -> str:
+    return str(p.x) + "/" + str(p.n) + "/" + str(p.id)

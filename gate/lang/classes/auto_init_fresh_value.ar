@@ -1,0 +1,113 @@
+# auto_init_fresh_value.ar — 生成の引数の複製（copy_alloc_speed_plan.md 2-3）
+#
+# `__init__` を書いていないクラスの生成は、引数をフィールドへ格納するときに複製する。作りたての値は写さずに
+# 格納してよいが、**ほかに持ち主がいる値は必ず複製する**。期待と違えば `raise` する。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/classes/auto_init_fresh_value.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+class V:
+    mut x: int
+
+class Pair:
+    mut a: V
+    mut b: V
+
+class Box:
+    mut items: list[V]
+    mut n: int
+
+class Counted:
+    static mut copies: int = 0
+    mut x: int
+
+    fn __copy__(let self) -> Counted:
+        Counted.copies += 1
+        return Counted(self.x + 100)
+
+class CBox:
+    mut c: Counted
+
+# `__copy__` が、ほかに持ち主のいる値を返すクラス: 格納は写しでなければならない
+class Shared:
+    static mut cache: list[Shared] = []
+    mut x: int
+
+    fn __copy__(let self) -> Shared:
+        return Shared.cache[0]
+
+class SBox:
+    mut s: Shared
+
+fn expect(let name: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError("auto_init_fresh_value: " + name + " = " + str(got) + ", expected " + str(want))
+
+fn ident(mut v: V) -> V:
+    return v
+
+fn in_function() -> int:
+    mut v = V(1)
+    mut p = Pair(V(10), V(20))
+    p.a.x = 11
+    expect("fn fresh fields are separate", p.b.x, 20)
+    mut q = Pair(v, v)
+    q.a.x = 5
+    expect("fn same named value twice: other field", q.b.x, 1)
+    expect("fn same named value twice: the name", v.x, 1)
+    mut r = Pair(ident(v), V(3))
+    r.a.x = 6
+    expect("fn returned argument", v.x, 1)
+    return 1
+
+mut v = V(1)
+
+# 作りたての値を 2 つ: 別の値
+mut p = Pair(V(10), V(20))
+p.a.x = 11
+expect("fresh fields are separate", p.b.x, 20)
+
+# 同じ名前の値を 2 つの引数に渡す: フィールドどうしも、名前の値とも別
+mut q = Pair(v, v)
+q.a.x = 5
+expect("same named value twice: other field", q.b.x, 1)
+expect("same named value twice: the name", v.x, 1)
+
+# `let` の名前を渡す
+let lv = V(7)
+mut r = Pair(lv, V(8))
+expect("let value stored", r.a.x, 7)
+expect("let value unchanged", lv.x, 7)
+
+# 引数をそのまま返す関数の結果
+mut s = Pair(ident(v), V(3))
+s.a.x = 6
+expect("returned argument", v.x, 1)
+
+# 作りたてのリストの中に名前の値
+mut b = Box([v, V(2)], 2)
+b.items[0].x = 9
+expect("fresh list holding a named value", v.x, 1)
+b.items[1].x = 4
+expect("fresh list element", b.items[1].x, 4)
+
+# `__copy__` は引数ごとに 1 回走る（作りたての値でも）
+mut cb = CBox(Counted(1))
+expect("copy hook result stored", cb.c.x, 101)
+expect("copy hook ran once", Counted.copies, 1)
+
+# `__copy__` が返した値にほかの持ち主がいる: 格納した側を書き換えても、持ち主の値は変わらない
+Shared.cache.append(Shared(40))
+mut sb = SBox(Shared(1))
+expect("shared copy stored", sb.s.x, 40)
+sb.s.x = 41
+expect("the cached value is untouched", Shared.cache[0].x, 40)
+
+expect("in_function", in_function(), 1)
+emit([str("auto_init_fresh_value: ok")])
+
+# ── 出力を照らす ──
+check_output([
+    "auto_init_fresh_value: ok",
+    "",
+], "auto_init_fresh_value")

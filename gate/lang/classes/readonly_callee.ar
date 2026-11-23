@@ -1,0 +1,143 @@
+# readonly_callee.ar — 読むだけの関数へ渡す `mut` の値（copy_alloc_speed_plan.md 4-1〜4-3）
+#
+# `mut` の値を `let self` / `let` 仮引数で受けるときは複製するが、呼ばれた関数が**読むだけ**（何も書き換えず、
+# 受けた値の中身を外へ出さない）なら複製しない。読むだけと言えない関数は今までどおり複製する。
+# 「複製を省くと値が変わる」形を並べ、期待と違えば raise する。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/classes/readonly_callee.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ...lib.check import emit, check_output
+
+class V:
+    mut x: int
+
+    # 読むだけ
+    fn get(let self) -> int:
+        return self.x
+
+    fn add(let self, let o: V) -> int:
+        return self.x + o.x
+
+class Body:
+    mut pos: V
+    mut trail: list[int]
+    mut n: int
+
+    # 読むだけ: フィールドを読み、読むだけのメソッドを呼ぶ
+    fn energy(let self) -> int:
+        mut s = self.n
+        for t in self.trail:
+            s += t
+        return s + self.pos.get()
+
+    # 読むだけでない: 受けた値の中身をそのまま返す（返した値を書き換えると元が変わってしまう）
+    fn pos_of(let self) -> V:
+        return self.pos
+
+    # 読むだけでない: 同一性を比べる（写しかどうかが結果に出る）
+    fn is_same(let self, let other: Body) -> bool:
+        return self === other
+
+    # 読むだけでない: 別の引数から書き換える
+    fn peek(let self, mut other: Body) -> int:
+        other.n = 100
+        return self.n
+
+    fn record(mut self) -> None:
+        # `mut self` の中から読むだけのメソッドを呼ぶ（複製しない）
+        self.trail.append(self.energy())
+
+# 同じ名前 `bump_read` を持つ 2 つのクラス: 片方が書き換えるので、どちらも読むだけとみなさない
+class Quiet:
+    mut k: int
+
+    fn bump_read(let self) -> int:
+        return self.k
+
+class Loud:
+    static mut calls: int = 0
+    mut k: int
+
+    fn bump_read(let self) -> int:
+        Loud.calls += 1
+        return self.k
+
+fn expect(let name: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError("readonly_callee: " + name + " = " + str(got) + ", expected " + str(want))
+
+fn total(let b: Body) -> int:
+    return b.energy()
+
+fn in_function() -> int:
+    mut b = Body(V(1), [2, 3], 4)
+    expect("fn energy", b.energy(), 10)
+    expect("fn total", total(b), 10)
+    b.record()
+    expect("fn record", b.trail[2], 10)
+    expect("fn energy after record", b.energy(), 20)
+    b.pos_of().x = 50
+    expect("fn returned field is a copy", b.pos.x, 1)
+    expect("fn peek", b.peek(b), 4)
+    expect("fn peek wrote", b.n, 100)
+    return 1
+
+mut b = Body(V(1), [2, 3], 4)
+expect("energy", b.energy(), 10)
+expect("total", total(b), 10)
+expect("energy leaves the value", b.n * 100 + b.pos.x * 10 + len(b.trail), 412)
+
+b.record()
+expect("record", b.trail[2], 10)
+expect("energy after record", b.energy(), 20)
+
+# 中身をそのまま返すメソッド: 返った値は写しの中身なので、書き換えても元は変わらない
+b.pos_of().x = 50
+expect("returned field is a copy", b.pos.x, 1)
+
+# 同一性: `mut` の受け手と `mut` の引数は別の物
+mut same = 0
+if b.is_same(b):
+    same = 1
+expect("identity sees the copy", same, 0)
+
+# 別の引数から書き換える: 受けた値は書き換える前のまま
+expect("peek", b.peek(b), 4)
+expect("peek wrote", b.n, 100)
+
+# 同じ名前の、書き換えるメソッドがある
+mut q = Quiet(7)
+mut l = Loud(8)
+expect("quiet", q.bump_read(), 7)
+expect("loud", l.bump_read(), 8)
+expect("loud counted", Loud.calls, 1)
+
+# 読むだけのメソッドを、`mut` の値を書き換えるタスクが走っている間に呼ぶ（タスクが走っている間は複製する）。
+# 結果は途中のどれかの値で、0 以上・最終の値以下
+mut shared = Body(V(0), [], 0)
+mut mng = AsyncManager(num_thread=1)
+mng <- async->int:
+    mut i = 0
+    while i < 2000:
+        shared.n = shared.n + 1
+        i += 1
+    block_return i
+mut seen_bad = 0
+mut j = 0
+while j < 200:
+    let e = shared.energy()
+    if e < 0 or e > 2000:
+        seen_bad += 1
+    j += 1
+mng.wait_for_finish()
+expect("task finished", mng.results[0], 2000)
+expect("values seen while the task ran", seen_bad, 0)
+expect("after the task", shared.energy(), 2000)
+
+expect("in_function", in_function(), 1)
+emit([str("readonly_callee: ok")])
+
+# ── 出力を照らす ──
+check_output([
+    "readonly_callee: ok",
+    "",
+], "readonly_callee")

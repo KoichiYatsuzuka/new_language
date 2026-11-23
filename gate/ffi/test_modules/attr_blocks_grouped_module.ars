@@ -1,0 +1,35 @@
+class V:
+    mut x: float
+    mut y: float
+    fn add(mut self, o: V) -> None:
+        ...
+    fn __init__(mut self, x: float, y: float) -> None:
+        ...
+
+
+class H:
+    mut v: V
+    mut w: V
+    mut u: V
+    mut name: str
+    fn __init__(mut self, v: V, w: V, u: V, name: str) -> None:
+        ...
+
+
+fn fresh() -> H:
+    ...
+
+fn put_w(mut h: H, x: Any) -> None:
+    ...
+
+fn adds(mut h: H, k: int) -> float:
+    ...
+
+fn sums(mut h: H, k: int) -> float:
+    ...
+
+fn replaces(mut h: H, k: int) -> float:
+    ...
+
+fn others(mut a: H, mut b: H, k: int) -> float:
+    ...

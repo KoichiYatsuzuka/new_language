@@ -1,0 +1,77 @@
+# num_field_compound.ar — コンパイル済みコードは数値のフィールドの複合代入を 1 回のコールバックで行う（copy_alloc_speed_plan.md 7-16）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/num_field_compound_module.ar
+#   2. cargo run --release -- examples/interop/num_field_compound.ar
+#
+# raw レイアウトでないクラスの `self.hits += v` は、フィールドの値の番地を 1 回で取って書く。確かめること:
+#   - `int` / `float` のフィールドの `+=` `-=` `*=` `/=`（`float` のフィールドへ `int` を足す）・受け手がローカル
+#   - 右辺は先に評価する（右辺が同じフィールドを書き換えたら、その後の値に足す）
+#   - 未初期化のフィールドは今までどおりの誤り・private のフィールド・raw レイアウトのクラスは今までの道
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/num_field_compound.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import test_modules.num_field_compound_module as m
+
+fn check(let label: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError(label + ": expected " + str(want) + ", got " + str(got))
+    emit([str(label + " OK")])
+
+# 3 周する（関数の中のループと合わせて、2 周目からは IC のセルが埋まっている）
+for r in range(3):
+    emit([str("round " + str(r))])
+    mut c = m.Counter("c", 0, 1.0)
+    check("run", m.run(c, 4), 20002.65625)
+    check("run leaves hits", float(c.hits), 20.0)
+    check("run leaves mass", c.mass, 2.65625)
+
+    mut d = m.Counter("d", 0, 0.0)
+    check("the right-hand side runs first", float(m.run_nested(d, 3)), 33.0)
+
+    mut h = m.Half("h")
+    mut msg = ""
+    try:
+        let k = m.run_half(h, 3)
+    except AttributeError as e:
+        msg = str(e)
+    if msg != "'Half' object has no attribute 'hits'":
+        raise ValueError("run_half: expected the uninitialized-field error, got '" + msg + "'")
+    emit([str("run_half raised: " + msg)])
+
+    mut s = m.Secret("s")
+    check("private field", float(m.run_secret(s, 5)), 5.0)
+
+    mut w = m.Raw(0, 0.0)
+    check("raw-layout class", m.run_raw(w, 4), 8001.0)
+
+# ── 出力を照らす ──
+check_output([
+    "round 0",
+    "run OK",
+    "run leaves hits OK",
+    "run leaves mass OK",
+    "the right-hand side runs first OK",
+    "run_half raised: 'Half' object has no attribute 'hits'",
+    "private field OK",
+    "raw-layout class OK",
+    "round 1",
+    "run OK",
+    "run leaves hits OK",
+    "run leaves mass OK",
+    "the right-hand side runs first OK",
+    "run_half raised: 'Half' object has no attribute 'hits'",
+    "private field OK",
+    "raw-layout class OK",
+    "round 2",
+    "run OK",
+    "run leaves hits OK",
+    "run leaves mass OK",
+    "the right-hand side runs first OK",
+    "run_half raised: 'Half' object has no attribute 'hits'",
+    "private field OK",
+    "raw-layout class OK",
+    "",
+], "num_field_compound")

@@ -1,0 +1,7 @@
+# reads_importer.ar — import した側の大域を読もうとするモジュール（known_bugs.md の #21 ②）
+#
+# モジュールの大域は import した側と別なので、`ENTRY_ONLY` はここからは見えない。
+# 以前は import した側の大域の上で検査していたので、型検査は通り、実行時に `NameError` になっていた。
+
+fn read_entry() -> int:
+    return ENTRY_ONLY                   # ⛔ import した側の名前は見えない

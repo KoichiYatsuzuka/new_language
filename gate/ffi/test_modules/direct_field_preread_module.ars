@@ -1,0 +1,83 @@
+class V:
+    mut x: float
+    mut y: float
+    mut k: int
+    fn dot(self, o: V) -> float:
+        ...
+    fn norm1(self) -> float:
+        ...
+    fn only_y(self) -> float:
+        ...
+    fn __init__(mut self, x: float, y: float, k: int) -> None:
+        ...
+
+
+class Widths:
+    mut a: int8
+    mut b: uint8
+    mut c: int32
+    mut d: uint32
+    mut e: float32
+    mut f: float
+    fn total(self) -> float:
+        ...
+    fn __init__(mut self, a: int8, b: uint8, c: int32, d: uint32, e: float32, f: float) -> None:
+        ...
+
+
+class Secret:
+public:
+    mut shown: int
+private:
+    mut hidden: int
+public:
+    fn peek(self) -> int:
+        ...
+    fn __init__(mut self, shown: int, hidden: int) -> None:
+        ...
+
+
+class Mixed:
+    mut name: str
+    mut w: float
+    fn weight(self) -> float:
+        ...
+    fn __init__(mut self, name: str, w: float) -> None:
+        ...
+
+
+class Late:
+    mut x: float
+    mut y: float
+    fn __init__(mut self, v: float) -> None:
+        ...
+    fn __init__(mut self, x: float, y: float) -> None:
+        ...
+
+
+fn sum_xy(l: Late) -> float:
+    ...
+
+fn late_text(v: float) -> str:
+    ...
+
+fn free_dot(a: V, b: V) -> float:
+    ...
+
+fn same_twice(mut v: V) -> float:
+    ...
+
+fn loop_dot(mut vs: list[V], w: V) -> float:
+    ...
+
+fn after_write(mut v: V) -> float:
+    ...
+
+fn widths_total(mut w: Widths) -> float:
+    ...
+
+fn secret_peek(mut s: Secret) -> int:
+    ...
+
+fn mixed_weight(mut m: Mixed) -> float:
+    ...

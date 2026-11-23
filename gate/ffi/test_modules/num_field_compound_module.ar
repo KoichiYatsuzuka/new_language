@@ -1,0 +1,101 @@
+# num_field_compound_module.ar — examples/interop/num_field_compound.ar が読むモジュール（copy_alloc_speed_plan.md 7-16）
+#
+# raw レイアウトでないクラス（`str` のフィールドがある）の数値のフィールドの複合代入 `x.f op= v` は、フィールドの値の番地を
+# 1 回のコールバックで取り、生成コードが読んで演算して書く。番地が取れないとき（IC のセルが空・未初期化・private・
+# raw レイアウト）は今までの道（読む → 演算 → 書く）。どの関数もループで何周も回す（1 周目は IC のセルが空で必ず外れる）。
+
+class Counter:
+    mut name: str
+    mut hits: int
+    mut mass: float
+
+    fn step(let self, let k: int) -> int:
+        return k * 2
+
+    # 右辺はメソッドの呼び出し（右辺を先に評価する）・`-=` / `*=`・`float` のフィールドへ `float` と `int` を足す・`/=`
+    fn tick(mut self, let k: int) -> None:
+        self.hits += self.step(k)
+        self.hits -= 1
+        self.hits *= 1
+        self.mass += 0.5
+        self.mass += k
+        self.mass /= 2.0
+
+    # 右辺が同じフィールドを書き換える: 右辺を先に評価するので、書き換えた後の値に足す
+    fn bump_twice(mut self) -> int:
+        self.hits += 1
+        return 10
+
+    fn nested(mut self) -> None:
+        self.hits += self.bump_twice()
+
+# `__init__` が `hits` を書かない: 複合代入の読み出しが今までどおりの誤りになる
+class Half:
+    mut name: str
+    mut hits: int
+
+    fn __init__(mut self, let name: str) -> None:
+        self.name = name
+
+    fn bump(mut self) -> None:
+        self.hits += 1
+
+# private のフィールド（番地は取らない・今までの道）
+class Secret:
+    mut name: str
+    private:
+    mut n: int
+
+    public:
+    fn __init__(mut self, let name: str) -> None:
+        self.name = name
+        self.n = 0
+
+    fn bump(mut self) -> None:
+        self.n += 1
+
+    fn get(let self) -> int:
+        return self.n
+
+# raw レイアウトのクラス（番地から直接読み書きする 8-3 / 8-4 の道のまま）
+class Raw:
+    mut n: int
+    mut f: float
+
+fn run(mut c: Counter, let n: int) -> float:
+    mut i = 0
+    while i < n:
+        c.tick(i)
+        # 受け手がローカル（仮引数）
+        c.hits += 3
+        i += 1
+    return float(c.hits) * 1000.0 + c.mass
+
+fn run_nested(mut c: Counter, let n: int) -> int:
+    mut i = 0
+    while i < n:
+        c.nested()
+        i += 1
+    return c.hits
+
+fn run_half(mut h: Half, let n: int) -> int:
+    mut i = 0
+    while i < n:
+        h.bump()
+        i += 1
+    return h.hits
+
+fn run_secret(mut s: Secret, let n: int) -> int:
+    mut i = 0
+    while i < n:
+        s.bump()
+        i += 1
+    return s.get()
+
+fn run_raw(mut r: Raw, let n: int) -> float:
+    mut i = 0
+    while i < n:
+        r.n += 2
+        r.f += 0.25
+        i += 1
+    return float(r.n) * 1000.0 + r.f

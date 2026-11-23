@@ -1,0 +1,47 @@
+# borrow_inline_module.ar — borrow_inline.ar のコンパイル済みの側（copy_alloc_speed_plan.md 7-7）
+#
+# 読むだけの関数（自分の mut 仮引数だけを書き換える関数）へ `mut` の値を渡すとき、複製しないと決める判定を
+# コンパイル済みコードが自分で行う（コールバックを呼ばない）。
+
+class V:
+    mut x: int
+    mut y: int
+
+    fn mix(mut self, let o: V) -> None:
+        self.x = self.x + o.y
+        self.y = self.y + o.x
+
+class Body:
+    mut pos: V
+    mut vel: V
+    mut n: int
+
+    fn energy(let self) -> int:
+        return self.vel.x * self.vel.x + self.vel.y * self.vel.y + self.n
+
+    # 受け手と引数が同じ変数の別のフィールド（重ならない・4-6）
+    fn step(mut self) -> None:
+        self.pos.mix(self.vel)
+
+fn read_v(let v: V) -> int:
+    return v.x * 10 + v.y
+
+# `let` 仮引数（読むだけ）へ mut の値を渡す
+fn sum(mut b: Body) -> int:
+    return read_v(b.pos) + read_v(b.vel)
+
+# `let self`（読むだけ）へ mut の値を渡す
+fn run_energy(mut b: Body, let k: int) -> int:
+    mut t = 0
+    mut i = 0
+    while i < k:
+        t += b.energy()
+        i += 1
+    return t
+
+fn run_step(mut b: Body, let k: int) -> int:
+    mut i = 0
+    while i < k:
+        b.step()
+        i += 1
+    return b.pos.x * 1000 + b.pos.y

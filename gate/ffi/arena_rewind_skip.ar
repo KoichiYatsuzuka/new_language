@@ -1,0 +1,44 @@
+# arena_rewind_skip.ar — 値を積まない関数の呼び出しは前後でアリーナを巻き戻さず、積む関数は今までどおり呼ぶたびに
+# 巻き戻す（copy_alloc_speed_plan.md 7-12）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/arena_rewind_skip_module.ar
+#   2. cargo run --release -- examples/interop/arena_rewind_skip.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/arena_rewind_skip.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import[py] ffi_probe.lifetime_py as P
+import arena_rewind_skip_module as m
+
+fn check_str(let label: str, let got: str, let want: str) -> None:
+    if got != want:
+        raise ValueError(label + ": expected " + want + ", got " + got)
+    emit([str(label + " OK")])
+
+fn check_int(let label: str, let got: int, let want: int) -> None:
+    check_str(label, str(got), str(want))
+
+# acc = twice 2450 + bump 2500 + tmp_int 1275 + len(str) 90 + noisy 2550。a.n は 100 回足して 100、pick(a, ..).bump(100) で 200。
+# b.x は reset で 0.0、pick(a, b, False) は b、keep(a) は写し（c.n を変えても a.n は 200 のまま）。
+# 終わりのループ: keep(a).n は 200〜204 で 1010、read_x(a) は 1.5 を 5 回で 7.5、a.n は 205。fib(15) = 610
+check_str("functions that push nothing and functions that do", m.run(50), "8865,205,0.0,0.0,-1,1010,7.5,610")
+check_int("an int function that pushes is rewound after each call", m.leak_int(30), 0)
+check_int("a str function that pushes is rewound after each call", m.leak_str(30), 0)
+mut v = m.V(0.0, 0)
+check_int("a method that pushes is rewound after each call", m.leak_method(v, 30), 0)
+check_int("the method ran each time", v.n, 30)
+check_int("none is alive after the outermost calls", P.alive(), 0)
+
+# ── 出力を照らす ──
+check_output([
+    "functions that push nothing and functions that do OK",
+    "an int function that pushes is rewound after each call OK",
+    "a str function that pushes is rewound after each call OK",
+    "a method that pushes is rewound after each call OK",
+    "the method ran each time OK",
+    "none is alive after the outermost calls OK",
+    "",
+], "arena_rewind_skip")

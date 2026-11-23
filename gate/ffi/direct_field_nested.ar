@@ -1,0 +1,224 @@
+# direct_field_nested.ar — 入れ子の受け手の数値のフィールドを番地から読み書きする（copy_alloc_speed_plan.md 8-7）
+#
+# `h.p.x` の `h.p` が全フィールド数値のクラスなら、コンパイル済みコードは `h.p` をアリーナに積まず、1 回のコールバックで
+# 番地を取る。次の場合も今までと同じ値・同じエラーになること:
+#   - 親のフィールドを差し替えた後で同じ箇所を読む・3 段の経路・ループ変数の先・メソッドの中の `self.p.x`
+#   - 値の評価が何も起こさない代入（番地へ直接書く）と、値の評価が受け手を差し替える代入（受け手を先に読む順を保つ）
+#   - 途中の段がまだ書かれていない・子が private のフィールドを持つクラス・不変の親
+#   - 非同期タスクのワーカーが同じ箇所を読み書きする
+# 同じ定義を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/direct_field_nested_module.ar
+#   2. cargo run --release -- examples/interop/direct_field_nested.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/direct_field_nested.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import test_modules.direct_field_nested_module as m
+
+class P:
+    mut x: float
+    mut n: int
+
+class Holder:
+    mut p: P
+    mut q: P
+    mut tag: str
+
+    # メソッドの中の `self.p.x`
+    fn total(mut self) -> float:
+        return self.p.x + self.q.x + float(self.p.n + self.q.n)
+
+class Outer:
+    mut h: Holder
+    mut k: int
+
+# private のフィールドを持つクラスが子（直接の道に入らない）
+class Secret:
+    mut shown: int
+    private:
+    mut hidden: int
+
+class Vault:
+    mut s: Secret
+    mut tag: str
+
+# 途中の段がまだ書かれていない（`__init__` の途中）
+class Late:
+    mut p: P
+    mut tag: str
+
+    fn __init__(mut self, let v: float) -> None:
+        self.tag = "late"
+        self.p = P(peek(self) + v, 1)
+
+fn peek(mut l: Late) -> float:
+    return l.p.x
+
+fn late_text(let v: float) -> str:
+    try:
+        mut l = Late(v)
+        return "no error: " + str(l.p.x)
+    except Exception as e:
+        return str(e)
+
+fn read2(mut h: Holder) -> float:
+    return h.p.x * 10.0 + h.q.x + float(h.p.n - h.q.n)
+
+fn read3(mut o: Outer) -> float:
+    return o.h.p.x + float(o.h.q.n) + float(o.k)
+
+fn read_loop(mut hs: list[Holder]) -> float:
+    mut s = 0.0
+    for h in hs:
+        s += h.p.x + float(h.q.n)
+    return s
+
+fn method_read(mut h: Holder) -> float:
+    return h.total()
+
+# 親のフィールドを差し替えた後は、新しい子を読む（同じ箇所・IC は当たったまま）
+fn replace_child(mut h: Holder) -> float:
+    mut s = h.p.x
+    h.p = P(40.0, 4)
+    s += h.p.x
+    h.p = h.q
+    return s + h.p.x + float(h.p.n)
+
+# 値の評価が何も起こさない代入（リテラル・変数・数の演算）
+fn write_plain(mut h: Holder, let v: float, let k: int) -> None:
+    h.p.x = 1.5
+    h.p.n = k
+    h.q.x = v * 2.0 + 1.0
+    h.q.n = k + 1
+
+fn write3(mut o: Outer, let v: float) -> None:
+    o.h.p.x = v
+    o.h.q.n = 77
+
+# 値の評価が受け手を差し替える代入: 書く先は、差し替える前の `h.p`（受け手を先に読む）
+fn write_replacing(mut h: Holder) -> float:
+    h.p.x = block->float:
+        h.p = P(60.0, 6)
+        block_return 9.0
+    return h.p.x
+
+# 値が同じ受け手を読む代入・複合代入
+fn write_reading(mut h: Holder) -> None:
+    h.p.x = 0.0 - h.p.x
+    h.q.x += h.p.x
+    h.q.n += 10
+
+fn secret_read(mut v: Vault) -> int:
+    return v.s.shown * 2
+
+fn secret_write(mut v: Vault) -> None:
+    v.s.shown = 21
+
+fn frozen_read(let h: Holder) -> float:
+    return h.p.x + h.q.x
+
+fn text(mut h: Holder) -> str:
+    return str(h.p.x) + "/" + str(h.p.n) + " " + str(h.q.x) + "/" + str(h.q.n)
+
+fn expect_f(let name: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError("direct_field_nested: " + name + " = " + str(got) + ", expected " + str(want))
+
+fn expect_s(let name: str, let got: str, let want: str) -> None:
+    if got != want:
+        raise ValueError("direct_field_nested: " + name + " = " + got + ", expected " + want)
+
+# ── VM（この本体の定義） ──────────────────────────────────────────────────────
+mut h = Holder(P(1.5, 5), P(2.0, 3), "h")
+expect_f("vm read2", read2(h), 19.0)
+mut o = Outer(Holder(P(1.0, 1), P(2.0, 2), "o"), 4)
+expect_f("vm read3", read3(o), 7.0)
+mut hs: list[Holder] = [Holder(P(1.0, 0), P(0.0, 1), "a"), Holder(P(2.0, 0), P(0.0, 2), "b")]
+expect_f("vm loop", read_loop(hs), 6.0)
+expect_f("vm method", method_read(h), 11.5)
+mut r = Holder(P(1.0, 1), P(2.0, 2), "r")
+expect_f("vm replace child", replace_child(r), 1.0 + 40.0 + 2.0 + 2.0)
+write_plain(h, 3.0, 8)
+expect_s("vm write plain", text(h), "1.5/8 7.0/9")
+write3(o, 0.25)
+expect_s("vm write3", text(o.h), "0.25/1 2.0/77")
+mut wr = Holder(P(1.0, 1), P(2.0, 2), "w")
+let v_replacing = write_replacing(wr)
+expect_f("vm write replacing", v_replacing, 60.0)
+write_reading(h)
+expect_s("vm write reading", text(h), "-1.5/8 5.5/19")
+mut vault = Vault(Secret(4, 5), "v")
+secret_write(vault)
+let v_secret = secret_read(vault)
+let v_late = late_text(1.0)
+let fh = Holder(P(1.0, 1), P(2.5, 2), "f")
+expect_f("vm frozen", frozen_read(fh), 3.5)
+
+# ── コンパイル済み（モジュール） ──────────────────────────────────────────────
+mut mh = m.Holder(m.P(1.5, 5), m.P(2.0, 3), "h")
+expect_f("compiled read2", m.read2(mh), 19.0)
+# 同じ箇所をもう一度（1 回目は IC を埋める道・2 回目から番地を取る道）
+expect_f("compiled read2 again", m.read2(mh), 19.0)
+mut mo = m.Outer(m.Holder(m.P(1.0, 1), m.P(2.0, 2), "o"), 4)
+expect_f("compiled read3", m.read3(mo), 7.0)
+expect_f("compiled read3 again", m.read3(mo), 7.0)
+mut mhs: list[m.Holder] = [m.Holder(m.P(1.0, 0), m.P(0.0, 1), "a"), m.Holder(m.P(2.0, 0), m.P(0.0, 2), "b")]
+expect_f("compiled loop", m.read_loop(mhs), 6.0)
+expect_f("compiled method", m.method_read(mh), 11.5)
+mut mr = m.Holder(m.P(1.0, 1), m.P(2.0, 2), "r")
+expect_f("compiled replace child", m.replace_child(mr), 45.0)
+mut mr2 = m.Holder(m.P(3.0, 1), m.P(2.0, 2), "r")
+expect_f("compiled replace child again", m.replace_child(mr2), 47.0)
+m.write_plain(mh, 3.0, 8)
+expect_s("compiled write plain", m.text(mh), "1.5/8 7.0/9")
+m.write_plain(mh, 3.0, 8)
+expect_s("compiled write plain again", m.text(mh), "1.5/8 7.0/9")
+# 呼ぶ側（VM）からも見える
+expect_f("caller sees the nested write", mh.q.x, 7.0)
+m.write3(mo, 0.25)
+m.write3(mo, 0.25)
+expect_s("compiled write3", m.text(mo.h), "0.25/1 2.0/77")
+mut mwr = m.Holder(m.P(1.0, 1), m.P(2.0, 2), "w")
+expect_f("compiled write replacing", m.write_replacing(mwr), v_replacing)
+mut mwr2 = m.Holder(m.P(1.0, 1), m.P(2.0, 2), "w")
+expect_f("compiled write replacing again", m.write_replacing(mwr2), v_replacing)
+m.write_reading(mh)
+expect_s("compiled write reading", m.text(mh), "-1.5/8 5.5/19")
+mut mvault = m.Vault(m.Secret(4, 5), "v")
+m.secret_write(mvault)
+if m.secret_read(mvault) != v_secret or v_secret != 42:
+    raise ValueError("direct_field_nested: private child = " + str(m.secret_read(mvault)) + " / " + str(v_secret))
+# 途中の段がまだ書かれていない: 両方とも同じエラー
+expect_s("unset step error", m.late_text(1.0), v_late)
+if v_late.startswith("no error"):
+    raise ValueError("direct_field_nested: reading through an unset field did not fail: " + v_late)
+let mfh = m.Holder(m.P(1.0, 1), m.P(2.5, 2), "f")
+expect_f("compiled frozen", m.frozen_read(mfh), 3.5)
+expect_f("compiled frozen again", m.frozen_read(mfh), 3.5)
+
+# ── 非同期タスクのワーカーが同じ箇所を読み書きする ────────────────────────────
+mut mng = AsyncManager(num_thread=2)
+mng <- async->float:
+    mut th = m.Holder(m.P(2.0, 1), m.P(3.0, 2), "t")
+    m.write_plain(th, 1.0, 4)
+    block_return m.read2(th) + m.read2(th)
+mng <- async->float:
+    mut to = m.Outer(m.Holder(m.P(5.0, 1), m.P(2.0, 2), "o"), 1)
+    block_return m.read3(to)
+mng.wait_for_finish()
+let errors = mng.error_list
+if not (errors[0] is None and errors[1] is None):
+    raise ValueError("direct_field_nested: a task failed")
+let results = mng.results
+expect_f("task write + read", results[0] mustbe float, 34.0)
+expect_f("task read3", results[1] mustbe float, 8.0)
+expect_f("compiled read2 after tasks", m.read2(mh), 0.0 - 15.0 + 5.5 + float(8 - 19))
+emit([str("direct_field_nested: ok")])
+
+# ── 出力を照らす ──
+check_output([
+    "direct_field_nested: ok",
+    "",
+], "direct_field_nested")

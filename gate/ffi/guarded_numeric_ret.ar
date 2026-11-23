@@ -1,0 +1,119 @@
+# guarded_numeric_ret.ar — ガード付きのメソッド呼び出しの int / float の結果を箱に入れない（copy_alloc_speed_plan.md 7-5）
+#
+# 受け手のクラスを注釈で決めたメソッド呼び出し（リストの要素・フィールドの受け手）は、ガードを通れば直接呼び、`int` / `float`
+# の結果を生の値のまま使う。式の途中・比較・束縛・`str` の表示（`int` は int のまま）・`mut self` のメソッドで、VM と同じ値になること。
+# 同じ定義を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/guarded_numeric_ret_module.ar
+#   2. cargo run --release -- examples/interop/guarded_numeric_ret.ar
+#
+# ⚠ ガードが外れる形（注釈と違うクラスの値が来る）は Arrow のソースから作れない。外れた道で宣言と違う型が返ったら
+#   TypeError にする（利用者の決定 2026-11-17）ことは、単体テスト `expect_ret_unboxes_only_the_declared_type` が見ている。
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/guarded_numeric_ret.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import test_modules.guarded_numeric_ret_module as m
+
+class V:
+    mut x: float
+    mut y: float
+
+    fn dot(let self, let o: V) -> float:
+        return self.x * o.x + self.y * o.y
+
+    fn grid(let self) -> int:
+        return int(self.x) * 10 + int(self.y)
+
+    fn scale(mut self, let k: float) -> float:
+        self.x = self.x * k
+        self.y = self.y * k
+        return self.x + self.y
+
+class Body:
+    mut pos: V
+    mut vel: V
+    mut mass: float
+    mut hits: int
+
+    fn kinetic(let self) -> float:
+        return 0.5 * self.mass * self.vel.dot(self.vel)
+
+    fn cell(let self) -> int:
+        return self.pos.grid() + self.hits
+
+# リストの要素（ガード付き）の float を返すメソッドを式の途中で使う
+fn energy(let bs: list[Body]) -> float:
+    mut e = 0.0
+    for b in bs:
+        e += b.kinetic() * 2.0 - b.kinetic()
+    return e
+
+# int を返すメソッド（int のまま: `str` が "3" のまま）
+fn cells(let bs: list[Body]) -> str:
+    mut s = ""
+    for b in bs:
+        let c = b.cell()
+        s = s + str(c) + ","
+    return s
+
+# 比較と分岐の中
+fn count_fast(let bs: list[Body], let lim: float) -> int:
+    mut n = 0
+    for b in bs:
+        if b.kinetic() > lim and b.cell() >= 0:
+            n += 1
+    return n
+
+# `mut self` のメソッド（受け手は書き換えられる要素）
+fn rescale(mut bs: list[Body], let k: float) -> float:
+    mut t = 0.0
+    for b in bs:
+        t += b.vel.scale(k)
+    return t
+
+# 戻り値をそのまま返す・束縛してから使う
+fn first_kinetic(let bs: list[Body]) -> float:
+    for b in bs:
+        let k = b.kinetic()
+        return k + 0.0
+    return -1.0
+
+fn text(let bs: list[Body]) -> str:
+    mut s = ""
+    for b in bs:
+        s = s + str(b.kinetic()) + "/" + str(b.cell()) + " "
+    return s
+
+fn expect_s(let name: str, let got: str, let want: str) -> None:
+    if got != want:
+        raise ValueError("guarded_numeric_ret: " + name + " = " + got + ", expected " + want)
+
+fn mk(let i: int) -> Body:
+    return Body(V(float(i), 2.0), V(1.0, float(i)), 2.0, i)
+
+fn mmk(let i: int) -> m.Body:
+    return m.Body(m.V(float(i), 2.0), m.V(1.0, float(i)), 2.0, i)
+
+mut bs: list[Body] = [mk(1), mk(2), mk(3)]
+let vm = str(energy(bs)) + " " + cells(bs) + " " + str(count_fast(bs, 3.0)) + " " + str(first_kinetic(bs)) + " " + text(bs)
+let vm_scaled = str(rescale(bs, 2.0)) + " " + text(bs)
+
+mut mbs: list[m.Body] = [mmk(1), mmk(2), mmk(3)]
+let compiled = str(m.energy(mbs)) + " " + m.cells(mbs) + " " + str(m.count_fast(mbs, 3.0)) + " " + str(m.first_kinetic(mbs)) + " " + m.text(mbs)
+expect_s("results", compiled, vm)
+expect_s("mut self method", str(m.rescale(mbs, 2.0)) + " " + m.text(mbs), vm_scaled)
+# 2 回目（ガードのセルが埋まった後）も同じ
+expect_s("again", str(m.energy(mbs)) + " " + m.cells(mbs), str(energy(bs)) + " " + cells(bs))
+# int の結果は int のまま（"12" であって "12.0" ではない）
+if not cells(bs).startswith("13,"):
+    raise ValueError("guarded_numeric_ret: int result shown as " + cells(bs))
+emit([str("guarded_numeric_ret: " + compiled)])
+emit([str("guarded_numeric_ret: ok")])
+
+# ── 出力を照らす ──
+check_output([
+    "guarded_numeric_ret: 17.0 13,24,35, 2 2.0 2.0/13 5.0/24 10.0/35 ",
+    "guarded_numeric_ret: ok",
+    "",
+], "guarded_numeric_ret")

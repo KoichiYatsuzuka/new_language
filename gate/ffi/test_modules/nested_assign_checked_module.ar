@@ -1,0 +1,132 @@
+# nested_assign_checked_module.ar — examples/interop/nested_assign_checked.ar が読むモジュール（copy_alloc_speed_plan.md 7-17）
+#
+# `a.b.x = <数の式>` で、式が raw レイアウトのクラスの数値のフィールド（`a.c.f` / ローカル変数の `v.f`）を読むとき、生成コードは
+# 書き込み先と読み出し先の番地を先に取って確かめ（空でない・読むフィールドの初期化の印・書き込み先が不変でない）、
+# 速い道は検査なしで読んで書く。外れたら今までの道（`a.b` を積んで書く）で、積んだ値は道の中で巻き戻す。
+# どの関数もループで何周も回す（1 周目は読み出しの IC のセルが空で必ず外れる）。
+#
+# 名前による呼び出し（ガードが外れた `h.k.label()`）の遅い道は、結果を使わない（式の文）ときだけ巻き戻す。結果を使う
+# 呼び出し（`let s = h.k.label()`）は巻き戻さない（巻き戻すと `s` が捨てた値を指す）。
+
+class V:
+    mut x: float
+    mut y: float
+
+class N:
+    mut n: int
+
+# `__init__` が `y` を書かない
+class Q:
+    mut x: float
+    mut y: float
+
+    fn __init__(mut self, let x: float) -> None:
+        self.x = x
+
+# `tag` があるので raw レイアウトでない（メソッドはガード付きで直接呼ぶ・外れたら名前で呼ぶ）
+class K:
+    mut n: int
+    mut tag: str
+
+    fn label(let self) -> str:
+        return "m" + self.tag
+
+    fn touch(mut self, let s: str) -> None:
+        self.n += len(s)
+
+    fn count(let self) -> int:
+        return self.n
+
+# `name` があるので raw レイアウトでない（フィールドはインスタンスを持つ slot）
+class H:
+    mut v: V
+    mut w: V
+    mut n: N
+    mut q: Q
+    mut k: K
+    mut name: str
+
+fn fresh() -> H:
+    return H(V(1.0, 2.0), V(0.5, 0.25), N(3), Q(1.5), K(0, "a"), "h")
+
+# `h.k` に別の値を入れる（`mustbe K` は名前で照合するので、本体の同じ名前のクラスも通る・known_bugs.md #30）
+fn put_k(mut h: H, let x: Any) -> None:
+    h.k = x mustbe K
+
+# 跳ね返りの枝の形（同じ番地を読んで書く・`sim_core` の `bounce`）
+fn flips(mut h: H, let k: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < k:
+        h.v.x = 0.0 - h.v.x
+        s = s + h.v.x
+        i += 1
+    return s * 1000.0 + h.v.x
+
+# 2 つの入れ子の受け手を読む・数のローカル変数
+fn mixes(mut h: H, let k: int) -> float:
+    mut d = 0.5
+    mut i = 0
+    while i < k:
+        h.v.y = h.w.x * 2.0 + h.v.y - d
+        d = d + 0.25
+        i += 1
+    return h.v.y
+
+# `int` のフィールド・`int` のローカル変数
+fn counts(mut h: H, let k: int) -> int:
+    mut i = 0
+    while i < k:
+        h.n.n = h.n.n * 2 + i
+        i += 1
+    return h.n.n
+
+# `int` の値を `float` のフィールドへ（書くときに変換する）
+fn promotes(mut h: H, let k: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < k:
+        h.w.y = h.n.n + i
+        s = s + h.w.y
+        i += 1
+    return s
+
+# ローカル変数の raw レイアウトのクラス（`v.x`）を読む
+fn from_local(mut h: H, let k: int) -> float:
+    mut v = V(1.0, 2.0)
+    mut i = 0
+    while i < k:
+        h.v.x = v.x + h.v.x
+        v.x = v.x + 1.0
+        i += 1
+    return h.v.x * 1000.0 + v.x
+
+# 未初期化のフィールドへ書く: 速い道も初期化の印を立てる（書いた後で読める）
+fn init_by_write(let k: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < k:
+        mut h = fresh()
+        h.q.y = h.q.x * 2.0
+        s = s + h.q.y
+        i += 1
+    return s
+
+# 未初期化のフィールドを読む: 今までどおりの誤り（速い道は初期化の印を確かめて外れる）
+fn read_uninit(mut h: H, let k: int) -> float:
+    mut i = 0
+    while i < k:
+        h.q.x = h.q.y + 1.0
+        i += 1
+    return h.q.x
+
+# 名前による呼び出しの結果を使う（巻き戻さない）・使わない（巻き戻す）・引数の中の呼び出しの結果は使う
+fn labels(mut h: H, let k: int) -> str:
+    mut out = ""
+    mut i = 0
+    while i < k:
+        let s = h.k.label()
+        h.k.touch(h.k.label())
+        out = out + s
+        i += 1
+    return out + str(h.k.count())

@@ -1,0 +1,122 @@
+# compiled_global_assign.ar — コンパイル済みのモジュールの関数がモジュールの大域へ代入する（known_bugs.md #23）
+#
+# 以前は、`--compile` したモジュールの関数の中の大域への代入 `counter = v` をコンパイル済みコードが**何もせず**（黙って
+# 書き込みが消えた）、`counter += 1` があるとモジュール全体の DLL が作られなかった。大域へ代入する関数はコンパイルせずに
+# VM が動かす。次の場合も VM と同じ値になること:
+#   - 大域への代入（`int` / `str`）・複合代入（`int` / `float`）・メソッドの中の大域への複合代入
+#   - ローカルだけに代入する関数（ブロック・ループの中で宣言したローカルを含む・コンパイルする）・大域を読むだけの関数
+# 同じ定義を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/compiled_global_assign_module.ar
+#      cargo run --release -- --compile examples/interop/test_modules/compiled_global_compound_module.ar
+#   2. cargo run --release -- examples/interop/compiled_global_assign.ar
+#
+# ⚠ 代入と複合代入はモジュールを分ける（以前は複合代入があるとモジュール全体がコンパイルされず、代入の不具合が隠れた）。
+#   複合代入のモジュールの DLL が作られることは `check_native_ir_abi.ps1` が見る。
+# ⚠ 大域と同じ名前のローカル（ブロックの中・`for` の変数も）は型検査が止める（`already declared in an accessible scope`）
+#   ので、関数の中で宣言した名前が大域を指すことは無い。
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/compiled_global_assign.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import test_modules.compiled_global_assign_module as m
+import test_modules.compiled_global_compound_module as c
+
+mut counter = 0
+mut label = "a"
+mut total = 0.0
+
+fn set_counter(let v: int) -> None:
+    counter = v
+
+fn set_label(let s: str) -> None:
+    label = s
+
+fn bump() -> None:
+    counter += 1
+
+fn add_total(let x: float) -> None:
+    total += x
+
+fn get_counter() -> int:
+    return counter
+
+fn get_label() -> str:
+    return label
+
+fn get_total() -> float:
+    return total
+
+class Acc:
+    mut n: int
+
+    fn record(mut self, let v: float) -> None:
+        total += v
+        self.n += 1
+
+fn nested_local(let n: int) -> int:
+    mut out = 0
+    if n > 0:
+        mut acc = 0
+        for i in range(n):
+            mut sq = i * i
+            sq += 1
+            acc += sq
+        out = acc
+    return out
+
+fn local_only(let n: int) -> int:
+    mut s = 0
+    mut i = 0
+    while i < n:
+        s += i
+        i += 1
+    return s
+
+fn expect(let name: str, let got: str, let want: str) -> None:
+    if got != want:
+        raise ValueError("compiled_global_assign: " + name + " = " + got + ", expected " + want)
+
+# ── VM（この本体の定義） ──────────────────────────────────────────────────────
+mut vm: list[str] = []
+set_counter(5)
+set_label("b")
+vm.append(str(get_counter()) + get_label())
+bump()
+bump()
+vm.append(str(get_counter()))
+add_total(1.5)
+add_total(2.25)
+vm.append(str(get_total()))
+mut acc = Acc(0)
+acc.record(0.25)
+vm.append(str(get_total()) + "/" + str(acc.n))
+vm.append(str(nested_local(4)) + "/" + str(local_only(5)))
+expect("vm", ", ".join(vm), "5b, 7, 3.75, 4.0/1, 18/10")
+
+# ── コンパイル済み（モジュール） ──────────────────────────────────────────────
+mut compiled: list[str] = []
+m.set_counter(5)
+m.set_label("b")
+compiled.append(str(m.get_counter()) + m.get_label())
+m.set_counter(5)
+c.bump()
+c.bump()
+compiled.append(str(m.get_counter() + c.get_counter()))
+c.add_total(1.5)
+c.add_total(2.25)
+compiled.append(str(c.get_total()))
+mut macc = c.Acc(0)
+macc.record(0.25)
+compiled.append(str(c.get_total()) + "/" + str(macc.n))
+compiled.append(str(m.nested_local(4)) + "/" + str(m.local_only(5)))
+expect("compiled", ", ".join(compiled), ", ".join(vm))
+emit([str("compiled_global_assign: " + ", ".join(compiled) + " (twice: " + str(c.twice(21)) + ")")])
+emit([str("compiled_global_assign: ok")])
+
+# ── 出力を照らす ──
+check_output([
+    "compiled_global_assign: 5b, 7, 3.75, 4.0/1, 18/10 (twice: 42)",
+    "compiled_global_assign: ok",
+    "",
+], "compiled_global_assign")

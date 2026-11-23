@@ -1,0 +1,52 @@
+class P:
+    mut x: float
+    mut n: int
+    fn scale(mut self, k: float) -> None:
+        ...
+    fn __init__(mut self, x: float, n: int) -> None:
+        ...
+
+
+class Q:
+    mut x: float
+    mut n: int
+    fn __init__(mut self, x: float, n: int) -> None:
+        ...
+
+
+class Holder:
+    mut p: P
+    mut q: P
+    fn __init__(mut self, p: P, q: P) -> None:
+        ...
+
+
+fn make(i: int) -> P:
+    ...
+
+fn swap_in_loop(n: int) -> float:
+    ...
+
+fn keep_across_loop(mut p: P, n: int) -> float:
+    ...
+
+fn swap_in_branch(mut p: P, other: bool) -> float:
+    ...
+
+fn read_result(i: int) -> float:
+    ...
+
+fn callee_writes(mut p: P) -> float:
+    ...
+
+fn loop_var(mut ps: list[P]) -> float:
+    ...
+
+fn shadow(c: bool) -> float:
+    ...
+
+fn reassign_in_value(mut h: Holder) -> float:
+    ...
+
+fn two_vars(mut a: P, mut b: P) -> float:
+    ...

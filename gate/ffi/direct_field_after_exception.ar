@@ -1,0 +1,85 @@
+# direct_field_after_error.ar — コンパイル済みコードは、誤りの後で、覚えたインスタンスの番地へ書かない（known_bugs.md #26）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/direct_field_after_error_module.ar
+#   2. cargo run --release -- examples/interop/direct_field_after_error.ar
+#
+# コンパイル済みコードは、受け手の番地を変数ごとに覚えて使い回す（copy_alloc_speed_plan.md 8-5）。番地を取り直す
+# コールバックは、先に積まれた誤りがあれば空を返して今までの道（誤りがあれば何もしない）へ回す。
+# ⚠ 以前は覚えた番地を変数へ書いたときにしか捨てず、誤り（まだ書かれていないフィールドの読み出し・添字の範囲の外）の後の
+#   書き込みが、その守りを通らずに番地へ書いた（`after_read` で y が 4.0 になった。VM は 1.0）。
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/direct_field_after_error.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import test_modules.direct_field_after_error_module as m
+
+fn check(let label: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError(label + ": expected " + str(want) + ", got " + str(got))
+    emit([str(label + " OK")])
+
+# 誤りになる呼び出しを走らせ、誤りの文面を返す（誤りにならなければ raise する）
+mut a = m.P(5.0)
+mut msg = ""
+try:
+    m.after_read(a)
+except AttributeError as e:
+    msg = str(e)
+if msg == "":
+    raise ValueError("after_read: expected an AttributeError")
+emit([str("after_read raised: " + msg)])
+check("after_read does not write after the error", a.y, 1.0)
+
+mut b = m.P(5.0)
+msg = ""
+try:
+    m.after_index(b, [1, 2])
+except IndexError as e:
+    msg = str(e)
+if msg == "":
+    raise ValueError("after_index: expected an IndexError")
+emit([str("after_index raised: " + msg)])
+check("after_index does not write after the error", b.y, 1.0)
+
+mut c = m.P(5.0)
+msg = ""
+try:
+    let w = m.after_index_read(c, [1, 2])
+except IndexError as e:
+    msg = str(e)
+if msg == "":
+    raise ValueError("after_index_read: expected an IndexError")
+check("after_index_read does not write after the error", c.y, 1.0)
+
+mut d = m.P(5.0)
+msg = ""
+try:
+    d.bump(1.0)
+except AttributeError as e:
+    msg = str(e)
+if msg == "":
+    raise ValueError("bump: expected an AttributeError")
+emit([str("bump raised: " + msg)])
+check("bump keeps the write before the error only", d.y, 6.0)
+
+mut e2 = m.P(5.0)
+check("no_error writes as before", m.no_error(e2, [1, 2]), 3.5)
+check("no_error leaves y", e2.y, 3.5)
+check("no_error leaves x", e2.x, 0.5)
+
+# ── 出力を照らす ──
+check_output([
+    "after_read raised: 'P' object has no attribute 'x'",
+    "after_read does not write after the error OK",
+    "after_index raised: list index 5 out of range",
+    "after_index does not write after the error OK",
+    "after_index_read does not write after the error OK",
+    "bump raised: 'P' object has no attribute 'x'",
+    "bump keeps the write before the error only OK",
+    "no_error writes as before OK",
+    "no_error leaves y OK",
+    "no_error leaves x OK",
+    "",
+], "direct_field_after_exception")

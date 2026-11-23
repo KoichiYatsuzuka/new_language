@@ -1,0 +1,113 @@
+# arena_rewind_skip_module.ar — 値を積まない関数の呼び出しは前後でアリーナを巻き戻さず、積む関数は今までどおり
+# 呼ぶたびに巻き戻す（copy_alloc_speed_plan.md 7-12）
+#
+# 「値を積まない」は、本体がアリーナへハンドルを積む箇所を出さないこと（`pushing_fns` に無い）。そういう関数を `int` /
+# ハンドルを返す直接呼び出しで呼ぶときは、`ar_arena_save` / `ar_arena_compact` を出さない（`float` は 9-2 から同じ）。
+# ハンドルを返す場合は、呼ぶ前からある欄（引数など）がそのまま返る。
+# ⚠ 積む関数の巻き戻しまで省くと、呼ばれた側の一時値が残る。`leak_*` は積む関数を呼んでから再帰で潜り、底で
+#   生きている Python のオブジェクト（`lifetime_py.Tracker`）を数える（巻き戻していれば 0）。
+# ⚠ `import[py] ffi_probe..` は入口のファイルのディレクトリから探すので、このモジュールは examples/interop に置く。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/arena_rewind_skip_module.ar
+
+import[py] ffi_probe.lifetime_py as P
+
+class V:
+    mut x: float
+    mut n: int
+
+    # 値を積まない・`None` を返す
+    fn reset(mut self) -> None:
+        self.x = 0.0
+
+    # 値を積まない・`int` を返す
+    fn bump(mut self, let k: int) -> int:
+        self.n = self.n + k
+        return self.n
+
+    # 積む（Python のオブジェクトを作る）・`int` を返す
+    fn noisy(mut self) -> int:
+        mut t = P.make()
+        self.n = self.n + 1
+        return self.n
+
+# 値を積まない `int` の関数と、その再帰
+fn twice(let n: int) -> int:
+    return n * 2
+
+fn fib(let n: int) -> int:
+    if n < 2:
+        return n
+    return fib(n - 1) + fib(n - 2)
+
+# 値を積まない・引数のハンドルをそのまま返す（`mut` の仮引数は呼ぶ側と同じ物）
+fn pick(mut a: V, mut b: V, let first: bool) -> V:
+    if first:
+        return a
+    return b
+
+# `let` で受ける: `mut` の値を渡すときは、複製しうる道（読むだけと分かっていない初回など）でだけ保存点を取り、
+# 取ったときだけ呼んだ後で巻き戻す（値を積まない関数なので、読むだけと分かれば前後で何もしない）
+fn keep(let a: V) -> V:
+    return a
+
+fn read_x(let v: V) -> float:
+    return v.x
+
+# 積む関数（`int` / ハンドルを返す）
+fn tmp_int(let n: int) -> int:
+    mut t = P.make()
+    return n + 1
+
+fn tmp_str(let n: int) -> str:
+    mut t = P.make()
+    return str(n)
+
+fn run(let k: int) -> str:
+    mut a = V(1.5, 0)
+    mut b = V(2.5, 0)
+    mut acc = 0
+    mut i = 0
+    while i < k:
+        acc += twice(i)
+        acc += a.bump(1)
+        b.reset()
+        acc += tmp_int(i)
+        acc += len(tmp_str(i))
+        acc += a.noisy()
+        i += 1
+    pick(a, b, True).bump(100)
+    let picked = pick(a, b, False).x
+    mut c = keep(a)
+    c.n = -1
+    # 同じ箇所を何度も呼ぶ（初回は複製しうる道・2 回目からは読むだけと分かった道）
+    mut kept = 0
+    mut xs = 0.0
+    mut j = 0
+    while j < 5:
+        let kk = keep(a)
+        kept += kk.n
+        xs += read_x(a)
+        a.bump(1)
+        j += 1
+    return str(acc) + "," + str(a.n) + "," + str(b.x) + "," + str(picked) + "," + str(c.n) + "," + str(kept) + "," + str(xs) + "," + str(fib(15))
+
+# 積む関数を呼んでから潜り、底で生きている Tracker の数を返す（呼ぶたびに巻き戻していれば 0）
+fn leak_int(let n: int) -> int:
+    if n == 0:
+        return P.alive()
+    tmp_int(n)
+    return leak_int(n - 1)
+
+fn leak_str(let n: int) -> int:
+    if n == 0:
+        return P.alive()
+    tmp_str(n)
+    return leak_str(n - 1)
+
+fn leak_method(mut v: V, let n: int) -> int:
+    if n == 0:
+        return P.alive()
+    v.noisy()
+    return leak_method(v, n - 1)

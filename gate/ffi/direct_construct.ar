@@ -1,0 +1,171 @@
+# direct_construct.ar — コンパイル済みコードが全フィールドが数値のクラスを、数値の引数を番地へ直接書いて作る
+# （copy_alloc_speed_plan.md 7-11）
+#
+# 合成した `__init__` で `V3(1.0, 2.0, 3.0)` のように作るとき、コンパイル済みコードは引数を箱に入れずに、作ったばかりの
+# インスタンスの番地へ書く（インスタンスはコールバック 1 回で作る）。次の場合も今までと同じ値になること:
+#   - 幅の違う整数（切り詰め）・float32（丸め）・`let` のフィールド
+#   - `const` / `static mut` を持つクラス（インスタンスのフィールドではない）
+#   - 利用者が書いた `__init__`・名前つき引数（今までどおり `__init__` を呼ぶ / 汎用の道）
+#   - 引数の評価の順・ループの中で作る・数値でないフィールドを持つクラスの引数の中で作る・作った値をリストに入れる
+# 同じ定義を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/direct_construct_module.ar
+#   2. cargo run --release -- examples/interop/direct_construct.ar
+#
+# ⚠ `int` を `float` のフィールドへ渡す生成（`V3(1, 2, 3)`）と、インスタンスのフィールドの既定値は型検査が止めるので、
+#   ここからは作れない（コンパイル済みコードは `int` の引数を `float` のフィールドへ直接書かず、今までの道へ回す）。
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/direct_construct.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import test_modules.direct_construct_module as m
+
+class V3:
+    mut x: float
+    mut y: float
+    mut z: float
+
+class Mixed:
+    let id: int
+    mut w: float32
+    mut k: int16
+    mut u: uint8
+    mut big: int64
+
+class WithConst:
+    mut x: float
+    const K: int = 5
+    static mut made: int = 0
+
+class Custom:
+    mut x: float
+
+    fn __init__(mut self, let a: float) -> None:
+        self.x = a * 2.0
+
+class Line:
+    mut a: V3
+    mut b: V3
+    mut tag: str
+
+fn next_val(mut log: list[float]) -> float:
+    log.append(1.0)
+    return float(len(log))
+
+fn v3_text(let v: V3) -> str:
+    return str(v.x) + "," + str(v.y) + "," + str(v.z)
+
+fn make_v3(let a: float, let b: float, let c: float) -> V3:
+    return V3(a, b, c)
+
+fn make_v3_int(let a: int, let b: int, let c: int) -> V3:
+    return V3(float(a), float(b), float(c))
+
+fn mixed_text(let id: int, let w: float, let k: int, let u: int, let big: int) -> str:
+    let mx = Mixed(id, w, k, u, big)
+    return str(mx.id) + "," + str(mx.w) + "," + str(mx.k) + "," + str(mx.u) + "," + str(mx.big)
+
+fn mixed_text_f(let w: float) -> str:
+    let mx = Mixed(1, w, 2, 3, 4)
+    return str(mx.w)
+
+fn const_text(let x: float) -> str:
+    let d = WithConst(x)
+    WithConst.made += 1
+    return str(d.x) + "," + str(WithConst.K) + "," + str(WithConst.made)
+
+fn custom_x(let a: float) -> float:
+    let c = Custom(a)
+    return c.x
+
+fn keyword_text() -> str:
+    return v3_text(V3(z=3.0, x=1.0, y=2.0))
+
+fn order_text() -> str:
+    mut log: list[float] = []
+    return v3_text(V3(next_val(log), next_val(log) * 10.0, next_val(log) * 100.0))
+
+fn loop_sum(let n: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < n:
+        mut v = V3(float(i), 1.0, 2.0)
+        v.y = v.y + v.x
+        s += v.x + v.y + v.z
+        i += 1
+    return s
+
+fn line_text() -> str:
+    let l = Line(V3(1.0, 2.0, 3.0), make_v3_int(4, 5, 6), "t")
+    return v3_text(l.a) + "|" + v3_text(l.b) + "|" + l.tag
+
+fn list_text() -> str:
+    mut xs: list[V3] = []
+    mut i = 0
+    while i < 3:
+        xs.append(V3(float(i), float(i) * 2.0, 0.5))
+        i += 1
+    return v3_text(xs[0]) + "|" + v3_text(xs[2])
+
+fn is_v3(let x: float) -> bool:
+    let v = V3(x, x, x)
+    return v is V3
+
+fn expect(let name: str, let got: str, let want: str) -> None:
+    if got != want:
+        raise ValueError("direct_construct: " + name + " = " + got + ", expected " + want)
+
+# ── VM（この本体の定義）: 期待値を作り、手で書いた値とも比べる ─────────────────────
+let vm = [
+    v3_text(make_v3(1.5, 2.5, 3.5)),
+    v3_text(make_v3_int(1, 2, 3)),
+    mixed_text(7, 0.1, 70000, 300, 0 - 5),
+    mixed_text(7, 1.0e40, 0 - 32769, 0 - 1, 1152921573326323713),
+    mixed_text_f(0.25),
+    const_text(2.5) + " " + const_text(3.5),
+    str(custom_x(1.25)),
+    keyword_text(),
+    order_text(),
+    str(loop_sum(100)),
+    line_text(),
+    list_text(),
+    str(is_v3(1.0)),
+]
+expect("vm make_v3", vm[0], "1.5,2.5,3.5")
+expect("vm make_v3_int", vm[1], "1.0,2.0,3.0")
+expect("vm const", vm[5], "2.5,5,1 3.5,5,2")
+expect("vm custom", vm[6], "2.5")
+expect("vm keyword", vm[7], "1.0,2.0,3.0")
+expect("vm order", vm[8], "1.0,20.0,300.0")
+expect("vm line", vm[10], "1.0,2.0,3.0|4.0,5.0,6.0|t")
+expect("vm is", vm[12], "True")
+
+# ── コンパイル済み（モジュール）: VM と同じ値 ──────────────────────────────────
+let compiled = [
+    m.v3_text(m.make_v3(1.5, 2.5, 3.5)),
+    m.v3_text(m.make_v3_int(1, 2, 3)),
+    m.mixed_text(7, 0.1, 70000, 300, 0 - 5),
+    m.mixed_text(7, 1.0e40, 0 - 32769, 0 - 1, 1152921573326323713),
+    m.mixed_text_f(0.25),
+    m.const_text(2.5) + " " + m.const_text(3.5),
+    str(m.custom_x(1.25)),
+    m.keyword_text(),
+    m.order_text(),
+    str(m.loop_sum(100)),
+    m.line_text(),
+    m.list_text(),
+    str(m.is_v3(1.0)),
+]
+mut i = 0
+while i < len(vm):
+    expect("compiled #" + str(i), compiled[i], vm[i])
+    i += 1
+emit([str("direct_construct: " + vm[3] + " | " + vm[4] + " | " + vm[5] + " | " + vm[9] + " | " + vm[11])])
+emit([str("direct_construct: ok")])
+
+# ── 出力を照らす ──
+check_output([
+    "direct_construct: 7,inf,32767,255,1152921573326323713 | 0.25 | 2.5,5,1 3.5,5,2 | 10200.0 | 0.0,0.0,0.5|2.0,4.0,0.5",
+    "direct_construct: ok",
+    "",
+], "direct_construct")

@@ -1,0 +1,92 @@
+# attr_blocks_grouped.ar — コンパイル済みコードは同じ親の入れ子の受け手の番地をまとめて取る（copy_alloc_speed_plan.md 7-18）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/attr_blocks_grouped_module.ar
+#   2. cargo run --release -- examples/interop/attr_blocks_grouped.ar
+#
+# `h.v.add(h.w)` や `h.v.x = h.w.x + h.u.y` は、親 `h` を 1 回たどるコールバックで子の番地をまとめて取る。確かめること:
+#   - 2 つ・3 つの受け手をまとめて取って読み書きする・親が違うときはまとめない
+#   - 呼ぶ間に親のフィールドを差し替えると、次は新しい子を読む（覚えた番地を捨てる）
+#   - まとめた中の 1 件だけ外れる（本体の同じ名前で並びの違うクラスを入れる）と、その件だけ今までの道で、値は同じ
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+# ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/attr_blocks_grouped.ar。print は emit に置き換え、
+#   出力は最後の check_output で照らす（gate/README.md 2.2）。
+from ..lib.check import emit, check_output
+
+import test_modules.attr_blocks_grouped_module as m
+
+# 本体の `V`: モジュールの `V` と名前は同じでフィールドの並びが違う（番地の表と照合すると外れる）
+class V:
+    mut y: float
+    mut x: float
+
+    fn add(mut self, let o: V) -> None:
+        self.x = self.x + o.x
+        self.y = self.y + o.y
+
+fn check(let label: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError(label + ": expected " + str(want) + ", got " + str(got))
+    emit([str(label + " OK")])
+
+# 3 周する（関数の中のループと合わせて、2 周目からは IC のセルが埋まっている）
+for r in range(3):
+    emit([str("round " + str(r))])
+    mut h = m.fresh()
+    check("adds", m.adds(h, 4), 3003.0)
+    check("adds leaves the argument", h.w.x * 1000.0 + h.w.y, 500.25)
+    h = m.fresh()
+    check("sums", m.sums(h, 3), 10503.5)
+    h = m.fresh()
+    check("replaces", m.replaces(h, 3), 5502.25)
+    check("replaces leaves the last child", h.w.x, 3.5)
+    mut a = m.fresh()
+    mut b = m.fresh()
+    check("others", m.others(a, b, 2), 2002.5)
+
+    # 本体の `V` を `h.w` に入れる: まとめた中で `h.w` の件だけ外れる
+    h = m.fresh()
+    mut put_ok = True
+    try:
+        m.put_w(h, V(0.25, 0.5))
+    except TypeError as e:
+        # `mustbe` がモジュールの型を区別するようになったら（known_bugs.md #30）、この形は作れない
+        put_ok = False
+        emit([str("put_w refused: " + str(e))])
+    if put_ok:
+        check("adds with the main program's V", m.adds(h, 4), 3003.0)
+        h = m.fresh()
+        m.put_w(h, V(0.25, 0.5))
+        check("sums with the main program's V", m.sums(h, 3), 10503.5)
+
+# ── 出力を照らす ──
+check_output([
+    "round 0",
+    "adds OK",
+    "adds leaves the argument OK",
+    "sums OK",
+    "replaces OK",
+    "replaces leaves the last child OK",
+    "others OK",
+    "adds with the main program's V OK",
+    "sums with the main program's V OK",
+    "round 1",
+    "adds OK",
+    "adds leaves the argument OK",
+    "sums OK",
+    "replaces OK",
+    "replaces leaves the last child OK",
+    "others OK",
+    "adds with the main program's V OK",
+    "sums with the main program's V OK",
+    "round 2",
+    "adds OK",
+    "adds leaves the argument OK",
+    "sums OK",
+    "replaces OK",
+    "replaces leaves the last child OK",
+    "others OK",
+    "adds with the main program's V OK",
+    "sums with the main program's V OK",
+    "",
+], "attr_blocks_grouped")

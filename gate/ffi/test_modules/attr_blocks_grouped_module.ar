@@ -1,0 +1,61 @@
+# attr_blocks_grouped_module.ar — examples/interop/attr_blocks_grouped.ar が読むモジュール（copy_alloc_speed_plan.md 7-18）
+#
+# 同じ親の変数の入れ子の受け手を 2 つ以上使う箇所（`h.v.add(h.w)`・`h.v.x = h.w.x + h.u.y`）は、親を 1 回だけたどる
+# コールバックで子の番地をまとめて取る。1 件ごとの結果は 1 つずつ取ったときと同じで、外れた件（IC のセルが空・表と違う
+# クラスの子）だけが今までの道へ回る。どの関数もループで何周も回す（1 周目は読み出しの IC のセルが空で必ず外れる）。
+
+class V:
+    mut x: float
+    mut y: float
+
+    fn add(mut self, let o: V) -> None:
+        self.x = self.x + o.x
+        self.y = self.y + o.y
+
+# `name` があるので raw レイアウトでない（フィールドはインスタンスを持つ slot）
+class H:
+    mut v: V
+    mut w: V
+    mut u: V
+    mut name: str
+
+fn fresh() -> H:
+    return H(V(1.0, 2.0), V(0.5, 0.25), V(4.0, 8.0), "h")
+
+# `h.w` に別の値を入れる（`mustbe V` は名前で照合するので、本体の同じ名前のクラスも通る・known_bugs.md #30）
+fn put_w(mut h: H, let x: Any) -> None:
+    h.w = x mustbe V
+
+# 受け手と引数が同じ親（2 つをまとめて取る）
+fn adds(mut h: H, let k: int) -> float:
+    mut i = 0
+    while i < k:
+        h.v.add(h.w)
+        i += 1
+    return h.v.x * 1000.0 + h.v.y
+
+# 書き込み先と 2 つの読み出し先が同じ親（3 つをまとめて取る）
+fn sums(mut h: H, let k: int) -> float:
+    mut i = 0
+    while i < k:
+        h.v.x = h.w.x + h.u.y
+        h.w.x = h.w.x + 1.0
+        i += 1
+    return h.v.x * 1000.0 + h.w.x
+
+# 呼ぶ間に親のフィールドを差し替える（覚えた番地は捨てられ、次の周は新しい子を取る）
+fn replaces(mut h: H, let k: int) -> float:
+    mut i = 0
+    while i < k:
+        h.v.add(h.w)
+        h.w = V(h.w.x + 1.0, 0.0)
+        i += 1
+    return h.v.x * 1000.0 + h.v.y
+
+# 親が違う（まとめない）
+fn others(mut a: H, mut b: H, let k: int) -> float:
+    mut i = 0
+    while i < k:
+        a.v.add(b.w)
+        i += 1
+    return a.v.x * 1000.0 + a.v.y
