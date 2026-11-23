@@ -484,17 +484,15 @@ fn compile_msvc_shim(
     out_dll: &Path,
     config: &CppBuildConfig,
 ) -> Result<(), String> {
-    // If shim already exists and source is unchanged, skip recompilation
+    // If shim already exists and source is unchanged, skip recompilation.
+    // 前に作ったシムのソースの記録（`%TEMP%\ar_build_<stem>\shim.cpp`）。読めなければ作り直す（記録が無いのと同じ）。
     let stem = out_dll
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("shim");
-    let temp_dir = std::env::temp_dir().join(format!("ar_build_{stem}"));
-    std::fs::create_dir_all(&temp_dir)
-        .map_err(|e| format!("CppShim: cannot create temp dir: {e}"))?;
-
-    let cpp_file = temp_dir.join("shim.cpp");
-    let prev_src = std::fs::read_to_string(&cpp_file).unwrap_or_default();
+    let record_dir = std::env::temp_dir().join(format!("ar_build_{stem}"));
+    let record_file = record_dir.join("shim.cpp");
+    let prev_src = std::fs::read_to_string(&record_file).unwrap_or_default();
     if out_dll.exists() && prev_src == cpp_src {
         eprintln!(
             "CppShim: shim source unchanged, reusing '{}'",
@@ -503,6 +501,32 @@ fn compile_msvc_shim(
         return Ok(());
     }
 
+    // ⚠ ビルド（`shim.cpp`・`build.bat`・cl.exe の `.obj`）はこのプロセスだけの作業ディレクトリで行う（known_bugs.md #19・
+    //   中継の `compile_wrapper` と同じ `private_temp_dir`）。以前は記録と同じ `ar_build_<stem>` で行い、同じヘッダのシムを
+    //   同時に作る 2 つのプロセスが互いの `shim.cpp` / `build.bat` を書き換えた。記録もビルドの前に書いていたので、ビルドに
+    //   失敗すると次の回は新しいソースと合わない前のシムを「変わっていない」として使っていた。記録は成功した後に書く。
+    let temp_dir = crate::partial_compiler::private_temp_dir("ar_cpp_shim")
+        .map_err(|e| format!("CppShim: cannot create a temp dir: {e}"))?;
+    let result = compile_msvc_shim_in(&temp_dir, cpp_src, msvc, header_path, out_dll, config);
+    // 出力（`out_dll`）は作業ディレクトリの外に書くので、作業ディレクトリは丸ごと消せる
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    result?;
+    // 記録は省くための印でしかないので、書けなくても（別のプロセスが同時に書いている）誤りにしない（次の回が作り直すだけ）
+    if std::fs::create_dir_all(&record_dir).is_ok() {
+        let _ = std::fs::write(&record_file, cpp_src);
+    }
+    Ok(())
+}
+
+fn compile_msvc_shim_in(
+    temp_dir: &Path,
+    cpp_src: &str,
+    msvc: &MsvcPaths,
+    header_path: &Path,
+    out_dll: &Path,
+    config: &CppBuildConfig,
+) -> Result<(), String> {
+    let cpp_file = temp_dir.join("shim.cpp");
     std::fs::write(&cpp_file, cpp_src)
         .map_err(|e| format!("CppShim: cannot write shim.cpp: {e}"))?;
 
@@ -598,7 +622,7 @@ fn compile_msvc_shim(
 
     let output = Command::new("cmd")
         .args(["/c", bat_file.to_str().unwrap_or("build.bat")])
-        .current_dir(&temp_dir)
+        .current_dir(temp_dir)
         .output()
         .map_err(|e| format!("CppShim: cannot run cmd.exe: {e}"))?;
 
