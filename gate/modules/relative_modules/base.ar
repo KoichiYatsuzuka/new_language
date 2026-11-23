@@ -7,7 +7,7 @@ let NAME: str = "base"
 class Unit:
     let v: int
 
-    fn __init__(mut self, let v: int):
+    fn __init__(mut self, let v: int) -> None:
         self.v = v
 
 fn double(let n: int) -> int:

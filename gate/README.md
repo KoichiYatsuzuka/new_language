@@ -197,7 +197,9 @@ let a: int = "s"            # expect: static VarTypeMismatch
 - 9 カテゴリの例題 733 件を、逐次と 6 並列で同じ exe で走らせ、全件の exit が一致した（逐次 168 秒・6 並列 36 秒）。
 - 以前 6 並列で落ちた 8 件（cpp-dll・`import[rs]`・`.arc`）の原因は、一時ディレクトリの**固定の名前**を同時に走る
   arrow.exe どうしが取り合っていたこと（cpp-dll の中継のビルドと読み込む DLL・`.arc` から取り出す DLL・`import[rs]` の
-  cargo のプロジェクト）。プロセスごとの作業ディレクトリに直した（`partial_compiler::private_temp_dir`）。
+  cargo のプロジェクト）。ビルドの中間はプロセスごとの作業ディレクトリに直した（`partial_compiler::private_temp_dir`）。
+  読み込む DLL は、別の作業（copy_alloc_speed_plan.md 7-8）で中身のハッシュの名前にして、プロセスをまたいで使い回す
+  形になった（`partial_compiler::materialize_native_lib`・2026-11-24 にリモートの master へ載せ直したときに合わせた）。
 - ⚠ **同じ cpp-lib の中継 DLL を同時に作り直すと取り合う**（出力先がヘッダの隣の 1 つのファイルなので）。ランナーは
   並列に走らせる前に、cpp-lib を使うテストを 1 本ずつ走らせてキャッシュを温める（`cpp_cache_isolation.ps1` と同じ）。
 - ⚠ 速さを測るスクリプト（`ab_bench` / `speed_modes` など）は並列にしない（数字が変わる）。

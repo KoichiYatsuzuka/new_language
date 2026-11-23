@@ -9,8 +9,11 @@ class GateCheckFailed(Error):
         self.message = message
 
 # `actual == expected` でなければ止める。説明・期待・実際の値（repr）を文面に入れる。
+# ⚠ `Any` どうしを `==` で比べるのは静的な誤り（OperationOnAny）。`list[Any]` の `count` は実行時の `==` で数えるので、
+#   それで同じ意味の比べ方にする（1 と 1.0 は等しい・インスタンスは中身で比べる）。以前は `actual == expected` と書いていて、
+#   import 先の誤りが報告されるようになった（known_bugs #21）ところで全テストが止まった。
 fn check_eq(let actual: Any, let expected: Any, let what: str) -> None:
-    if not (actual == expected):
+    if not ([actual].count(expected) == 1):
         raise GateCheckFailed(what + ": expected " + repr(expected) + ", got " + repr(actual))
 
 # `cond` が偽なら止める。
