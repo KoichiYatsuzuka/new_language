@@ -1,0 +1,36 @@
+# nested_native_call_lifetime_module.ar — 入れ子のネイティブ呼び出しが作った値は、その呼び出しから戻れば捨てられる
+# （known_bugs.md #25）
+#
+# `size_of` は `float` を返し、それ自身は値を積まない（`len(b)` はコールバック 1 つ）ので、呼ぶ側は前後でアリーナを
+# 巻き戻さない（native_object_access_plan.md 9-2）。`len(b)` はインタプリタを通って `Bag.__len__`（コンパイル済み）を
+# 入れ子の呼び出しで呼び、`__len__` は Python のオブジェクトを 1 つ作る。
+# ⚠ 以前は入れ子の呼び出しが積んだ値がいちばん外の呼び出しが終わるまでアリーナに残り、ループの回数だけ溜まった
+#   （作った Tracker が捨てられないので `lifetime_py.alive()` が回数になる。300 万回で最大のメモリ 11.8 → 273.6 MB）。
+# ⚠ `import[py] ffi_probe..` は入口のファイルのディレクトリから探すので、このモジュールは examples/interop に置く。
+#
+# Compile with:
+#   cargo run --release -- --compile examples/interop/nested_native_call_lifetime_module.ar
+
+import[py] ffi_probe.lifetime_py as P
+
+class Bag:
+    mut n: int
+
+    fn __len__(let self) -> int:
+        mut t = P.make()
+        return self.n
+
+# 値を積まない `float` の関数（呼ぶ側はこの呼び出しの前後で巻き戻さない）
+fn size_of(let b: Bag) -> float:
+    return float(len(b))
+
+# `k` 回呼んだ後、まだ生きている Tracker の数（いちばん外の呼び出しの中で数える）
+fn alive_after(let b: Bag, let k: int) -> int:
+    mut acc = 0.0
+    mut i = 0
+    while i < k:
+        acc += size_of(b)
+        i += 1
+    if acc != float(k * b.n):
+        return -1
+    return P.alive()

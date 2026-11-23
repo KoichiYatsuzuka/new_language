@@ -164,7 +164,9 @@ impl Interpreter {
             body: std::rc::Rc::from(body),
             captured_env,
             return_type: return_type.map(|s| s.to_string()),
-            vm_chunk: None,
+            // 定義サイトの器を持たない関数も、関数の値ごとの置き場を持つ（copy_alloc_speed_plan.md 6-3）。
+            // ⚠ 無いと `get_or_compile_chunk` が呼び出しのたびに `vm_chunks`（SipHash の表）を引き、`Weak` を戻していた。
+            vm_chunk: Some(Default::default()),
             bound: None,
             // 最上位（とツリーウォークで走る本体の中）の関数は名前と同じ。
             qualname: None,
@@ -640,7 +642,8 @@ impl Interpreter {
                         body: std::rc::Rc::from(&mbody[..]),
                         captured_env: HashMap::new(),
                         return_type: mret.clone(),
-                        vm_chunk: None,
+                        // メソッドも値ごとの置き場を持つ（上の `exec_fn_def` と同じ理由・6-3）
+                        vm_chunk: Some(Default::default()),
                         bound: None,
                         qualname: Some(self.method_qualname(name, mname)),
                         group: None,
@@ -773,12 +776,22 @@ impl Interpreter {
         // raw ブロックレイアウト（.claude/skills/c-abi-interop/SKILL.md P1）:
         // trait 継承なし・全フィールドがプリミティブ（int/float/C ABI 型）・24 フィールド以下の
         // クラスはフィールドを InstanceData.raw の C ABI レイアウト領域に格納する。
-        let raw_layout = if bases.is_empty() && own_field_types.len() == field_count {
-            crate::interpreter::value::RawLayout::from_fields(&own_field_types).map(Rc::new)
-        } else {
-            None
-        };
+        // ⚠ 判定は `RawLayout::for_class` の 1 つ（コンパイル済みコードの静的な並びと同じ関数・copy_alloc_speed_plan.md 8-2）。
+        let raw_layout =
+            crate::interpreter::value::RawLayout::for_class(bases.is_empty(), &own_field_types, field_count).map(Rc::new);
 
+        // private / protected のメンバーを持つ最初のクラスなら、コンパイル済みコードが文脈の切り替えを省くのをやめる
+        // （copy_alloc_speed_plan.md 7-3）。⚠ 省いた呼び出しの途中で立つと、その呼び出しの残りが違う文脈で走る。
+        // クラスはモジュールの最上位にしか書けない（10-16）ので起きないはずだが、起きたら黙って続けずに止める。
+        if crate::interpreter::value::note_class_access(field_access.is_empty(), method_access.is_empty())
+            && crate::interpreter::native_api::native_call_active()
+        {
+            return Err(format!(
+                "RuntimeError: class '{name}' with private / protected members was defined during a call into compiled code"
+            ));
+        }
+        // `__copy__` を持つクラスなら、コンパイル済みコードが値を見ずに複製を省くのをやめる（7-7）
+        crate::interpreter::value::note_class_copy_hook(methods.contains_key("__copy__"));
         let cls = Rc::new(crate::interpreter::ClassValue {
             // モジュールで定義したクラスはモジュールの名前を持つ（`tags.Tag` の判定・10-8）。
             // ⚠ 関数の中の定義でも、関数は定義したモジュールの大域で走る（`switch_globals`）ので正しく引ける。

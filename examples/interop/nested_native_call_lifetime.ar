@@ -1,0 +1,24 @@
+# nested_native_call_lifetime.ar — 入れ子のネイティブ呼び出しが作った値は、その呼び出しから戻れば捨てられる
+# （known_bugs.md #25）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/nested_native_call_lifetime_module.ar
+#   2. cargo run --release -- examples/interop/nested_native_call_lifetime.ar
+#
+# コンパイル済みの `alive_after` がループで `size_of(b)` を呼び、その中の `len(b)` が `Bag.__len__`（コンパイル済み）を
+# 入れ子の呼び出しで呼ぶ。`__len__` が作る Python のオブジェクトは、`__len__` から戻れば捨てられる（VM と同じ）。
+# ⚠ 以前は入れ子の呼び出しが積んだ値がいちばん外の呼び出し（`alive_after`）が終わるまで残り、生きている数が回数になった。
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import[py] ffi_probe.lifetime_py as P
+import nested_native_call_lifetime_module as m
+
+fn check(let label: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError(label + ": expected " + str(want) + ", got " + str(got))
+    print(label + " OK")
+
+let b = m.Bag(3)
+check("objects made by nested calls are dropped when the calls return", m.alive_after(b, 50), 0)
+check("and the same after more calls", m.alive_after(b, 2000), 0)
+check("none is alive after the outermost call", P.alive(), 0)

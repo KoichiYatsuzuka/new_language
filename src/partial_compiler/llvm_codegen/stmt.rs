@@ -61,7 +61,21 @@ impl<'a> GenCtx<'a> {
             // 代入先の形は `stmt_eligible` が `obj.attr` / `obj::T.attr` に絞っている。
             Stmt::AttrAssign { target, value, span: _ } => {
                 let (object, trait_name, attr) = attr_target(target);
+                // 番地で呼ぶ変種の本体の `self.f = v`（7-14）: 検査なしで書く（呼ぶ側が不変でないことを確かめてある）
+                if trait_name.is_none() && self.blk_self.is_some() && ident_name(object) == Some("self") {
+                    let (val, vt) = self.gen_expr(value);
+                    self.emit_blk_self_write(attr, &val, vt);
+                    return;
+                }
                 // `a.b.c = v`（途中に属性が 1 段以上）で値の評価が何も起こさなければ、途中を積まない 1 回の呼び出し（12-3）
+                // `a.b.x = v` で `a.b` が raw レイアウトのクラス・値の評価が何も起こさないなら、`a.b` を積まずに番地へ書く（8-7）
+                if trait_name.is_none() && self.emit_nested_field_assign(object, attr, value) {
+                    return;
+                }
+                // 値が raw レイアウトのクラスの数値のフィールドを読むなら、読み書きする番地を先に確かめる（7-17 ②）
+                if trait_name.is_none() && self.emit_checked_nested_assign(object, attr, value) {
+                    return;
+                }
                 if trait_name.is_none() && self.emit_attr_path_assign(target, value) {
                     return;
                 }
@@ -70,7 +84,7 @@ impl<'a> GenCtx<'a> {
                 let oh  = self.to_handle(&obj, ot);
                 match trait_name {
                     // `int` / `float` の値は箱に入れずに書く（4-2）
-                    None => self.emit_attr_assign_typed(&oh, attr, &val, vt),
+                    None => self.emit_field_assign(object, &oh, attr, &val, vt),
                     Some(_) => {
                         let vh = self.to_handle(&val, vt);
                         self.emit_attr_store(&oh, trait_name, attr, &vh);
@@ -79,6 +93,14 @@ impl<'a> GenCtx<'a> {
             }
             Stmt::AttrCompoundAssign { target, op, value, span: _ } => {
                 let (object, trait_name, attr) = attr_target(target);
+                // 番地で呼ぶ変種の本体の `self.f op= v`（7-14）: 右辺 → 読み → 演算 → 書き（下と同じ順）
+                if trait_name.is_none() && self.blk_self.is_some() && ident_name(object) == Some("self") {
+                    let (rv, rt) = self.gen_expr(value);
+                    let (old, old_t) = self.emit_blk_self_read(attr);
+                    let (res, rest) = self.specialize_binop(op, &old, old_t, &rv, rt);
+                    self.emit_blk_self_write(attr, &res, rest);
+                    return;
+                }
                 // ⚠⚠ ツリーウォーク（`attr_assign`）・VM と同じ順で評価する: 右辺 → 受け手（読み）→ 二項演算 →
                 //   受け手（書き・もう 1 度評価）。以前は受け手を先に読んで右辺を後に評価しており、右辺が同じ
                 //   フィールドを書き換えると（`self.n += self.bump()`）その書き換えが消えた（§0.3 ⑪・4-2 で発見・
@@ -91,8 +113,15 @@ impl<'a> GenCtx<'a> {
                     (None, Expr::Attr { node_id, .. }) => self.field_ty_resolved(object, attr, *node_id),
                     _ => None,
                 };
+                // raw レイアウトでないクラスの数値のフィールドは、値の番地を 1 回のコールバックで取って書く（7-16）
+                if let (None, Some(kt @ (Ty::Int | Ty::Float))) = (trait_name, known) {
+                    if self.fused_compound_ok(object, attr, op, kt, rt) {
+                        self.emit_fused_num_compound(object, &oh, attr, op, kt, &rv, rt);
+                        return;
+                    }
+                }
                 let (old, old_t) = match (trait_name, known) {
-                    (None, Some(t @ (Ty::Int | Ty::Float))) => self.emit_attr_read(&oh, attr, Some(t)),
+                    (None, Some(t @ (Ty::Int | Ty::Float))) => self.emit_field_read(object, &oh, attr, Some(t)),
                     _ => (self.emit_attr_load(&oh, trait_name, attr), Ty::Handle),
                 };
                 let (res, rest) = self.specialize_binop(op, &old, old_t, &rv, rt);
@@ -103,7 +132,7 @@ impl<'a> GenCtx<'a> {
                     self.to_handle(&obj2, ot2)
                 };
                 match trait_name {
-                    None => self.emit_attr_assign_typed(&oh, attr, &res, rest),
+                    None => self.emit_field_assign(object, &oh, attr, &res, rest),
                     Some(_) => {
                         let rh = self.to_handle(&res, rest);
                         self.emit_attr_store(&oh, trait_name, attr, &rh);
@@ -160,7 +189,16 @@ impl<'a> GenCtx<'a> {
                     self.br(&header);
                 }
             }
-            Stmt::Expr(e) => { self.gen_expr(e); }
+            // 式の文は値を使わない: いちばん外の呼び出しの遅い道は、結果を残さずに巻き戻せる（7-17・`discarded_func`）。
+            // 呼び出しの `func` の式（AST のノード）で覚えるので、引数の中の呼び出しは当たらない
+            Stmt::Expr(e) => {
+                self.discarded_func = match e {
+                    Expr::Call { func, .. } => Some(&**func as *const Expr),
+                    _ => None,
+                };
+                self.gen_expr(e);
+                self.discarded_func = None;
+            }
             Stmt::Freeze(..) => {}
             Stmt::Block(body) => self.gen_stmts(body),
 
@@ -377,7 +415,7 @@ impl<'a> GenCtx<'a> {
 
                 } else {
                 // 5-2: `for i in range(..)`（組み込みの range・引数が全部 int・刻みが無いか 0 でないリテラル）は
-                // カウンタのループにする（`CB_ITER_FROM` / `CB_ITER_NEXT` もループ変数の箱詰めもしない）。
+                // カウンタのループにする（イテレータもループ変数の箱詰めも作らない）。
                 // 載らなければ、評価済みの引数で range を作って今までの道へ（引数は 1 回だけ評価する）。
                 let ih = match range_call_args(iter).filter(|_| self.plain_builtin(range_callee(iter), "range")) {
                     Some(rargs) => {
@@ -394,33 +432,19 @@ impl<'a> GenCtx<'a> {
                         self.to_handle(&iv, it)
                     }
                 };
-                // ── Original CB_ITER_FROM / CB_ITER_NEXT path ────────────────
-                let iter_h   = self.call_cb(CB_ITER_FROM, &[format!("i64 {ih}")]);
-                let iter_al  = format!("%_iter{}", self.reg);
-                self.reg += 1;
-                self.alloca_buf.push_str(&format!("  {iter_al} = alloca i64, align 8\n"));
-                self.ec(&format!("store i64 {iter_h}, ptr {iter_al}"));
-                self.iter_scopes.push(iter_al.clone());
-
+                // ── 要素の並び（`CB_ITER_BEGIN`）か 1 つずつ（`CB_ITER_NEXT_AT`）の道（7-20） ────────
+                let fl = self.emit_for_begin(&ih);
                 // 名前の場所は `alloca_var` が決める（同じ名前の 2 つ目の `for`・1-10）
                 let tgt_al = self.alloca_var(target, Ty::Handle);
-
+                let fuse = self.new_loop_fuse_slot();
                 let pre_pos = self.loop_pre_pos();
                 self.br(&loop_blk);
                 self.start_block(&loop_blk);
-                let iter_reload = self.fresh_reg();
-                self.ec(&format!("{iter_reload} = load i64, ptr {iter_al}"));
-                let next = self.call_cb(CB_ITER_NEXT, &[format!("i64 {iter_reload}")]);
-                self.ec(&format!("store i64 {next}, ptr {tgt_al}"));
-                self.note_handle_store(&tgt_al);
-                let is_done = self.fresh_reg();
-                self.ec(&format!("{is_done} = icmp eq i64 {next}, -1"));
-                let body_blk2 = self.fresh_blk();
-                self.br_cond(&is_done, &exit_blk, &body_blk2);
-                self.start_block(&body_blk2);
+                self.emit_for_next(&fl, &fuse, &tgt_al, &exit_blk);
+                self.loop_fuse_slot = Some(fuse);
                 self.gen_loop_body(body, &loop_blk, &exit_blk, pre_pos, |_| {});
                 self.start_block(&exit_blk);
-                self.drop_iter_scope(&iter_al);
+                self.drop_iter_scope(&fl.iter_al);
                 } // end else (original path)
             }
 
@@ -519,6 +543,178 @@ impl<'a> GenCtx<'a> {
         self.start_block(exit);
     }
 
+    /// `x.f op= v`（型 `kt` の数値のフィールド・右辺は評価済みで型 `rt`）を、値の番地を返すコールバック
+    /// （`CB_NUM_FIELD_PTR`）の 1 回で行えるか（copy_alloc_speed_plan.md 7-16）。
+    /// - 受け手が名前（`self`・ローカル）: VM は名前でない受け手を書く前にもう 1 度評価する（`f().n += 1` は `f` を 2 回呼ぶ）
+    /// - 受け手のクラスが raw レイアウトのクラスでない: raw レイアウトなら番地から直接読み書きする道（8-3・8-4）の方が速い
+    /// - 演算の結果の型がフィールドの型と同じ形で、演算が何も呼ばない: `int` は `+` `-` `*`（`int` の右辺）、`float` は
+    ///   `+` `-` `*` `/`（`int` / `float` の右辺）。`int` のフィールドへ `float` を足すと型の誤りになるので今までの道
+    pub(super) fn fused_compound_ok(&self, object: &Expr, attr: &str, op: &crate::ast::BinOp, kt: Ty, rt: Ty) -> bool {
+        use crate::ast::BinOp;
+        if self.typed_mode || self.blk_mode || self.terminated || ident_name(object).is_none() {
+            return false;
+        }
+        if self.receiver_class(object).is_some_and(|r| self.direct_read_plan(&r.class, attr, kt).is_some()) {
+            return false;
+        }
+        match kt {
+            Ty::Int => rt == Ty::Int && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul),
+            Ty::Float => matches!(rt, Ty::Int | Ty::Float) && matches!(op, BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div),
+            _ => false,
+        }
+    }
+
+    /// [`Self::fused_compound_ok`] の形のコード: 番地を取り（`CB_NUM_FIELD_PTR`）、空でなければ読んで演算して書く
+    /// （その間に何も呼ばない）。空なら今までの道（同じ IC のセルで型付きで読む → 演算 → `emit_field_assign`）。
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn emit_fused_num_compound(
+        &mut self,
+        object: &Expr,
+        oh: &str,
+        attr: &str,
+        op: &crate::ast::BinOp,
+        kt: Ty,
+        rv: &str,
+        rt: Ty,
+    ) {
+        let cell = self.ic_cell();
+        let name = self.str_const(attr.as_bytes());
+        let len = attr.len();
+        let kind = i32::from(kt == Ty::Float);
+        let p = self.call_cb(CB_NUM_FIELD_PTR, &[
+            format!("i64 {oh}"), name.clone(), format!("i32 {len}"), cell.clone(), format!("i32 {kind}"),
+        ]);
+        let (b_fast, b_slow, b_done) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        let empty = self.fresh_reg();
+        self.ec(&format!("{empty} = icmp eq ptr {p}, null"));
+        self.br_cond(&empty, &b_slow, &b_fast);
+
+        self.start_block(&b_fast);
+        let t = llvm_ty(kt);
+        let old = self.fresh_reg();
+        self.ec(&format!("{old} = load {t}, ptr {p}, align 8"));
+        let (res, rest) = self.specialize_binop(op, &old, kt, rv, rt);
+        debug_assert_eq!(rest, kt, "fused_compound_ok only lets through operations that keep the field's type");
+        self.ec(&format!("store {t} {res}, ptr {p}, align 8"));
+        self.br(&b_done);
+
+        // 外れ: 読み出しは同じ IC のセルで（外れの道がセルを埋め、次から番地が取れる）
+        self.start_block(&b_slow);
+        let cb = if kt == Ty::Float { CB_GET_FLOAT_FIELD_IC } else { CB_GET_INT_FIELD_IC };
+        let old2 = self.call_cb(cb, &[format!("i64 {oh}"), name, format!("i32 {len}"), cell]);
+        let (res2, rest2) = self.specialize_binop(op, &old2, kt, rv, rt);
+        self.emit_field_assign(object, oh, attr, &res2, rest2);
+        self.br(&b_done);
+        self.start_block(&b_done);
+    }
+
+    /// `for` の見出しが読む保存点の置き場を作り、ループに入るたびに -1（巻き戻さない）にする（7-15）。ループの本体が値を
+    /// 積み、周の終わりに残す値が無ければ、`gen_loop_body` がループに入る所で保存点を書く。⚠ `loop_pre_pos` より前に呼ぶ
+    /// （保存点の書き込みは -1 の後に差し込まれる）。
+    pub(super) fn new_loop_fuse_slot(&mut self) -> String {
+        let slot = format!("%_itsave{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{slot} = alloca i64, align 8"));
+        self.ec(&format!("store i64 -1, ptr {slot}"));
+        slot
+    }
+
+    /// `for` の見出しの取り出し（7-15）: 置き場の保存点（-1 なら巻き戻さない）まで巻き戻してから次の要素（`CB_ITER_NEXT_AT`）。
+    pub(super) fn emit_iter_next_at(&mut self, iter_al: &str, slot: &str) -> String {
+        let it = self.fresh_reg();
+        self.ec(&format!("{it} = load i64, ptr {iter_al}"));
+        let save = self.fresh_reg();
+        self.ec(&format!("{save} = load i64, ptr {slot}"));
+        self.call_cb(CB_ITER_NEXT_AT, &[format!("i64 {it}"), format!("i64 {save}")])
+    }
+
+    /// `for x in <式>` の入口（copy_alloc_speed_plan.md 7-20）: 反復対象のハンドル `ih` から `CB_ITER_BEGIN` でイテレータを
+    /// 作り、写す型（リストなど）なら要素のハンドルの並び（番地と個数）を受け取る。イテレータは `iter_scopes` に積む
+    /// （出口で `drop_iter_scope`）。⚠ ループの保存点（`gen_loop_body` が `loop_pre_pos` に差し込む）はこの後に取るので、
+    /// 並びの要素の欄は周ごとの巻き戻しで消えない。
+    /// 並びの番地と個数は、コールバックへ渡した置き場から、渡さない置き場へ写す（LLVM がループの中で読み直さずに済む）。
+    pub(super) fn emit_for_begin(&mut self, ih: &str) -> ForLoop {
+        let n = self.reg;
+        self.reg += 1;
+        let out = format!("%_runout{n}");
+        let fl = ForLoop {
+            iter_al: format!("%_iter{n}"),
+            rptr_al: format!("%_rptr{n}"),
+            rlen_al: format!("%_rlen{n}"),
+            ridx_al: format!("%_ridx{n}"),
+        };
+        self.ea(&format!("{out} = alloca [2 x i64], align 8"));
+        self.ea(&format!("{} = alloca i64, align 8", fl.iter_al));
+        self.ea(&format!("{} = alloca ptr, align 8", fl.rptr_al));
+        self.ea(&format!("{} = alloca i64, align 8", fl.rlen_al));
+        self.ea(&format!("{} = alloca i64, align 8", fl.ridx_al));
+        let iter_h = self.call_cb(CB_ITER_BEGIN, &[format!("i64 {ih}"), format!("ptr {out}")]);
+        self.ec(&format!("store i64 {iter_h}, ptr {}", fl.iter_al));
+        let p = self.fresh_reg();
+        self.ec(&format!("{p} = load ptr, ptr {out}"));
+        self.ec(&format!("store ptr {p}, ptr {}", fl.rptr_al));
+        let lp = self.fresh_reg();
+        let len = self.fresh_reg();
+        self.ec(&format!("{lp} = getelementptr inbounds [2 x i64], ptr {out}, i32 0, i32 1"));
+        self.ec(&format!("{len} = load i64, ptr {lp}"));
+        self.ec(&format!("store i64 {len}, ptr {}", fl.rlen_al));
+        self.ec(&format!("store i64 0, ptr {}", fl.ridx_al));
+        self.iter_scopes.push(fl.iter_al.clone());
+        fl
+    }
+
+    /// `for` の見出し（7-20）: 次の要素のハンドルを `tgt_al` へ書き、本体の最初のブロックで終わる（終わりなら `exit` へ）。
+    /// - 並び（個数 ≥ 0）: 置き場 `fuse` の保存点が 0 以上なら巻き戻し（`CB_ARENA_COMPACT(0, ..)`・7-15 の `iter_next_at`
+    ///   と同じ）、添字が個数に届いていなければ並びから読む。**本体が値を積まないループは 1 周にコールバックを 1 つも呼ばない**
+    /// - 1 つずつ（個数 -1・ジェネレータ・`__iter__` など）: 今までどおり `CB_ITER_NEXT_AT`
+    ///
+    /// ⚠ 並びの道は周ごとに積まれた誤りを見ない（`for i in range(..)` のカウンタのループ・`while` と同じ）。誤りの後の
+    ///   コールバックは何もせず、番地を取るコールバックは空を返すので、残りの周は何も書かずに回り切る。
+    pub(super) fn emit_for_next(&mut self, fl: &ForLoop, fuse: &str, tgt_al: &str, exit: &str) {
+        let (b_run, b_rewind, b_check, b_get, b_one, b_body) =
+            (self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        let n = self.fresh_reg();
+        self.ec(&format!("{n} = load i64, ptr {}", fl.rlen_al));
+        let is_run = self.fresh_reg();
+        self.ec(&format!("{is_run} = icmp sge i64 {n}, 0"));
+        self.br_cond(&is_run, &b_run, &b_one);
+
+        self.start_block(&b_run);
+        let save = self.fresh_reg();
+        self.ec(&format!("{save} = load i64, ptr {fuse}"));
+        let rewind = self.fresh_reg();
+        self.ec(&format!("{rewind} = icmp sge i64 {save}, 0"));
+        self.br_cond(&rewind, &b_rewind, &b_check);
+        self.start_block(&b_rewind);
+        self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {save}")]);
+        self.br(&b_check);
+        self.start_block(&b_check);
+        let i = self.fresh_reg();
+        self.ec(&format!("{i} = load i64, ptr {}", fl.ridx_al));
+        let done = self.fresh_reg();
+        self.ec(&format!("{done} = icmp sge i64 {i}, {n}"));
+        self.br_cond(&done, exit, &b_get);
+        self.start_block(&b_get);
+        let (p, ep, h, i1) = (self.fresh_reg(), self.fresh_reg(), self.fresh_reg(), self.fresh_reg());
+        self.ec(&format!("{p} = load ptr, ptr {}", fl.rptr_al));
+        self.ec(&format!("{ep} = getelementptr inbounds i64, ptr {p}, i64 {i}"));
+        self.ec(&format!("{h} = load i64, ptr {ep}"));
+        self.ec(&format!("{i1} = add i64 {i}, 1"));
+        self.ec(&format!("store i64 {i1}, ptr {}", fl.ridx_al));
+        self.ec(&format!("store i64 {h}, ptr {tgt_al}"));
+        self.br(&b_body);
+
+        self.start_block(&b_one);
+        let next = self.emit_iter_next_at(&fl.iter_al, fuse);
+        self.ec(&format!("store i64 {next}, ptr {tgt_al}"));
+        let stop = self.fresh_reg();
+        self.ec(&format!("{stop} = icmp eq i64 {next}, -1"));
+        self.br_cond(&stop, exit, &b_body);
+
+        self.start_block(&b_body);
+        self.note_handle_store(tgt_al);
+    }
+
     /// ループに入る直前（見出しへの `br` を出す前）の `code_buf` の位置。ループの前が到達しないなら `None`（9-1）。
     pub(super) fn loop_pre_pos(&self) -> Option<usize> {
         (!self.terminated).then_some(self.code_buf.len())
@@ -591,11 +787,252 @@ impl<'a> GenCtx<'a> {
         true
     }
 
+    /// `a.b.x = v`（受け手 `object` が属性 `a.b`）を、`a.b` をアリーナに積まずに番地へ書く（copy_alloc_speed_plan.md 8-7・
+    /// D-13 ⑥）。出したら `true`。当てはまらなければ何も出さずに `false`。
+    ///
+    /// 当てはまるのは、`a.b` のクラスがこのモジュールの raw レイアウトのクラスで `x` が `mut` の数値のフィールド、かつ
+    /// **値の評価が何も起こさない**とき（[`Self::effect_free_value`]）。評価の順は `a` → 値 → `a.b` の読み出し → 書き込みで、
+    /// `emit_attr_path_assign`（12-3）と同じ（VM は `a.b` を値より先に読むが、値の評価が何も起こさないので見分けられない）。
+    /// ⚠ 値の評価が何かを起こしうる式（呼び出し・属性の読み出しを含む）は対象外: `a.b` を値より先に読んでアリーナに
+    ///   積む今までの順でないと、値の評価が `a.b` を差し替えたときに書く先が変わる（そちらは `emit_field_assign` が
+    ///   ハンドルから番地を取って書く・8-4）。
+    fn emit_nested_field_assign(&mut self, object: &Expr, attr: &str, value: &Expr) -> bool {
+        let Expr::Attr { object: parent, attr: pattr, .. } = object else { return false };
+        if !self.effect_free_value(value) {
+            return false;
+        }
+        let Some(class) = self.receiver_class(object).map(|r| r.class) else { return false };
+        if !self.direct_write_field(&class, attr) {
+            return false;
+        }
+        let (pv, pt) = self.gen_expr(parent);
+        let ph = self.to_handle(&pv, pt);
+        let (val, vt) = self.gen_expr(value);
+        let src = BlockSrc::Field { parent_h: &ph, attr: pattr };
+        if !self.emit_direct_write(&class, src, attr, &val, vt) {
+            // 値の型がフィールドに入らない（`float` を整数のフィールドへ など）: 今までの道（読んでから IC 付きで書く）
+            let (oh, _) = self.emit_attr_read(&ph, pattr, None);
+            self.emit_attr_assign_typed(&oh, attr, &val, vt);
+        }
+        true
+    }
+
+    /// `a.b.x = <数の式>` を、読み書きする番地を先に確かめてから検査なしで行う（copy_alloc_speed_plan.md 7-17 ②）。
+    /// 出したら `true`。当てはまらなければ何も出さずに `false`。
+    ///
+    /// 当てはまるのは、`a` がローカル変数で、`a.b` がこのモジュールの raw レイアウトのクラス・`x` がそこへ値の型のまま書ける
+    /// フィールド、値が数のリテラル・数のローカル変数・**確かめられる読み出し**（`L.f` / `L.c.f`: `L` はローカル変数、
+    /// 受け手は raw レイアウトのクラスで `f` は数値のフィールド）の `+` / `-` / `*` だけのとき（[`Self::checked_num_ty`]）。
+    ///
+    /// 出すコード:
+    /// 1. 書き込み先と読み出し先の番地を取る（`CB_ATTR_BLOCK` / `CB_INST_BLOCK`・覚えた番地は使い回す）
+    /// 2. 確かめる: 番地が空でない（クラスが表のとおり）・読むフィールドの初期化の印・書き込み先が不変でない
+    /// 3. 速い道: 検査なしで読んで演算し、書いて初期化の印を立てる
+    /// 4. 遅い道: 今までの道（`a.b` を読んでアリーナに積み → 値 → 書き込み）。文は値を残さないので道の中で巻き戻す（①）
+    ///
+    /// ⚠ 評価の順: 1 で番地を取るコールバックは利用者のコードを走らせず何も書き換えないので、外れて今までの道（VM と
+    ///   同じ `a.b` → 値の順）を通っても、先に番地を取ったことは見分けられない。速い道は何も起こさない読み出しと演算だけ。
+    /// ⚠ 以前は `emit_nested_field_assign`（8-7）だけで、値の評価が何も起こさない式に限るため、属性を読む値
+    ///   （`Body.bounce` の `self.vel.x = 0.0 - self.vel.x`）は `a.b` を積んだ。積む箇所があると関数が「値を積む関数」になり、
+    ///   呼ぶ側が毎回保存点と巻き戻しで囲む。
+    fn emit_checked_nested_assign(&mut self, object: &Expr, attr: &str, value: &Expr) -> bool {
+        use crate::interpreter::value::block;
+        if self.typed_mode || self.blk_mode || self.terminated {
+            return false;
+        }
+        let Expr::Attr { object: parent, attr: pattr, .. } = object else { return false };
+        let Some(pname) = ident_name(parent).filter(|_| self.is_local_ident(parent)) else { return false };
+        let Some(tclass) = self.receiver_class(object).map(|r| r.class) else { return false };
+
+        // ── 1) 当てはまるかを、コードを出す前に全部確かめる ──
+        let mut reads: Vec<CheckedRead<'_>> = Vec::new();
+        let Some(vt) = self.checked_num_ty(value, &mut reads) else { return false };
+        // 読み出しが無い値は 8-7 の形（そちらで出せなかったものは、ここでも出せない）
+        if reads.is_empty() {
+            return false;
+        }
+        let Some((tidx, tdesc, (tity, tconv))) = self.direct_write_plan(&tclass, attr, vt) else { return false };
+        // 番地ごと（ローカル変数, 属性）に確かめる印。書き込み先が先頭（同じ番地を読むなら印をまとめる）
+        let mut blks: Vec<CheckedBlock<'_>> = vec![CheckedBlock {
+            recv: parent,
+            name: pname.to_string(),
+            attr: Some(pattr.clone()),
+            class: tclass.clone(),
+            mask: block::IMMUTABLE,
+        }];
+        for r in &reads {
+            let bit = block::init_bit(r.idx);
+            match blks.iter_mut().find(|b| b.name == r.name && b.attr == r.attr) {
+                Some(b) if b.class == r.class => b.mask |= bit,
+                // 同じ受け手を別のクラスとして読む（注釈が食い違う）: 今までの道
+                Some(_) => return false,
+                None => blks.push(CheckedBlock {
+                    recv: r.recv,
+                    name: r.name.clone(),
+                    attr: r.attr.clone(),
+                    class: r.class.clone(),
+                    mask: bit,
+                }),
+            }
+        }
+
+        // ── 2) 番地を取る: (親か変数のハンドル, 番地, 入れ子なら IC のセル)。根（ローカル変数）を先に全部読み、同じ親の
+        //    入れ子の受け手は `CB_ATTR_BLOCKS` の 1 回でまとめて取る（7-18） ──
+        let mut hs: Vec<String> = Vec::with_capacity(blks.len());
+        for b in &blks {
+            let (v, t) = self.gen_expr(b.recv);
+            hs.push(self.to_handle(&v, t));
+        }
+        let items: Vec<(String, String, Option<String>)> =
+            blks.iter().zip(&hs).map(|(b, h)| (b.class.clone(), h.clone(), b.attr.clone())).collect();
+        // クラスは raw レイアウト（`direct_read_plan` / `direct_write_plan` で確かめた）なので表があり、必ず番地のコードを出す
+        let blocks = self.emit_block_srcs(&items).expect("a raw-layout class has a direct class table");
+        let got: Vec<(String, String, Option<String>)> =
+            hs.into_iter().zip(blocks).map(|(h, (p, ic))| (h, p, ic)).collect();
+
+        // ── 3) 確かめる（外れたら遅い道へ） ──
+        let (b_fast, b_slow, b_join) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        for (b, (_, p, _)) in blks.iter().zip(&got) {
+            let nonnull = self.fresh_reg();
+            self.ec(&format!("{nonnull} = icmp ne ptr {p}, null"));
+            let b_chk = self.fresh_blk();
+            self.br_cond(&nonnull, &b_chk, &b_slow);
+            self.start_block(&b_chk);
+            let head = self.fresh_reg();
+            self.ec(&format!("{head} = load i64, ptr {p}, align 8"));
+            let masked = self.fresh_reg();
+            // LLVM の整数の定数は符号つきの 10 進で書く。不変の印は立っていないこと・初期化の印は立っていること
+            self.ec(&format!("{masked} = and i64 {head}, {}", b.mask as i64));
+            let ok = self.fresh_reg();
+            self.ec(&format!("{ok} = icmp eq i64 {masked}, {}", (b.mask & !block::IMMUTABLE) as i64));
+            let b_next = self.fresh_blk();
+            self.br_cond(&ok, &b_next, &b_slow);
+            self.start_block(&b_next);
+        }
+        self.br(&b_fast);
+
+        // ── 4) 速い道: 検査なしで読んで演算し、書く ──
+        self.start_block(&b_fast);
+        let ptrs: Vec<String> = got.iter().map(|(_, p, _)| p.clone()).collect();
+        let (v, t) = self.emit_checked_num(value, &blks, &ptrs);
+        debug_assert_eq!(t, vt, "checked_num_ty and emit_checked_num agree on the type");
+        let stored = match tconv {
+            None => v,
+            Some(op) => {
+                let c = self.fresh_reg();
+                self.ec(&format!("{c} = {op} {v} to {tity}"));
+                c
+            }
+        };
+        let tp = &ptrs[0];
+        let fp = self.fresh_reg();
+        self.ec(&format!("{fp} = getelementptr inbounds i8, ptr {tp}, i64 {}", block::field_offset(tdesc.byte_offset)));
+        self.ec(&format!("store {tity} {stored}, ptr {fp}, align {}", tdesc.width.byte_width()));
+        let head = self.fresh_reg();
+        self.ec(&format!("{head} = load i64, ptr {tp}, align 8"));
+        let head2 = self.fresh_reg();
+        self.ec(&format!("{head2} = or i64 {head}, {}", block::init_bit(tidx)));
+        self.ec(&format!("store i64 {head2}, ptr {tp}, align 8"));
+        self.br(&b_join);
+
+        // ── 5) 遅い道: 今までの道 ──
+        self.start_block(&b_slow);
+        let region = self.begin_fallback_region();
+        // 次から速い道を通れるように、空だった入れ子の番地の読み出しの IC のセルを埋める（`CB_ATTR_BLOCK` はセルが空の
+        // うちは空を返す。7-14 の遅い道と同じ）。番地が取れてほかの検査で外れたときは何も足さない
+        for (b, (h, p, ic)) in blks.iter().zip(got.clone()) {
+            let Some(a) = &b.attr else { continue };
+            let empty = self.fresh_reg();
+            self.ec(&format!("{empty} = icmp eq ptr {p}, null"));
+            let (b_fill, b_cont) = (self.fresh_blk(), self.fresh_blk());
+            self.br_cond(&empty, &b_fill, &b_cont);
+            self.start_block(&b_fill);
+            self.block_src_handle(BlockSrc::Field { parent_h: &h, attr: a }, ic);
+            self.br(&b_cont);
+            self.start_block(&b_cont);
+        }
+        let (obj, ot) = self.gen_expr(object);
+        let (val, vt2) = self.gen_expr(value);
+        let oh = self.to_handle(&obj, ot);
+        self.emit_field_assign(object, &oh, attr, &val, vt2);
+        self.end_fallback_region(region);
+        self.br(&b_join);
+
+        self.start_block(&b_join);
+        true
+    }
+
+    /// [`Self::emit_checked_nested_assign`] の値の型（`int` / `float`）。載らない式は `None`。確かめられる読み出し
+    /// （`L.f` / `L.c.f`）を `reads` に足す。関数の入口で先読みしたフィールド（`preread_fields`）は読み出しに数えない
+    /// （`gen_expr` が置き場から読む）。
+    fn checked_num_ty<'e>(&self, e: &'e Expr, reads: &mut Vec<CheckedRead<'e>>) -> Option<Ty> {
+        match e {
+            Expr::Int(_) => Some(Ty::Int),
+            Expr::Float(_) => Some(Ty::Float),
+            Expr::Ident { name, .. } => {
+                self.locals.get(name).map(|(_, t)| *t).filter(|t| matches!(t, Ty::Int | Ty::Float))
+            }
+            Expr::Attr { object: o, attr: f, .. } => {
+                if let Some((_, t)) = preread_path(e).and_then(|p| self.preread_fields.get(&p)) {
+                    return matches!(t, Ty::Int | Ty::Float).then_some(*t);
+                }
+                let (l, a) = match o.as_ref() {
+                    Expr::Attr { object: l, attr: a, .. } => (l.as_ref(), Some(a.clone())),
+                    l => (l, None),
+                };
+                let name = ident_name(l).filter(|_| self.is_local_ident(l))?;
+                let class = self.receiver_class(o)?.class;
+                let ty = self.class_fields.get(&class)?.get(f.as_str()).copied()?;
+                if !matches!(ty, Ty::Int | Ty::Float) {
+                    return None;
+                }
+                let (idx, _, _) = self.direct_read_plan(&class, f, ty)?;
+                reads.push(CheckedRead { recv: l, name: name.to_string(), attr: a, class, idx });
+                Some(ty)
+            }
+            Expr::BinOp { op: crate::ast::BinOp::Add | crate::ast::BinOp::Sub | crate::ast::BinOp::Mul, left, right, .. } => {
+                let lt = self.checked_num_ty(left, reads)?;
+                let rt = self.checked_num_ty(right, reads)?;
+                Some(if lt == Ty::Int && rt == Ty::Int { Ty::Int } else { Ty::Float })
+            }
+            _ => None,
+        }
+    }
+
+    /// [`Self::checked_num_ty`] が通した式を、確かめ済みの番地 `ptrs`（`blks` と同じ並び）から検査なしで評価する。
+    fn emit_checked_num(&mut self, e: &Expr, blks: &[CheckedBlock<'_>], ptrs: &[String]) -> (String, Ty) {
+        match e {
+            Expr::BinOp { op, left, right, .. } => {
+                let (l, lt) = self.emit_checked_num(left, blks, ptrs);
+                let (r, rt) = self.emit_checked_num(right, blks, ptrs);
+                self.specialize_binop(op, &l, lt, &r, rt)
+            }
+            Expr::Attr { object: o, attr: f, .. }
+                if preread_path(e).is_none_or(|p| !self.preread_fields.contains_key(&p)) =>
+            {
+                let (l, a) = match o.as_ref() {
+                    Expr::Attr { object: l, attr: a, .. } => (l.as_ref(), Some(a.as_str())),
+                    l => (l, None),
+                };
+                let name = ident_name(l).expect("checked by checked_num_ty");
+                let k = blks
+                    .iter()
+                    .position(|b| b.name == name && b.attr.as_deref() == a)
+                    .expect("every checked read has a block");
+                let class = blks[k].class.clone();
+                let ty = self.class_fields.get(&class).and_then(|m| m.get(f.as_str())).copied().expect("checked");
+                self.emit_trusted_read(&class, &ptrs[k], f, ty).expect("checked by checked_num_ty")
+            }
+            // リテラル・数のローカル変数・先読みしたフィールド: 何も起こさない
+            _ => self.gen_expr(e),
+        }
+    }
+
     /// 値の評価が何も起こさないか（利用者のコード・外部言語のコードを走らせず、何も書き換えない）。12-3 で途中の段の
     /// 読み出しを値の後へ回してよいかの判定。リテラル・名前（読むだけ）と、`int` / `float` と分かっている項の演算だけ。
     /// ⚠ 属性の読み出しは入れない（C# のプロパティ・Python の属性は読むだけでコードを走らせる）。演算も項がインスタンスなら
     ///   `__add__` などを呼ぶので、数と分かっている項だけ。
-    fn effect_free_value(&self, e: &Expr) -> bool {
+    pub(super) fn effect_free_value(&self, e: &Expr) -> bool {
         match e {
             Expr::Int(_) | Expr::Float(_) | Expr::Bool(_) | Expr::None | Expr::Str(_) => true,
             Expr::Ident { .. } => true,
@@ -610,7 +1047,7 @@ impl<'a> GenCtx<'a> {
     }
 
     /// `int` / `float` と分かっている項（数のリテラル・`int` / `float` のローカル変数・その演算）。
-    fn numeric_leaf(&self, e: &Expr) -> bool {
+    pub(super) fn numeric_leaf(&self, e: &Expr) -> bool {
         match e {
             Expr::Int(_) | Expr::Float(_) => true,
             Expr::Ident { name, .. } => self.locals.get(name).is_some_and(|(_, t)| matches!(t, Ty::Int | Ty::Float)),
@@ -661,6 +1098,8 @@ impl<'a> GenCtx<'a> {
         let latch = self.fresh_blk();
         let pushes_before = self.push_sites;
         let log_before = self.handle_store_log.len();
+        // 見出しが巻き戻しを受け持てるループ（7-15）。本体の入れ子のループに渡さないよう、本体を出す前に取り出す
+        let fuse = self.loop_fuse_slot.take();
         self.loop_stack.push((latch.clone(), exit.to_string()));
         self.gen_stmts(body);
         self.loop_stack.pop();
@@ -678,6 +1117,15 @@ impl<'a> GenCtx<'a> {
             // 保存点はループに入る直前（見出しへの `br` の前）に差し込む
             let tail = self.code_buf.split_off(pos);
             let save = self.call_cb(CB_ARENA_SAVE, &[]);
+            // 残す値が無く、見出しが `CB_ITER_NEXT_AT` で読むなら、巻き戻しは次の周の頭の取り出しに任せる（7-15）。
+            // 保存点を見出しの置き場へ書き（ループに入るたび・置き場の -1 の後）、戻り口では何も呼ばない。`break` は
+            // 見出しを通らないので、今までどおり最後の周の値を残す。
+            if let (true, Some(slot)) = (live.is_empty(), &fuse) {
+                self.ec(&format!("store i64 {save}, ptr {slot}"));
+                self.code_buf.push_str(&tail);
+                self.br(header);
+                return;
+            }
             self.code_buf.push_str(&tail);
             let n = live.len();
             let (ins, outs) = if n == 0 {
@@ -795,4 +1243,33 @@ fn attr_target(target: &Expr) -> (&Expr, Option<&str>, &str) {
         Expr::TraitAccess { object, trait_name, attr } => (object, Some(trait_name), attr),
         other => unreachable!("attribute assignment target must be checked by stmt_eligible: {other:?}"),
     }
+}
+
+/// [`GenCtx::checked_num_ty`] が見つけた、確かめてから読むフィールド（7-17 ②）: 受け手（ローカル変数 `name`・入れ子なら
+/// 属性 `attr`）、受け手のクラス、フィールドの位置（初期化の印の番号）。
+struct CheckedRead<'e> {
+    recv: &'e Expr,
+    name: String,
+    attr: Option<String>,
+    class: String,
+    idx: usize,
+}
+
+/// [`GenCtx::emit_checked_nested_assign`] が確かめる番地: 受け手（ローカル変数 `name`・入れ子なら属性 `attr`）と、先頭の語で
+/// 見る印（`mask`: 立っていてはいけない不変の印と、立っていなければいけない初期化の印）。
+struct CheckedBlock<'e> {
+    recv: &'e Expr,
+    name: String,
+    attr: Option<String>,
+    class: String,
+    mask: u64,
+}
+
+/// `for` のループの置き場（[`GenCtx::emit_for_begin`]・copy_alloc_speed_plan.md 7-20）: イテレータのハンドル、要素のハンドルの
+/// 並びの番地と個数（1 つずつ取る反復対象なら個数 -1）、次に読む添字。
+pub(super) struct ForLoop {
+    pub(super) iter_al: String,
+    rptr_al: String,
+    rlen_al: String,
+    ridx_al: String,
 }

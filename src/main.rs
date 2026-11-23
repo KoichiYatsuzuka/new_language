@@ -35,10 +35,20 @@ mod parser;
 mod prof;
 mod partial_compiler;
 mod py_stubs;
+// 「読むだけの関数」の解析（copy_alloc_speed_plan.md 4-1）。
+mod readonly_fns;
 mod repl;
 mod token;
 mod type_check;
 mod vm;
+
+// exe のアロケータ（copy_alloc_speed_plan.md 5-1・D-12）。feature `fast_alloc`（既定で有効）のときだけ mimalloc にする。
+// ⚠ 差し替わるのは **この exe が確保・解放するメモリだけ**。コンパイル済みモジュール・`import[rs]` / cpp の中継・
+//   CPython はそれぞれ自分のアロケータを使う。exe が確保したものを DLL が解放する（またはその逆の）受け渡しを
+//   足すときは、解放する関数を確保した側に置くこと（`import[rs]` の `Ptr` は中継の `_release_vec` が解放する）。
+#[cfg(feature = "fast_alloc")]
+#[global_allocator]
+static GLOBAL_ALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use interpreter::{ExecResult, Interpreter};
 use lexer::Lexer;
@@ -433,6 +443,19 @@ fn run_program(
         return Err(format_static_errors(&type_errors));
     }
 
+    // 読むだけの関数の解析（copy_alloc_speed_plan.md 4-1）。⚠ 今は診断（`copy_stats` の `*_readonly`）が数えるだけで、
+    // 実行の結果は変えない。`AR_READONLY_FNS=1` で、判定した名前を stderr に出す。
+    let readonly = readonly_fns::analyze(&stmts);
+    if std::env::var("AR_READONLY_FNS").is_ok_and(|v| !v.is_empty()) {
+        eprintln!(
+            "ReadonlyFns: defs={} readonly_defs={} names={}",
+            readonly.defs_total,
+            readonly.defs_readonly,
+            readonly.sorted_names().join(",")
+        );
+        eprintln!("ConfinedWriterFns: names={}", readonly.sorted_confined().join(","));
+    }
+
     // 診断フック: `AR_CHECK_ONLY=1` で**静的検査まで**で終わる（実行しない）。`compare_wasm_frontend.ps1` が
     // 全例題の静的な誤りを拡張と突き合わせるのに使う（GUI・FFI・待ちを起こさずに・3-3）。
     if std::env::var_os("AR_CHECK_ONLY").is_some() {
@@ -467,6 +490,7 @@ fn run_program(
     #[cfg(feature = "prof")]
     let _s_new = prof::SubTimer::new(prof::Sub::InterpNew);
     let mut interp = Interpreter::new();
+    interp.readonly_fns = std::rc::Rc::new(readonly);
     #[cfg(feature = "prof")]
     drop(_s_new);
     // 最上位 Chunk（#10-b/#10-c/#27-c）が「この名前は scopes[0]」と判断するための集合。
@@ -514,6 +538,10 @@ fn run_program(
         fn drop(&mut self) {
             if interpreter::tw_stats::enabled() {
                 interpreter::tw_stats::dump();
+            }
+            // 診断フック（copy_alloc_speed_plan.md 1-2）: 値の複製の入口ごとの回数を出す。
+            if interpreter::copy_stats::enabled() {
+                interpreter::copy_stats::dump();
             }
         }
     }
@@ -670,6 +698,9 @@ fn interpreter_main() {
             // **対話 REPL は `AR_TW_STATS` に一度も映っていなかった**（`run_program` 側だけ配線済み）。
             if interpreter::tw_stats::enabled() {
                 interpreter::tw_stats::dump();
+            }
+            if interpreter::copy_stats::enabled() {
+                interpreter::copy_stats::dump();
             }
         }
     }

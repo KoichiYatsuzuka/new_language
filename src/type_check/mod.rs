@@ -22,7 +22,7 @@ pub mod builtins;
 pub use types::{FnTypeParam, InferredType, MetaKind, PtrElem, VarAttr};
 #[allow(unused_imports)]
 pub use annotations::{
-    ArgAnnotation, AstAnnotations, BinOperandKind, CallInfo, Directive, TypeId,
+    arg_is_disjoint, ArgAnnotation, AstAnnotations, BinOperandKind, CallInfo, Directive, TypeId,
 };
 #[allow(unused_imports)]
 pub use errors::{StaticTypeError, StaticTypeWarning, TypeErrorKind, TypeWarningKind};
@@ -133,6 +133,11 @@ pub struct TypeChecker {
     ///   組み込みの値は読める属性を持たないので、読みとして検査すると正しい呼び出しまで弾いてしまう。
     ///   ⇒ 呼び出しの検査がここを立て、`infer_attr` が**入口で取り去る**（内側の `a.b` は読みのまま）。
     attr_is_callee: bool,
+    /// 囲んでいる `for` のループ変数ごとに、**反復対象が不変と証明できた経路か**（内側のループが後ろ・
+    /// copy_alloc_speed_plan.md 3-1）。ループ変数は反復対象が一時値でも「書き換えられない」束縛になるが
+    /// （`path_is_mutable(iter).unwrap_or(false)`）、一時値は関数が `mut` の値をそのまま返したものでありうるので、
+    /// 「誰からも書き換わらない」とは言えない。その区別をここで持つ（`proven_immutable_path`）。
+    for_var_proof: Vec<HashMap<String, bool>>,
     /// 次に推論する属性式（`o.x`）が**代入の左辺**か（`o.x = v`・known_bugs.md の #10）。`attr_is_callee` と同じく
     /// `check_attr_assign` が立て、`infer_attr` が入口で取り去る。`__setattr__` を上書きした Python のクラスへの代入は
     /// 上書きが受けるので、宣言していない名前も書ける（読みは今までどおり宣言した名前だけ）。
@@ -364,6 +369,7 @@ impl TypeChecker {
                 map
             },
             attr_is_callee: false,
+            for_var_proof: Vec::new(),
             attr_is_assign_target: false,
             module_toplevel: vec![names::collect_toplevel_bindings(stmts)],
             ffi_unsupported: HashMap::new(),

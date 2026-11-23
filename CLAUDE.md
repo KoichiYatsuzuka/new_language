@@ -127,6 +127,8 @@ python -m impl_python examples/basics/control_flow.ar
 | Script | What it measures |
 |---|---|
 | `prof_dist.ps1` | 段別（parse/type_check/resolve/exec…）・op 別の実行時間分布（要 `--features prof`） |
+| `prof_stacks.ps1 [-Modes ..] [-Kernels ..] [-Script <f.ar>]` | **関数ごとの時間の内訳**（スタックのサンプリング・管理者権限なし）: 速度の調査のベンチの 6 区間（か任意の `.ar`）を、コンパイル済みと VM で。生成コードが呼んだコールバックごとの包括時間・自己時間・指定した関数の包括時間・ヒープの割合を出す。行の表だけのデバッグ情報つきの exe を `target\profdbg` に作って測る（`scripts/stack_prof/`・`copy_alloc_speed_plan.md` 1-1）。⚠ 見るのは割合（経過時間は `speed_modes.ps1`） |
+| `copy_stats.ps1 [-Scripts ..] [-Csv <f>]` | **値の複製の入口ごとの回数と大きさ**（`let self`・`let` 仮引数・格納・合成した `__init__` の格納・束縛・`x.copy()`）: 9 カテゴリの例題と速度の調査のベンチで、入口に来た回数・作り直した値の数・誰とも共有していなかった回数・写さずに済ませた回数を出す。feature `copy_stats` つきの exe を `target/copystats` に作って `AR_COPY_STATS=1` で走らせる（`src/interpreter/copy_stats.rs`・`copy_alloc_speed_plan.md` 1-2）。複製を省くタスクの前後で取る |
 | `ab_bench.ps1 -A <a.exe> -B <b.exe>` | 2 バイナリを**交互実行**して経過時間を比較 |
 | `ab_bench_modes.ps1 -A <a> -B <b>` | 実行モード別（非コンパイル / native / C DLL）の A/B |
 | `speed_modes.ps1 [-B <b>] [-Micro]` | 速度の調査のベンチ（`examples/bench/speed_modes/`）を 3 モードで: 区間ごとの時間・1 操作の単価（ns）・`-B` で A/B（各 exe が自分で `.arc` を作る）。モード間の `CHECK` の一致も見る |

@@ -13,8 +13,21 @@ impl Interpreter {
     ///
     /// Arrow のコードは写す（L4・`let` の値を共有先から書き換えさせない）。⚠ Python のコードは CPython が実行する
     /// （そこでは参照を共有する）。CPython の物（`Value::PyObject`）は写しても同じ物を指す（`deep_copy_value`）。
+    ///
+    /// 誰とも共有していない値（[`Self::is_unshared`]・作りたての `Vec3(...)` など）は写さずにそのまま格納する
+    /// （copy_alloc_speed_plan.md 2-1）。元を指す者がいないので、写しても違いは観測できない（`deep_copy_value` は
+    /// フリーズの印も写すので、印も同じ）。
+    /// ⚠ **値を渡し切って呼ぶこと**（`val` のほかに呼ぶ側が写しを持たない）。持ったまま呼ぶと参照が 2 個になり、
+    ///   共有とみなして写す（遅いだけで結果は同じ）。逆に、持ち主がいる値を「共有していない」と誤ることは無い。
+    /// ⚠ コンパイル済みコードのコールバックから来る値は、アリーナの欄が 1 個持つので必ず写す（2-4 で扱う）。
     pub(crate) fn copy_for_store(&self, val: Value) -> Value {
-        Self::deep_copy_value(val)
+        let unshared = Self::is_unshared(&val, 1);
+        crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::Store, &val, unshared);
+        if unshared {
+            val
+        } else {
+            Self::deep_copy_value(val)
+        }
     }
 
     /// 参照型の値を再帰的にディープコピーして返す。
@@ -79,6 +92,14 @@ impl Interpreter {
             // プリミティブ・関数・クラス等はそのまま返す
             other => other,
         }
+    }
+
+    /// 写しも束縛の検査も要らない値か: 数値・真偽値・`None`・文字列（copy_alloc_speed_plan.md 7-10）。どれも
+    /// [`Self::deep_copy_value`] が同じ値を返し（[`Self::is_unshared`] は真）、`__copy__` を持たず、Python の物でもない。
+    /// 束縛（`bind_param_value`）と合成した `__init__` の格納（`store_auto_init`）が、この値の重い道を飛ばすのに使う。
+    #[inline]
+    pub(crate) fn is_plain_scalar(val: &Value) -> bool {
+        matches!(val, Value::Int(_) | Value::Float(_) | Value::Bool(_) | Value::None | Value::Str(_))
     }
 
     /// `val` を（入れ子の値も含めて）誰とも共有していないか（12-1・D-13）。いちばん外の参照は `outer` 個まで、
@@ -174,6 +195,49 @@ impl Interpreter {
                 Value::Tuple(Rc::new(crate::interpreter::TupleData::new(vals)))
             }
             other => other,
+        }
+    }
+
+    /// 2 つの値が同じ実体（同じ `Rc`）か。[`Self::deep_copy_value`] が作り直す種類（インスタンス・リスト・集合・辞書・
+    /// タプル）だけを見る。ほかは `false`（数値・文字列などは実体を数える意味が無い）。
+    pub(crate) fn same_heap_value(a: &Value, b: &Value) -> bool {
+        match (a, b) {
+            (Value::Instance(x), Value::Instance(y)) => Rc::ptr_eq(x, y),
+            (Value::List(x), Value::List(y)) | (Value::Set(x), Value::Set(y)) => Rc::ptr_eq(x, y),
+            (Value::Dict(x), Value::Dict(y)) => Rc::ptr_eq(x, y),
+            (Value::Tuple(x), Value::Tuple(y)) => Rc::ptr_eq(x, y),
+            (Value::FrozenSet(x), Value::FrozenSet(y)) => Rc::ptr_eq(x, y),
+            _ => false,
+        }
+    }
+
+    /// 誰とも共有していない値のフリーズを**その場で**解く（[`Self::deep_copy_unfrozen`] が作る写しと同じ印にする・
+    /// copy_alloc_speed_plan.md 2-2）。インスタンスは不変の印を落とし、フィールドの可変性をクラスの定義に戻す。
+    /// ⚠ 呼ぶのは [`Self::is_unshared`] が真の値だけ（ほかに持ち主がいる値に呼ぶと、相手の値まで解ける）。
+    ///   辞書は `is_unshared` が偽にするのでここには来ないが、来ても中へは入らない（何もしない）。
+    pub(crate) fn unfreeze_in_place(val: &Value) {
+        match val {
+            Value::Instance(rc) if Self::shares_instance(rc) => {}
+            Value::Instance(rc) => {
+                let Ok(mut inst) = rc.try_borrow_mut() else { return };
+                let class = inst.class.clone();
+                let unfrozen = inst.flags() & !crate::interpreter::value::INST_IMMUTABLE;
+                inst.set_flags(unfrozen);
+                for (idx, slot) in inst.boxed_fields.iter_mut().enumerate() {
+                    if let Some((v, m)) = slot {
+                        *m = class.field_mutability_vec.get(idx).copied().unwrap_or(true);
+                        Self::unfreeze_in_place(v);
+                    }
+                }
+            }
+            Value::List(rc) | Value::Set(rc) => {
+                if let Ok(xs) = rc.try_borrow() {
+                    xs.iter().for_each(Self::unfreeze_in_place);
+                }
+            }
+            Value::Tuple(t) => t.all_values().iter().for_each(Self::unfreeze_in_place),
+            Value::FrozenSet(items) => items.iter().for_each(Self::unfreeze_in_place),
+            _ => {}
         }
     }
 

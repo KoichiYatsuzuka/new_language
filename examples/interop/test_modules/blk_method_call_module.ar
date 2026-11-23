@@ -1,0 +1,153 @@
+# blk_method_call_module.ar — examples/interop/blk_method_call.ar が読むモジュール（copy_alloc_speed_plan.md 7-14）
+#
+# raw レイアウトのクラス（`V`・`N`・`P`・`C`）のメソッドは、受け手と `let` のクラスの引数を番地から取って、コールバックを
+# 持たない変種（`@X_blk`）で呼ぶ。呼ぶ側はクラス（ガードのセルの `class_id`）・全フィールドの初期化・不変でないこと・
+# `__copy__` を持つクラスが無いことを確かめ、外れたら今までの呼び出しへ回る。どの関数もループで何周も呼ぶ（1 周目は
+# 読み出しの IC のセルとガードのセルが空なので必ず外れる）。
+
+class V:
+    mut x: float
+    mut y: float
+
+    fn tag(let self) -> float:
+        return self.x + 1000.0
+
+    fn bump(mut self, let k: float) -> None:
+        self.x = self.x + k
+
+    fn add(mut self, let o: V) -> None:
+        self.x = self.x + o.x
+        self.y = self.y + o.y
+
+    fn dot(let self, let o: V) -> float:
+        return self.x * o.x + self.y * o.y
+
+    # コールバック（`print`）を使うので番地で呼ぶ変種は作らない（今までの呼び出し）
+    fn shout(let self) -> float:
+        print("shout " + str(self.x))
+        return self.x
+
+class N:
+    mut n: int
+
+    fn twice(let self) -> int:
+        return self.n * 2
+
+    fn inc(mut self, let k: int) -> None:
+        self.n += k
+
+# `__init__` が `y` を書かない: `total` は未初期化のフィールドを読む
+class P:
+    mut x: float
+    mut y: float
+
+    fn __init__(mut self, let x: float) -> None:
+        self.x = x
+
+    fn total(let self) -> float:
+        return self.x + self.y
+
+# `__copy__` を持つ: `mut` の値を `let` で受ける写しが `__copy__` を呼ぶ（平たくして渡すと呼ばれない）
+class C:
+    mut x: float
+
+    fn __copy__(let self) -> C:
+        return C(self.x + 100.0)
+
+    fn get(let self, let o: C) -> float:
+        return o.x
+
+# `name` があるので raw レイアウトでない（フィールドはインスタンスを持つ slot）
+class H:
+    mut v: V
+    mut w: V
+    mut n: N
+    mut p: P
+    mut c: C
+    mut name: str
+
+# `h.v` に別の値を入れる（`mustbe V` は名前で照合するので、本体の同じ名前のクラスも通る）
+fn put(mut h: H, let x: Any) -> None:
+    h.v = x mustbe V
+
+fn tags(mut h: H, let k: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < k:
+        s += h.v.tag()
+        i += 1
+    return s
+
+fn bumps(mut h: H, let k: int) -> float:
+    mut i = 0
+    while i < k:
+        h.v.bump(1.5)
+        i += 1
+    return h.v.x
+
+fn adds(mut h: H, let k: int) -> float:
+    mut i = 0
+    while i < k:
+        h.v.add(h.w)
+        i += 1
+    return h.v.x * 1000.0 + h.v.y
+
+# 受け手と引数が同じ物: 引数は呼んだときの写し
+fn self_adds(mut h: H, let k: int) -> float:
+    mut i = 0
+    while i < k:
+        h.v.add(h.v)
+        i += 1
+    return h.v.x * 1000.0 + h.v.y
+
+fn dots(mut h: H, let k: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < k:
+        s += h.v.dot(h.w)
+        i += 1
+    return s
+
+fn twices(mut h: H, let k: int) -> int:
+    mut s = 0
+    mut i = 0
+    while i < k:
+        h.n.inc(1)
+        s += h.n.twice()
+        i += 1
+    return s
+
+fn shouts(mut h: H, let k: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < k:
+        s += h.v.shout()
+        i += 1
+    return s
+
+fn totals(mut h: H, let k: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < k:
+        s += h.p.total()
+        i += 1
+    return s
+
+fn copy_gets(mut h: H, let k: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < k:
+        s += h.c.get(h.c)
+        i += 1
+    return s
+
+# ローカル変数が受け手と引数
+fn locals(let k: int) -> float:
+    mut v = V(1.0, 2.0)
+    mut w = V(0.5, 0.25)
+    mut i = 0
+    while i < k:
+        v.add(w)
+        v.bump(1.0)
+        i += 1
+    return v.x * 1000.0 + v.y + v.dot(w)

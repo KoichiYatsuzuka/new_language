@@ -1,0 +1,35 @@
+class V2:
+    mut x: int
+    mut y: int
+    fn mix(mut self, o: V2) -> None:
+        ...
+    fn __init__(mut self, x: int, y: int) -> None:
+        ...
+
+
+class Body:
+    mut pos: V2
+    mut vel: V2
+    mut n: int
+    fn step(mut self) -> None:
+        ...
+    fn absorb(mut self, p: V2) -> None:
+        ...
+    fn __init__(mut self, pos: V2, vel: V2, n: int) -> None:
+        ...
+
+
+fn two(mut a: Body, mut b: Body) -> None:
+    ...
+
+fn disjoint_cases() -> int:
+    ...
+
+fn same_value_cases() -> int:
+    ...
+
+fn inside_cases() -> int:
+    ...
+
+fn two_names_cases() -> int:
+    ...

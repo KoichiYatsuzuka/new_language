@@ -1,0 +1,44 @@
+# pre_blocks.ar — コンパイル済みコードは `self.m(..)` で直接呼ぶメソッドへ、覚えている入れ子の受け手の番地を渡す（copy_alloc_speed_plan.md 7-19）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/pre_blocks_module.ar
+#   2. cargo run --release -- examples/interop/pre_blocks.ar
+#
+# 呼ばれる側は、渡された番地で `self.v` / `self.w` の置き場を始める。確かめること:
+#   - 渡した番地で読み書きする（2 つの番地を受け取るメソッド）
+#   - 引数の評価が `self.v` を差し替えたら、呼ばれる側は新しい子を使う
+#   - 呼ばれる側が `self.v` を差し替えたら、呼ぶ側はその後で新しい子を読む
+#   - 受け手が `self` でない呼び出し・本体から呼ぶ（境界を通る）呼び出しは番地を渡さない
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.pre_blocks_module as m
+
+fn check(let label: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError(label + ": expected " + str(want) + ", got " + str(got))
+    print(label + " OK")
+
+# 3 周する（関数の中のループと合わせて、2 周目からは IC のセルが埋まっている）
+for r in range(3):
+    print("round " + str(r))
+    mut k = m.fresh()
+    check("step", k.step(3), -965.75)
+    check("step leaves the fields", k.v.x * 1000.0 + k.w.y, -1000.75)
+    k = m.fresh()
+    mut nv = m.V(5.0, 5.0)
+    check("step_replace", k.step_replace(k.v, nv), 5260.0)
+    k = m.fresh()
+    nv = m.V(7.0, 7.0)
+    check("step_inner", k.step_inner(k.v, nv), 7308.0)
+    check("step_inner leaves the argument", nv.y, 7.0)
+    k = m.fresh()
+    check("step_inner_new", k.step_inner_new(k.v), 7308.0)
+    k = m.fresh()
+    mut o = m.fresh()
+    check("step_other", k.step_other(o), -1000.75)
+    check("step_other leaves self", k.v.y, 3.0)
+    # 本体から呼ぶ（`_tl` の境界を通る）
+    k = m.fresh()
+    k.flip()
+    k.flip()
+    check("flip from the main program", k.v.x * 1000.0 + k.w.y, 1000.25)

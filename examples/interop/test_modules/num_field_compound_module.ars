@@ -1,0 +1,64 @@
+class Counter:
+    mut name: str
+    mut hits: int
+    mut mass: float
+    fn step(self, k: int) -> int:
+        ...
+    fn tick(mut self, k: int) -> None:
+        ...
+    fn bump_twice(mut self) -> int:
+        ...
+    fn nested(mut self) -> None:
+        ...
+    fn __init__(mut self, name: str, hits: int, mass: float) -> None:
+        ...
+
+
+class Half:
+    mut name: str
+    mut hits: int
+    fn __init__(mut self, name: str) -> None:
+        ...
+    fn bump(mut self) -> None:
+        ...
+    fn __init__(mut self, name: str, hits: int) -> None:
+        ...
+
+
+class Secret:
+public:
+    mut name: str
+private:
+    mut n: int
+public:
+    fn __init__(mut self, name: str) -> None:
+        ...
+    fn bump(mut self) -> None:
+        ...
+    fn get(self) -> int:
+        ...
+    fn __init__(mut self, name: str, n: int) -> None:
+        ...
+
+
+class Raw:
+    mut n: int
+    mut f: float
+    fn __init__(mut self, n: int, f: float) -> None:
+        ...
+
+
+fn run(mut c: Counter, n: int) -> float:
+    ...
+
+fn run_nested(mut c: Counter, n: int) -> int:
+    ...
+
+fn run_half(mut h: Half, n: int) -> int:
+    ...
+
+fn run_secret(mut s: Secret, n: int) -> int:
+    ...
+
+fn run_raw(mut r: Raw, n: int) -> float:
+    ...

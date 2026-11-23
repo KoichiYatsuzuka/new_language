@@ -1,0 +1,167 @@
+# direct_field_cache.ar — コンパイル済みコードがインスタンスの番地を変数ごとに使い回す（copy_alloc_speed_plan.md 8-5）
+#
+# 受け手がローカル変数・仮引数のとき、番地は関数の中で 1 回だけ取る。変数へ代入したら取り直すこと:
+#   - ループの中で変数を別のインスタンスへ差し替える（前のインスタンスは捨てられる）
+#   - 片方の枝でだけ差し替える・並んだブロックで同じ名前を別のクラスとして宣言する
+#   - 受け手を読んだ後で、値の評価が変数を差し替える
+#   - ループの前に取った値を周をまたいで使う・ループ変数・呼ばれた側が書き換える
+# 同じ定義を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/direct_field_cache_module.ar
+#   2. cargo run --release -- examples/interop/direct_field_cache.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.direct_field_cache_module as m
+
+class P:
+    mut x: float
+    mut n: int
+
+    fn scale(mut self, let k: float) -> None:
+        self.x = self.x * k
+        self.n = self.n + 1
+        self.x = self.x + float(self.n)
+
+class Q:
+    mut x: float
+    mut n: int
+
+class Holder:
+    mut p: P
+    mut q: P
+
+fn make(let i: int) -> P:
+    return P(float(i), i)
+
+# ループの中で変数を差し替える（前のインスタンスはその周で捨てられる）
+fn swap_in_loop(let n: int) -> float:
+    mut p = P(0.0, 0)
+    mut s = 0.0
+    mut i = 0
+    while i < n:
+        s += p.x + float(p.n)
+        p = make(i + 1)
+        s += p.x * 2.0
+        p.n = p.n + 100
+        s += float(p.n)
+        i += 1
+    return s
+
+# ループの前に取った値を、周をまたいで読み書きする
+fn keep_across_loop(mut p: P, let n: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < n:
+        p.x = p.x + 1.0
+        p.n += 2
+        s += p.x + float(p.n)
+        i += 1
+    return s
+
+# 片方の枝でだけ差し替える（合流の後は、差し替えた方の値を読む）
+fn swap_in_branch(mut p: P, let other: bool) -> float:
+    mut s = p.x
+    if other:
+        p = P(50.0, 5)
+    else:
+        s += p.x
+    return s + p.x + float(p.n)
+
+# 呼び出しの戻り値のフィールドをすぐ読む（変数に置かない）
+fn read_result(let i: int) -> float:
+    return make(i).x + float(make(i + 1).n)
+
+# 呼ばれた側がフィールドを書き換える（番地は同じ・値は読み直す）
+fn callee_writes(mut p: P) -> float:
+    let before = p.x
+    p.scale(3.0)
+    return before + p.x + float(p.n)
+
+# ループ変数（周ごとに別のインスタンス）
+fn loop_var(mut ps: list[P]) -> float:
+    mut s = 0.0
+    for p in ps:
+        p.x = p.x + 0.5
+        s += p.x + float(p.n)
+    return s
+
+# 同じ名前を、並んだ 2 つのブロックで別のクラスとして宣言する（置き場は同じ・クラスが違う）
+fn shadow(let c: bool) -> float:
+    mut s = 0.0
+    if c:
+        mut t = P(1.0, 1)
+        t.x = t.x + 1.0
+        s += t.x
+    if c:
+        mut t = Q(7.0, 7)
+        t.x = t.x + 1.0
+        s += t.x + float(t.n)
+    return s
+
+# 受け手を読んだ後で、値の評価が変数を差し替える（書く先は差し替える前のインスタンス）
+fn reassign_in_value(mut h: Holder) -> float:
+    mut p = h.p
+    mut keep = p
+    p.x = block->float:
+        p = h.q
+        block_return 9.0
+    return p.x * 100.0 + keep.x
+
+# 2 つの変数が別のインスタンスを指す
+fn two_vars(mut a: P, mut b: P) -> float:
+    a.x = b.x + 1.0
+    b.x = a.x + 1.0
+    a.n = b.n + 1
+    return a.x * 100.0 + b.x * 10.0 + float(a.n)
+
+fn expect(let name: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError("direct_field_cache: " + name + " = " + str(got) + ", expected " + str(want))
+
+# ── VM（この本体の定義） ──────────────────────────────────────────────────────
+let v_swap = swap_in_loop(50)
+mut kp = P(1.0, 1)
+let v_keep = keep_across_loop(kp, 20)
+let v_branch = swap_in_branch(P(2.0, 3), True) * 1000.0 + swap_in_branch(P(2.0, 3), False)
+let v_result = read_result(4)
+mut cp = P(2.0, 0)
+let v_callee = callee_writes(cp)
+mut ps: list[P] = [P(1.0, 1), P(2.0, 2), P(3.0, 3)]
+let v_loop = loop_var(ps)
+let v_shadow = shadow(True)
+mut hh = Holder(P(1.0, 1), P(2.0, 2))
+let v_reassign = reassign_in_value(hh)
+mut ta = P(1.0, 1)
+mut tb = P(5.0, 5)
+let v_two = two_vars(ta, tb)
+
+# 手で数えた値（VM の結果がこれと違えば、例題か VM が誤り）
+expect("vm keep", v_keep, 670.0)
+expect("vm branch", v_branch, 57000.0 + 9.0)
+expect("vm result", v_result, 9.0)
+expect("vm callee", v_callee, 2.0 + 7.0 + 1.0)
+expect("vm loop", v_loop, 13.5)
+expect("vm shadow", v_shadow, 2.0 + 8.0 + 7.0)
+expect("vm reassign", v_reassign, 201.0)
+expect("vm two vars", v_two, 600.0 + 70.0 + 6.0)
+
+# ── コンパイル済み（モジュール） ──────────────────────────────────────────────
+expect("compiled swap in loop", m.swap_in_loop(50), v_swap)
+mut mkp = m.P(1.0, 1)
+expect("compiled keep", m.keep_across_loop(mkp, 20), v_keep)
+expect("compiled keep wrote", mkp.x + float(mkp.n), kp.x + float(kp.n))
+expect("compiled branch", m.swap_in_branch(m.P(2.0, 3), True) * 1000.0 + m.swap_in_branch(m.P(2.0, 3), False), v_branch)
+expect("compiled result", m.read_result(4), v_result)
+mut mcp = m.P(2.0, 0)
+expect("compiled callee", m.callee_writes(mcp), v_callee)
+mut mps: list[m.P] = [m.P(1.0, 1), m.P(2.0, 2), m.P(3.0, 3)]
+expect("compiled loop", m.loop_var(mps), v_loop)
+expect("compiled shadow", m.shadow(True), v_shadow)
+mut mhh = m.Holder(m.P(1.0, 1), m.P(2.0, 2))
+expect("compiled reassign", m.reassign_in_value(mhh), v_reassign)
+mut mta = m.P(1.0, 1)
+mut mtb = m.P(5.0, 5)
+expect("compiled two vars", m.two_vars(mta, mtb), v_two)
+# 大きい回数で繰り返す（解放された番地を読むと、値が変わるか落ちる）
+expect("compiled swap in loop (long)", m.swap_in_loop(20000), swap_in_loop(20000))
+print("direct_field_cache: ok")

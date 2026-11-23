@@ -24,6 +24,8 @@ impl<'a> GenCtx<'a> {
         self.iter_scopes.clear();
         self.fresh_regs.clear();
         self.handle_store_log.clear();
+        self.ip_vars.clear();
+        self.ap_vars.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.fn_param_trampolines.clear();
@@ -68,6 +70,14 @@ impl<'a> GenCtx<'a> {
             let ptr = self.alloca_var(&p.name, st);
             self.store_val(pt, &format!("%_h{i}"), &ptr.clone());
         }
+        // 番地を受け取る変種（copy_alloc_speed_plan.md 7-19）: `mut self` のメソッドで、前の周回で `self.属性` の番地を覚えたなら、
+        // 本体は `@{name}_pre(.., ptr ..)` として出し、その置き場を仮引数の番地で始める（置き場は本体を出すまで決まらないので、
+        // ここに印を置いて後で差し替える。仮引数を変数へ書いた後なので、`finish_block_cache` が足す「空にする」の後になる）
+        let is_mut_method = self.current_class.is_some() && params.first().is_some_and(|p| p.name == "self" && p.mutable);
+        let pre = if is_mut_method { self.pre_lists.get(name).cloned().filter(|l| !l.is_empty()) } else { None };
+        if pre.is_some() {
+            self.ec(PRE_BLOCKS_MARK);
+        }
 
         // ── Approach-1 pre-reads: for class-instance params that are never written
         // in the body, read all typed fields once at function entry via a single
@@ -97,13 +107,22 @@ impl<'a> GenCtx<'a> {
             }
             // 4-4: 本体が `p.f` の読みでしか `p` を使わないなら、参照するフィールドだけを読む。
             let uses = param_field_uses(body, &p.name);
-            for (field_name, field_ty) in &fields {
-                if uses.as_ref().is_some_and(|u| !u.contains(field_name)) {
-                    continue;
-                }
-                let r = match field_ty {
-                    Ty::Float | Ty::Int => self.emit_attr_read(&format!("%_h{i}"), field_name, Some(*field_ty)).0,
-                    _ => continue,
+            let wanted: Vec<&(String, Ty)> = fields
+                .iter()
+                .filter(|(n, t)| matches!(t, Ty::Float | Ty::Int) && !uses.as_ref().is_some_and(|u| !u.contains(n)))
+                .collect();
+            // 8-9: 受け手が raw レイアウトのクラスなら、番地を 1 回だけ取ってフィールドは生成コードが読む
+            // （以前はフィールド 1 つにつきコールバック 1 回。`dot(let self, let o)` は 6 回）。番地が空・未初期化・
+            // 幅の合わないフィールドは今までのコールバック（`emit_direct_read` の外れの道・`emit_attr_read`）。
+            let handle = format!("%_h{i}");
+            let block = if wanted.is_empty() { None } else { self.emit_inst_block_once(&class_name, &handle) };
+            for (field_name, field_ty) in wanted {
+                let direct = block.as_deref().and_then(|p| {
+                    self.emit_direct_read(&class_name, BlockSrc::Block { p, h: &handle }, field_name, *field_ty)
+                });
+                let r = match direct {
+                    Some((r, _)) => r,
+                    None => self.emit_attr_read(&handle, field_name, Some(*field_ty)).0,
                 };
                 let al = format!("%_prf_{}_{}", p.name, field_name);
                 let tstr = llvm_ty(*field_ty);
@@ -144,10 +163,50 @@ impl<'a> GenCtx<'a> {
         // Float-returning functions use double ABI in _impl; others use i64 handle ABI.
         let impl_ret     = if ret_ty == Ty::Float { "double" } else { "i64" };
         let impl_ret_str = impl_ret;
-        self.fn_defs.push_str(&format!(
-            "\ndefine internal {impl_ret} @{name}_impl({sig}) {{\nentry:\n{}{}}}\n",
-            self.alloca_buf, self.code_buf
-        ));
+        // 本体が `self.属性` の番地を覚えた置き場: (属性, 子のクラス, 置き場)。次の周回の並び（`pre_found`）と、この周回の
+        // 置き場の始め方に使う（`finish_block_cache` が `ap_vars` を空にする前に取る）
+        let mut self_slots: Vec<(String, String, String)> = Vec::new();
+        if is_mut_method {
+            self_slots = self
+                .ap_vars
+                .iter()
+                .filter(|((al, _), _)| al == "%_al_self")
+                .map(|((_, a), (slot, c))| (a.clone(), c.clone(), slot.clone()))
+                .collect();
+            self_slots.sort();
+            if !self_slots.is_empty() {
+                self.pre_found.insert(name.to_string(), self_slots.iter().map(|(a, c, _)| (a.clone(), c.clone())).collect());
+            }
+        }
+        self.finish_block_cache();
+        match &pre {
+            Some(list) => {
+                // 並びの k 番目の番地で、同じ（属性, クラス）の置き場を始める。並びに無い置き場は空のまま
+                let mut init = String::new();
+                for (k, (a, c)) in list.iter().enumerate() {
+                    if let Some((_, _, slot)) = self_slots.iter().find(|(sa, sc, _)| sa == a && sc == c) {
+                        init.push_str(&format!("  store ptr %_pb{k}, ptr {slot}\n"));
+                    }
+                }
+                self.code_buf = self.code_buf.replacen(&format!("  {PRE_BLOCKS_MARK}\n"), &init, 1);
+                let extra = (0..list.len()).map(|k| format!("ptr %_pb{k}"));
+                let full = param_sigs.iter().cloned().chain(extra).collect::<Vec<_>>().join(", ");
+                self.fn_defs.push_str(&format!(
+                    "\ndefine internal {impl_ret} @{name}_pre({full}) {{\nentry:\n{}{}}}\n",
+                    self.alloca_buf, self.code_buf
+                ));
+                // `_impl`（`_tl`・番地を渡さない呼び出し）は空の番地で `_pre` を呼ぶ
+                let nulls = std::iter::repeat_n("ptr null".to_string(), list.len());
+                let args = param_sigs.iter().cloned().chain(nulls).collect::<Vec<_>>().join(", ");
+                self.fn_defs.push_str(&format!(
+                    "\ndefine internal {impl_ret} @{name}_impl({sig}) {{\nentry:\n  %_r = call {impl_ret} @{name}_pre({args})\n  ret {impl_ret} %_r\n}}\n"
+                ));
+            }
+            None => self.fn_defs.push_str(&format!(
+                "\ndefine internal {impl_ret} @{name}_impl({sig}) {{\nentry:\n{}{}}}\n",
+                self.alloca_buf, self.code_buf
+            )),
+        }
 
         // Public wrapper: {name}_tl(ptr %args, i32 %n) -> i64 (handle for interpreter)
         // インタープリタとの境界（4-1）: `int` / `float` の仮引数はここで箱を開け、戻り値はここで箱に入れる。
@@ -192,8 +251,122 @@ impl<'a> GenCtx<'a> {
             self.emit_fn_fast(name, params, ret_ty, body);
         }
 
+        // 番地で呼ぶ変種（7-14）: 作れなければ `blk_evicted` に入れ、`generate_llvm_module` が呼ぶ側ごと作り直す
+        if self.blk_ok.contains(name) {
+            if let Some(sig) = self.blk_sigs.get(name).cloned() {
+                if !self.emit_fn_blk(name, params, ret_ty, body, &sig) {
+                    self.blk_evicted.insert(name.to_string());
+                }
+            }
+        }
+
         self.current_fn_ret = Ty::Handle;
         self.preread_fields.clear();
+    }
+
+    /// `@{name}_blk(...)` — 番地で呼ぶ変種（copy_alloc_speed_plan.md 7-14）。仮引数は `sig` のとおり: `mut self` は先頭の
+    /// 塊の番地（`ptr %_bp_self`）、`let self` / `let` のクラスの仮引数は数値のフィールドの生値（宣言の順・`_fast` と同じ）、
+    /// `int` / `float` は生値。戻り値は `_impl` と同じ内部 ABI。
+    ///
+    /// 呼ぶ側は、受け手のクラス（ガード付きなら `class_id`）・全フィールドの初期化の印・不変の印を確かめてから呼ぶので、
+    /// `self.f` の読み書きは番地への検査なしの `load` / `store` にする（[`Self::emit_blk_self_read`] /
+    /// [`Self::emit_blk_self_write`]）。本体がコールバック（`blk_failed`）・LLVM の組み込みのほかの関数を呼ぶか、平たくした
+    /// 仮引数・`mut self` を値として使う（`fast_failed`）なら作らずに `false` を返す。
+    pub(super) fn emit_fn_blk(&mut self, name: &str, params: &[Param], ret_ty: Ty, body: &[Stmt], sig: &BlkSig) -> bool {
+        self.alloca_buf.clear();
+        self.code_buf.clear();
+        self.reg = 0;
+        self.blk = 0;
+        self.terminated = false;
+        self.locals.clear();
+        self.name_to_slot = harvest_local_slots(body);
+        self.binding_mut = crate::vm::compiler::binding_mutability(params, body);
+        let max_slot = self.name_to_slot.values().copied().max().map_or(0, |m| m as usize + 1);
+        self.locals_by_slot = vec![None; max_slot];
+        self.loop_stack.clear();
+        self.iter_scopes.clear();
+        self.fresh_regs.clear();
+        self.handle_store_log.clear();
+        self.ip_vars.clear();
+        self.ap_vars.clear();
+        self.block_stack.clear();
+        self.preread_fields.clear();
+        self.current_fn_ret = ret_ty;
+        self.param_classes.clear();
+        for p in params {
+            if let Some(ann) = &p.type_ann {
+                if self.class_fields.contains_key(ann.as_str()) {
+                    self.param_classes.insert(p.name.clone(), ann.clone());
+                }
+            }
+        }
+        self.blk_mode = true;
+        self.blk_failed = false;
+        self.blk_self = None;
+        // 平たくした仮引数と番地で受けた `self` は値として表せない（使ったら `fast_failed`・`_fast` と同じ仕組み）
+        self.fast_mode = true;
+        self.fast_failed = false;
+        self.fast_flattened.clear();
+
+        let mut sig_parts: Vec<String> = Vec::new();
+        for (i, (p, op)) in params.iter().zip(&sig.params).enumerate() {
+            match op {
+                BlkOp::Ptr(_) => {
+                    sig_parts.push("ptr %_bp_self".to_string());
+                    self.blk_self = Some("%_bp_self".to_string());
+                    self.fast_flattened.insert(p.name.clone());
+                }
+                BlkOp::Flat(cls) => {
+                    for (field, ty) in self.class_fields_ord.get(cls).cloned().unwrap_or_default() {
+                        let reg = format!("%_fp_{}__{field}", p.name);
+                        let al = format!("%_fpral_{}__{field}", p.name);
+                        let t = llvm_ty(ty);
+                        sig_parts.push(format!("{t} {reg}"));
+                        self.alloca_buf.push_str(&format!("  {al} = alloca {t}, align 8\n"));
+                        self.ec(&format!("store {t} {reg}, ptr {al}"));
+                        self.preread_fields.insert(format!("{}.{field}", p.name), (al, ty));
+                    }
+                    self.fast_flattened.insert(p.name.clone());
+                }
+                BlkOp::Num(ty) => {
+                    let reg = format!("%_fph{i}");
+                    sig_parts.push(format!("{} {reg}", llvm_ty(*ty)));
+                    let al = self.alloca_var(&p.name, store_ty(*ty));
+                    self.store_val(*ty, &reg, &al);
+                }
+            }
+        }
+
+        self.gen_stmts(body);
+        if ret_ty == Ty::Float {
+            if !self.terminated {
+                self.ec("ret double 0.0");
+                self.terminated = true;
+            }
+        } else {
+            self.ret_handle("0");
+        }
+
+        let ok = !self.blk_failed && !self.fast_failed && calls_only_intrinsics(&self.code_buf);
+        if ok {
+            let impl_ret = if ret_ty == Ty::Float { "double" } else { "i64" };
+            self.fn_defs.push_str(&format!(
+                "\ndefine internal {impl_ret} @{name}_blk({}) {{\nentry:\n{}{}}}\n",
+                sig_parts.join(", "),
+                self.alloca_buf,
+                self.code_buf
+            ));
+        }
+        self.blk_mode = false;
+        self.blk_failed = false;
+        self.blk_self = None;
+        self.fast_mode = false;
+        self.fast_failed = false;
+        self.fast_flattened.clear();
+        self.ip_vars.clear();
+        self.ap_vars.clear();
+        self.preread_fields.clear();
+        ok
     }
 
     /// Emit `@{name}_fast(...)` — like _impl but receives class param fields as
@@ -264,6 +437,8 @@ impl<'a> GenCtx<'a> {
         self.iter_scopes.clear();
         self.fresh_regs.clear();
         self.handle_store_log.clear();
+        self.ip_vars.clear();
+        self.ap_vars.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.current_fn_ret = ret_ty;
@@ -332,6 +507,7 @@ impl<'a> GenCtx<'a> {
         if self.fast_failed {
             self.discarded_fast.insert(name.to_string());
         } else {
+            self.finish_block_cache();
             self.fn_defs.push_str(&format!(
                 "\ndefine internal {impl_ret} @{name}_fast({sig}) {{\nentry:\n{}{}}}\n",
                 self.alloca_buf, self.code_buf
@@ -378,6 +554,8 @@ impl<'a> GenCtx<'a> {
         self.iter_scopes.clear();
         self.fresh_regs.clear();
         self.handle_store_log.clear();
+        self.ip_vars.clear();
+        self.ap_vars.clear();
         self.block_stack.clear();
         self.preread_fields.clear();
         self.fn_param_trampolines.clear();
@@ -418,6 +596,7 @@ impl<'a> GenCtx<'a> {
 
         let attr = export_attr();
         let vis = if attr.is_empty() { "" } else { attr };
+        self.finish_block_cache();
         Some(format!(
             "\ndefine {vis}i32 @{name}_typed(ptr %_args, ptr %_ret, ptr %_err) {{\nentry:\n{}{}}}\n",
             self.alloca_buf, self.code_buf
@@ -440,6 +619,8 @@ impl<'a> GenCtx<'a> {
         self.iter_scopes.clear();
         self.fresh_regs.clear();
         self.handle_store_log.clear();
+        self.ip_vars.clear();
+        self.ap_vars.clear();
         self.block_stack.clear();
 
         let param_sigs: Vec<String> = params.iter().enumerate()
@@ -483,6 +664,7 @@ impl<'a> GenCtx<'a> {
         let attr = export_attr();
         let vis = if attr.is_empty() { "" } else { attr };
         let sig = param_sigs.join(", ");
+        self.finish_block_cache();
         self.fn_defs.push_str(&format!(
             "\ndefine internal i64 @{name}_impl({sig}) {{\nentry:\n{}{}}}\n",
             self.alloca_buf, self.code_buf
@@ -504,3 +686,20 @@ impl<'a> GenCtx<'a> {
     }
 
 }
+
+/// 本体の文面の `call` が LLVM の組み込み（`@llvm.*`）だけか（番地で呼ぶ変種・7-14）。コールバックは `call_cb` が
+/// `blk_failed` を立てるが、直接呼び出し（`@X_impl` など）・関数の値の呼び出しはここで見る。
+/// ⚠ 呼ぶ先を読めない `call` は「組み込みでない」に倒す。
+fn calls_only_intrinsics(code: &str) -> bool {
+    code.lines().all(|line| {
+        let body = line.trim_start();
+        let at = if body.starts_with("call ") { Some(0) } else { body.find(" call ").map(|i| i + 1) };
+        let Some(at) = at else { return true };
+        let rest = &body[at + "call ".len()..];
+        rest.find(['%', '@']).is_some_and(|s| rest[s..].starts_with("@llvm."))
+    })
+}
+
+/// [`GenCtx::emit_fn`] が本体の頭に置く印（copy_alloc_speed_plan.md 7-19）。本体を出した後で、`self.属性` の番地の置き場を
+/// 仮引数の番地で始める `store` に差し替える（LLVM の注釈の行なので、差し替え忘れても意味は変わらない）。
+const PRE_BLOCKS_MARK: &str = "; @pre-blocks";

@@ -1,0 +1,17 @@
+# borrow_inline_hook_module.ar — `__copy__` を持つクラス（copy_alloc_speed_plan.md 7-7）
+#
+# 読み込むと、コンパイル済みコードは値を見ずに複製を省くのをやめ、コールバックが値ごとに `__copy__` の有無を確かめる。
+
+class Counted:
+    static mut copies: int = 0
+    mut x: int
+
+    fn __copy__(let self) -> Counted:
+        Counted.copies += 1
+        return Counted(self.x + 100)
+
+fn peek(let c: Counted) -> int:
+    return c.x
+
+fn peek_twice(mut c: Counted) -> int:
+    return peek(c) + peek(c)

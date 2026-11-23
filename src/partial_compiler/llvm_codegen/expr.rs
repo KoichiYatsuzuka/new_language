@@ -4,8 +4,8 @@ use crate::ast::{BinOp, CallArg, Expr, MatchPattern, Resolution, UnaryOp};
 use super::*;
 
 /// メソッド呼び出しの受け手のクラス（[`GenCtx::receiver_class`] の答え・3-1）。
-struct Receiver {
-    class: String,
+pub(super) struct Receiver {
+    pub(super) class: String,
     /// 型検査の注釈で決めた（実行時に class_id を確かめてから直接呼ぶ・3-2・D-2）
     guarded: bool,
 }
@@ -159,6 +159,10 @@ impl<'a> GenCtx<'a> {
             Expr::Call { func, args, node_id, span, .. } => self.gen_call_expr(func, args, (*node_id, span)),
 
             Expr::Attr { object, attr, node_id, .. } => {
+                // 番地で呼ぶ変種の本体の `self.f`（`mut self` を番地で受けた・7-14）: 検査なしで読む
+                if self.blk_self.is_some() && ident_name(object) == Some("self") {
+                    return self.emit_blk_self_read(attr);
+                }
                 // Fast path: check preread_fields using the full dotted path.
                 // Covers class params ("self.x", "p.x"), flat list loop vars ("item.v"),
                 // and nested flat fields ("item.start.x").
@@ -190,9 +194,12 @@ impl<'a> GenCtx<'a> {
                 // Callback path: typed single-callback read for known typed fields, a handle otherwise —
                 // both with a per-site inline cache shared with the VM's `GetAttr` (2-2).
                 let known_ty = self.field_ty_resolved(object, attr, *node_id);
+                if let Some(r) = self.emit_nested_field_read(object, attr, known_ty) {
+                    return r;
+                }
                 let (obj, ot) = self.gen_expr(object);
                 let h = self.to_handle(&obj, ot);
-                self.emit_attr_read(&h, attr, known_ty)
+                self.emit_field_read(object, &h, attr, known_ty)
             }
 
             // `obj::Trait.attr`: VM の `GetTraitAttr` と同じ `trait_access_evaled`（1-4）。
@@ -393,31 +400,21 @@ impl<'a> GenCtx<'a> {
                 let loop_blk = self.fresh_blk();
                 let (iv, it) = self.gen_expr(iter);
                 let ih = self.to_handle(&iv, it);
-                let iter_h = self.call_cb(CB_ITER_FROM, &[format!("i64 {ih}")]);
-                let iter_al = format!("%_iter{}", self.reg);
-                self.reg += 1;
-                self.alloca_buf.push_str(&format!("  {iter_al} = alloca i64, align 8\n"));
-                self.ec(&format!("store i64 {iter_h}, ptr {iter_al}"));
-                self.iter_scopes.push(iter_al.clone());
+                // 要素の並びか 1 つずつ（文の `for` と同じ・7-20）
+                let fl = self.emit_for_begin(&ih);
+                let iter_al = fl.iter_al.clone();
                 // 名前の場所は `alloca_var` が決める（同じ名前の 2 つ目の宣言・1-10）
                 let tgt_al = self.alloca_var(target, Ty::Handle);
+                let fuse = self.new_loop_fuse_slot();
                 let pre_pos = self.loop_pre_pos();
                 self.br(&loop_blk);
                 self.start_block(&loop_blk);
-                let ir = self.fresh_reg();
-                self.ec(&format!("{ir} = load i64, ptr {iter_al}"));
-                let next = self.call_cb(CB_ITER_NEXT, &[format!("i64 {ir}")]);
-                self.ec(&format!("store i64 {next}, ptr {tgt_al}"));
-                self.note_handle_store(&tgt_al);
-                let done = self.fresh_reg();
-                self.ec(&format!("{done} = icmp eq i64 {next}, -1"));
-                let body_blk = self.fresh_blk();
-                self.br_cond(&done, &exit_blk, &body_blk);
-                self.start_block(&body_blk);
+                self.emit_for_next(&fl, &fuse, &tgt_al, &exit_blk);
                 self.block_stack.push(BlockCtx {
                     result_al: result_al.clone(), exit_label: exit_blk.clone(), list_al: list_al.clone(),
                     iter_depth: self.iter_scopes.len(),
                 });
+                self.loop_fuse_slot = Some(fuse);
                 self.gen_loop_body(body, &loop_blk, &exit_blk, pre_pos, |_| {});
                 self.block_stack.pop();
                 self.start_block(&exit_blk);
@@ -779,7 +776,7 @@ impl<'a> GenCtx<'a> {
                 }
                 None => {
                     let (v, vt) = self.gen_expr(op);
-                    parts.push(self.abi_operand(&v, vt, tys[i], op, muts[i], i == 0));
+                    parts.push(self.abi_operand(&v, vt, tys[i], op, muts[i], i == 0, sym, false));
                 }
             }
         }
@@ -804,11 +801,16 @@ impl<'a> GenCtx<'a> {
         let tys = self.fn_sigs[sym].param_tys.clone();
         // 仮引数より多い引数は `_impl` の型が合わず clang が落とす（ここの選択は結果に効かない）。
         let callee_mut = |i: usize| muts.get(i).copied().unwrap_or(true);
-        let recv = self.copy_for_let(oh, ot, object, callee_mut(0), true);
+        let recv = self.copy_for_let(oh, ot, object, callee_mut(0), true, sym, false);
         let mut out = Vec::new();
         for (i, ((v, vt), a)) in arg_exprs.iter().zip(args).enumerate() {
             let pty = tys.get(i + 1).copied().unwrap_or(Ty::Handle);
-            out.push(self.abi_operand(v, *vt, pty, a.expr(), callee_mut(i + 1), false));
+            // 受け手とほかの引数のどれとも重ならない引数（同じ変数の別のフィールド）か（4-6）
+            let others: Vec<&Expr> = std::iter::once(object)
+                .chain(args.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, x)| x.expr()))
+                .collect();
+            let disjoint = self.disjoint_from_all(a.expr(), &others);
+            out.push(self.abi_operand(v, *vt, pty, a.expr(), callee_mut(i + 1), false, sym, disjoint));
         }
         (recv, out)
     }
@@ -816,53 +818,73 @@ impl<'a> GenCtx<'a> {
     /// 引数 1 つを呼ばれる側の内部 ABI（4-1・D-3）に合わせた被演算子（`i64 %x` / `double %y`）にする。
     /// `int` / `float` の仮引数は生値（型検査が同じ型しか通さない）、ほかはハンドルで、`let` で受ける `mut` の値は
     /// 複製する（D-8・1-5）。⚠ 以前は全部ハンドルに箱詰めし、呼ばれた側が入口で開けていた。
-    fn abi_operand(&mut self, v: &str, vt: Ty, pty: Ty, operand: &Expr, callee_mutable: bool, is_self: bool) -> String {
+    #[allow(clippy::too_many_arguments)]
+    fn abi_operand(&mut self, v: &str, vt: Ty, pty: Ty, operand: &Expr, callee_mutable: bool, is_self: bool, callee: &str, disjoint: bool) -> String {
         match pty {
             Ty::Int => format!("i64 {}", self.to_i64(v, vt)),
             Ty::Float => format!("double {}", self.to_f64(v, vt)),
             _ => {
                 let h = self.to_handle(v, vt);
-                format!("i64 {}", self.copy_for_let(&h, vt, operand, callee_mutable, is_self))
+                format!("i64 {}", self.copy_for_let(&h, vt, operand, callee_mutable, is_self, callee, disjoint))
             }
         }
     }
 
     /// `@{sym}_impl` を内部 ABI（4-1）で呼び、結果をその型のまま返す: `float` → `double`、`int` → 生の i64、
-    /// ほか → ハンドル。`int` とハンドルはアリーナを保存点まで巻き戻す。`float` は複製をしたとき（`save` がある）
-    /// だけ巻き戻す（1-15・複製の無い `float` の呼び出しはアリーナを触らない）。
+    /// ほか → ハンドル。呼ばれた側がハンドルを作りうる（`pushing_fns`）か、被演算子を複製した（`save` がある）ときだけ、
+    /// アリーナを保存点まで巻き戻す（1-15・9-2・copy_alloc_speed_plan.md 7-12）。
     /// `save`: 被演算子の複製の前に取った保存点（`finish_call_save`）。あればそこまで巻き戻して複製も捨てる。
-    fn call_impl(&mut self, sym: &str, params: &str, ret: Ty, save: Option<String>) -> (String, Ty) {
-        match ret {
-            Ty::Float => {
-                // 呼ばれた側がハンドルを作りうるなら前後で巻き戻す（9-2・`int` / ハンドルを返す呼び出しと同じ）。
-                // 数値だけの関数（`pushing_fns` に無い）は何もしない。⚠ 以前は巻き戻さず、呼ばれた側が積んだ値が
-                // いちばん外の呼び出しが終わるまで残った（ループ・再帰の中の呼び出しで溜まる）
-                let save = if self.pushing_fns.contains(sym) {
-                    Some(save.unwrap_or_else(|| self.call_cb(CB_ARENA_SAVE, &[])))
-                } else {
-                    save
-                };
-                let r = self.fresh_reg();
-                self.ec(&format!("{r} = call double @{sym}_impl({params})"));
-                if let Some(s) = save {
-                    self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {s}")]);
+    ///
+    /// 値を積まない関数（`pushing_fns` に無い・`lcg` のような数値だけの関数や、フィールドを書いて `None` を返す
+    /// メソッド）は、複製が無ければ前後で何もしない。ハンドルを返す場合も、呼ばれた側が何も積まないので、返るのは
+    /// 呼ぶ前からある欄（引数・`None` など）で、積み直さずにそのまま使える。
+    /// ⚠ 7-12 より前は `int` / ハンドルを返す呼び出しが、呼ばれた側が何も積まなくても毎回 `ar_arena_save` /
+    ///   `ar_arena_compact` を払っていた（コンパイル済みの k1 で 1 体の更新に 3 組・うち 1 組は値を積まないメソッドの呼び出し）。
+    /// ⚠ 「積まない」は呼ばれた側の本体が積む箇所（`push_sites`）を出さないこと。積む箇所に数えないコールバックが
+    ///   走らせた利用者のコードの入れ子のネイティブ呼び出しは、その呼び出しが抜けるときに自分で巻き戻す（known_bugs.md #25）。
+    ///
+    /// `pre`: 番地を受け取る変種（`@{sym}_pre`・copy_alloc_speed_plan.md 7-19）へ渡す `self` の入れ子の受け手の並び。
+    /// 呼ぶ直前に、この関数が覚えている同じ（属性, クラス）の置き場を読んで渡す（覚えていなければ空）。
+    fn call_impl(&mut self, sym: &str, params: &str, ret: Ty, save: Option<CallSave>, pre: Option<&[(String, String)]>) -> (String, Ty) {
+        let save = self.save_before_call(sym, save);
+        // 置き場は呼ぶ直前に読む: 間にほかの呼び出しがあれば `finish_block_cache` がその後で空にしているので、読んだ値は
+        // 呼ぶ時点で正しい（空なら呼ばれる側が取り直す）
+        let (callee, params) = match pre {
+            Some(list) => {
+                let mut ps = params.to_string();
+                for (a, c) in list {
+                    let slot = self
+                        .ap_vars
+                        .get(&("%_al_self".to_string(), a.clone()))
+                        .filter(|(_, sc)| sc == c)
+                        .map(|(slot, _)| slot.clone());
+                    let v = match slot {
+                        Some(slot) => {
+                            let p = self.fresh_reg();
+                            self.ec(&format!("{p} = load ptr, ptr {slot}"));
+                            p
+                        }
+                        None => "null".to_string(),
+                    };
+                    ps.push_str(&format!(", ptr {v}"));
                 }
-                (r, Ty::Float)
+                (format!("@{sym}_pre"), ps)
             }
-            Ty::Int => {
-                let save = save.unwrap_or_else(|| self.call_cb(CB_ARENA_SAVE, &[]));
+            None => (format!("@{sym}_impl"), params.to_string()),
+        };
+        match ret {
+            Ty::Float | Ty::Int => {
                 let r = self.fresh_reg();
-                self.ec(&format!("{r} = call i64 @{sym}_impl({params})"));
+                let t = if ret == Ty::Float { "double" } else { "i64" };
+                self.ec(&format!("{r} = call {t} {callee}({params})"));
                 // 生値なので残すハンドルは無い（TL_NONE を渡して巻き戻すだけ）
-                self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {save}")]);
-                (r, Ty::Int)
+                self.rewind_after_call(save, None);
+                (r, ret)
             }
             _ => {
-                let save = save.unwrap_or_else(|| self.call_cb(CB_ARENA_SAVE, &[]));
                 let raw = self.fresh_reg();
-                self.ec(&format!("{raw} = call i64 @{sym}_impl({params})"));
-                let h = self.call_cb(CB_ARENA_COMPACT, &[format!("i64 {raw}"), format!("i64 {save}")]);
-                (h, Ty::Handle)
+                self.ec(&format!("{raw} = call i64 {callee}({params})"));
+                (self.rewind_after_call(save, Some(&raw)), Ty::Handle)
             }
         }
     }
@@ -878,11 +900,14 @@ impl<'a> GenCtx<'a> {
         let ops: Vec<String> = arg_exprs.iter().zip(args).enumerate()
             .map(|(i, ((v, vt), a))| {
                 let pty = tys.get(i).copied().unwrap_or(Ty::Handle);
-                self.abi_operand(v, *vt, pty, a.expr(), muts.get(i).copied().unwrap_or(true), false)
+                let others: Vec<&Expr> =
+                    args.iter().enumerate().filter(|(j, _)| *j != i).map(|(_, x)| x.expr()).collect();
+                let disjoint = self.disjoint_from_all(a.expr(), &others);
+                self.abi_operand(v, *vt, pty, a.expr(), muts.get(i).copied().unwrap_or(true), false, name, disjoint)
             })
             .collect();
         let save = self.finish_call_save(outer);
-        self.call_impl(name, &ops.join(", "), ret, save)
+        self.call_impl(name, &ops.join(", "), ret, save, None)
     }
 
 
@@ -966,7 +991,7 @@ impl<'a> GenCtx<'a> {
     ///
     /// ⚠ #64 以前は `gen_call_expr` と `gen_call` に**逐語で同じ `match`** が置かれていた。
     /// ⚠ 3-1 以前は `self` と `int` / `float` のフィールドを持つクラスの仮引数しか引けず、ほかは全部名前で呼んでいた。
-    fn receiver_class(&self, object: &Expr) -> Option<Receiver> {
+    pub(super) fn receiver_class(&self, object: &Expr) -> Option<Receiver> {
         match object {
             e if ident_name(e) == Some("self") => {
                 self.current_class.clone().map(|class| Receiver { class, guarded: false })
@@ -988,6 +1013,48 @@ impl<'a> GenCtx<'a> {
         }
     }
 
+    /// `obj.attr` の読み出し（受け手は評価済みのハンドル `h`）。数値のフィールドで、受け手のクラスがこのモジュールの
+    /// raw レイアウトのクラスと分かるなら番地から直接読む（copy_alloc_speed_plan.md 8-3）。ほかは IC 付きのコールバック。
+    /// ⚠ 受け手のクラスは注釈・仮引数の型から決めたヒントで、実行時に合っているかは番地を返すコールバックが確かめる。
+    pub(super) fn emit_field_read(&mut self, object: &Expr, h: &str, attr: &str, known_ty: Option<Ty>) -> (String, Ty) {
+        if let Some(ty @ (Ty::Int | Ty::Float)) = known_ty {
+            if let Some(recv) = self.receiver_class(object) {
+                if let Some(r) = self.emit_direct_read(&recv.class, BlockSrc::Handle(h), attr, ty) {
+                    return r;
+                }
+            }
+        }
+        self.emit_attr_read(h, attr, known_ty)
+    }
+
+    /// `a.b.x` の読み出し（受け手 `object` が属性 `a.b` で、まだ評価していない）: `a.b` のクラスがこのモジュールの raw レイアウトの
+    /// クラスで `x` が数値のフィールドなら、`a.b` をアリーナに積まず、1 回のコールバックで番地を取って読む
+    /// （copy_alloc_speed_plan.md 8-7）。当てはまらなければ何も出さずに `None`（呼ぶ側が受け手を評価して今までの道を使う）。
+    /// ⚠ 判定はコードを出す前に済ませる（親を評価した後で引き返すと、親を 2 回評価することになる）。
+    fn emit_nested_field_read(&mut self, object: &Expr, attr: &str, known_ty: Option<Ty>) -> Option<(String, Ty)> {
+        let ty = known_ty.filter(|t| matches!(t, Ty::Int | Ty::Float))?;
+        let Expr::Attr { object: parent, attr: pattr, .. } = object else { return None };
+        let class = self.receiver_class(object)?.class;
+        self.direct_read_plan(&class, attr, ty)?;
+        let (pv, pt) = self.gen_expr(parent);
+        let ph = self.to_handle(&pv, pt);
+        self.emit_direct_read(&class, BlockSrc::Field { parent_h: &ph, attr: pattr }, attr, ty)
+    }
+
+    /// `obj.attr = v` の書き込み（受け手は評価済みのハンドル `oh`・値は評価済み）。`int` / `float` の値を、このモジュールの
+    /// raw レイアウトのクラスの `mut` の数値のフィールドへ書くなら番地へ直接書く（copy_alloc_speed_plan.md 8-4）。
+    /// ほかは今までのコールバック（[`Self::emit_attr_assign_typed`]）。
+    pub(super) fn emit_field_assign(&mut self, object: &Expr, oh: &str, attr: &str, v: &str, vt: Ty) {
+        if matches!(vt, Ty::Int | Ty::Float) {
+            if let Some(recv) = self.receiver_class(object) {
+                if self.emit_direct_write(&recv.class, BlockSrc::Handle(oh), attr, v, vt) {
+                    return;
+                }
+            }
+        }
+        self.emit_attr_assign_typed(oh, attr, v, vt);
+    }
+
     /// ハンドル ABI（[`Self::gen_call`]）で呼んでから、戻り値型に応じて**開けて返す**（#64）。
     ///
     /// `Ty::Float` はここへ来ない（呼び出し側が `double` 直返しの高速経路を選ぶ）。
@@ -1001,6 +1068,97 @@ impl<'a> GenCtx<'a> {
             }
             _ => (h, Ty::Handle),
         }
+    }
+
+    /// `Class(args)` を、数値の引数を箱に入れずに作ったばかりのインスタンスの番地へ直接書いて作る（copy_alloc_speed_plan.md
+    /// 7-11）。出せなければ何も出さずに `None`（呼ぶ側が今の `CB_CONSTRUCT_IC` を使う）。
+    ///
+    /// 出せるのは、`class` がこのモジュールの raw レイアウトのクラスで全フィールドが public、`__init__` がパーサの合成したもの
+    /// （`StaticRawClass::auto_init`）、引数（位置引数・評価済みの `arg_exprs`）の数がその仮引数と同じで、どの引数も格納先の
+    /// フィールドに同じ種類の数として入るとき（[`raw_store_conv`]。`int` を `float` のフィールドへ渡す形は型検査が止めるので
+    /// 出さない）。出すコード:
+    /// 1. `CB_NEW_INSTANCE`: インスタンスを作ってアリーナに積み、先頭の塊の番地を返す。クラスが表のとおりでない・合成した
+    ///    `__init__` の格納の順が違うときは 0（何も作らない）
+    /// 2. 作れたら、引数を幅に合わせて（切り詰め・丸め）番地へ書き、初期化の印をまとめて立てる。`store_auto_init` の格納
+    ///    （束縛は数なのでそのまま・格納の検査は作ったばかりのインスタンスなので通る）と同じ結果
+    /// 3. 作れなければ、引数を箱に入れて今までの `CB_CONSTRUCT_IC` を呼ぶ（**同じセル**を渡す。結果もエラーも今までと同じ）
+    /// ⚠ 引数は呼ぶ前に評価してある（評価の順は今までと同じ）。番地は 2 の間だけ使う（間にコールバックを挟まない）。
+    fn emit_direct_construct(&mut self, class: &str, arg_exprs: &[(String, Ty)], mask: u32) -> Option<String> {
+        use crate::interpreter::value::block;
+        if self.terminated {
+            return None;
+        }
+        let rc = self.raw_classes.get(class).filter(|rc| rc.all_public)?;
+        let order = rc.auto_init.as_ref()?;
+        if order.is_empty() || order.len() != arg_exprs.len() {
+            return None;
+        }
+        let mut stores = Vec::with_capacity(order.len());
+        for (&idx, (v, vt)) in order.iter().zip(arg_exprs) {
+            let desc = rc.layout.fields[idx];
+            let (ity, conv) = super::context::raw_store_conv(desc.width, *vt)?;
+            stores.push((desc, ity, conv, v.clone()));
+        }
+        let init_bits = order.iter().fold(0u64, |b, &i| b | block::init_bit(i));
+        let n = order.len();
+        let table = self.direct_class_desc(class)?;
+        let ord = format!("{table}_ord");
+        // セルは今までの道（`CB_CONSTRUCT_IC`）と共有する（どちらもクラスの番号 + 1 を入れる）。照合のセルは別（確かめた
+        // クラスを覚える）
+        let cell = self.ic_cell();
+        let checked = self.ic_cell();
+        let name = self.str_const(class.as_bytes());
+        let len = class.len();
+        let out = format!("%_nio{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{out} = alloca ptr, align 8"));
+        let h = self.call_cb(CB_NEW_INSTANCE, &[
+            cell.clone(), checked, name.clone(), format!("i32 {len}"), table, ord, format!("i32 {n}"), format!("ptr {out}"),
+        ]);
+        let made = self.fresh_reg();
+        self.ec(&format!("{made} = icmp ne i64 {h}, 0"));
+        let (bfast, bslow, bdone) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        self.br_cond(&made, &bfast, &bslow);
+
+        self.start_block(&bfast);
+        let p = self.fresh_reg();
+        self.ec(&format!("{p} = load ptr, ptr {out}, align 8"));
+        for (desc, ity, conv, v) in &stores {
+            let stored = match conv {
+                None => v.clone(),
+                Some(op) => {
+                    let c = self.fresh_reg();
+                    self.ec(&format!("{c} = {op} {v} to {ity}"));
+                    c
+                }
+            };
+            let fp = self.fresh_reg();
+            self.ec(&format!("{fp} = getelementptr inbounds i8, ptr {p}, i64 {}", block::field_offset(desc.byte_offset)));
+            self.ec(&format!("store {ity} {stored}, ptr {fp}, align {}", desc.width.byte_width()));
+        }
+        let head = self.fresh_reg();
+        self.ec(&format!("{head} = load i64, ptr {p}, align 8"));
+        let head2 = self.fresh_reg();
+        // LLVM の整数の定数は符号つきの 10 進で書く
+        self.ec(&format!("{head2} = or i64 {head}, {}", init_bits as i64));
+        self.ec(&format!("store i64 {head2}, ptr {p}, align 8"));
+        self.br(&bdone);
+
+        self.start_block(&bslow);
+        let handles: Vec<String> = arg_exprs.iter().map(|(v, vt)| self.to_handle(v, *vt)).collect();
+        let arr = self.spill_handle_array(&handles, "kargs");
+        self.emit_fresh_mask(&handles);
+        let h2 = self.call_cb(CB_CONSTRUCT_IC, &[
+            cell, name, format!("i32 {len}"), format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {mask}"),
+        ]);
+        self.br(&bdone);
+
+        self.start_block(&bdone);
+        let r = self.fresh_reg();
+        self.ec(&format!("{r} = phi i64 [ {h}, %{bfast} ], [ {h2}, %{bslow} ]"));
+        // どちらの道も作りたての値を新しい欄に積む（`CB_CONSTRUCT_IC` と同じ・12-1）
+        self.fresh_regs.insert(r.clone());
+        Some(r)
     }
 
     /// 引数ハンドルを **entry ブロックの `alloca` 配列**へ積んでポインタ名を返す（#64）。
@@ -1029,7 +1187,7 @@ impl<'a> GenCtx<'a> {
     /// |---|---|---|
     /// | 戻り値 | `(値, ネイティブ型)` | **i64 ハンドル 1 本** |
     /// | 呼び出し規約 | 戻り値が `Ty::Float` のときだけ **`double` を返す `_impl` / `_fast`** を直接呼ぶ | **ハンドル ABI 一本** |
-    /// | アリーナ | **触らない**（save/compact を出さない） | `CB_ARENA_SAVE` → `CB_ARENA_COMPACT` を必ず挟む |
+    /// | アリーナ | 呼ばれた側が積むとき・被演算子を複製したときだけ `CB_ARENA_SAVE` → `CB_ARENA_COMPACT` を挟む（9-2・7-12・どちらも `call_impl`） | 同左（7-12 より前は必ず挟んでいた） |
     /// | boxing | 無し（スカラーのまま） | 有り |
     ///
     /// ⇒ **同じ呼び先に対する 2 つの ABI** であって、重複実装ではない。
@@ -1126,6 +1284,21 @@ impl<'a> GenCtx<'a> {
                 return self.emit_module_fn_call(&name, args, &arg_exprs);
             }
         }
+        // ── 番地で呼ぶ変種（7-14）: 受け手と引数の番地が確かめられたときだけ。外れたら下の今までの呼び出し ──
+        if let Expr::Attr { object, attr, .. } = func {
+            if let Some(r) = self.emit_blk_method_call(func, object, attr, args, site) {
+                return r;
+            }
+        }
+        if let Some(r) = self.gen_method_call_expr(func, args, site) {
+            return r;
+        }
+        (self.gen_call(func, args, site), Ty::Handle)
+    }
+
+    /// `obj.m(args)` を、このモジュールのメソッドの直接呼び出しで呼ぶ（受け手のクラスが分かり、呼べるメソッドのとき）。
+    /// 当てはまらなければ何も出さずに `None`（呼ぶ側がハンドル ABI の [`Self::gen_call`] を使う）。
+    fn gen_method_call_expr(&mut self, func: &Expr, args: &[CallArg], site: CallSite<'_>) -> Option<(String, Ty)> {
         // ── Typed intra-module method calls on known class instances ──
         if let Expr::Attr { object, attr, .. } = func {
             let receiver = self.receiver_class(object);
@@ -1150,17 +1323,11 @@ impl<'a> GenCtx<'a> {
                             if let Some(fast_args) = fast_args {
                                 let r = self.fresh_reg();
                                 // 呼ばれた側がハンドルを作りうるなら前後で巻き戻す（9-2・`call_impl` と同じ）
-                                let save = if self.pushing_fns.contains(&sym) {
-                                    Some(save.unwrap_or_else(|| self.call_cb(CB_ARENA_SAVE, &[])))
-                                } else {
-                                    save
-                                };
+                                let save = self.save_before_call(&sym, save);
                                 self.ec(&format!("{r} = call double @{sym}_fast({fast_args})"));
-                                // 被演算子を複製したとき（1-15）・呼ばれた側が積むとき（9-2）に巻き戻す
-                                if let Some(s) = save {
-                                    self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {s}")]);
-                                }
-                                return (r, Ty::Float);
+                                // 被演算子を複製したとき（1-15・7-12）・呼ばれた側が積むとき（9-2）に巻き戻す
+                                self.rewind_after_call(save, None);
+                                return Some((r, Ty::Float));
                             }
                             // `build_fast_call_args` は被演算子を作る前にしか `None` を返さない（作った複製は無い）
                             debug_assert!(save.is_none());
@@ -1171,16 +1338,277 @@ impl<'a> GenCtx<'a> {
                         let (ov, ot) = self.gen_expr(object);
                         let oh = self.to_handle(&ov, ot);
                         let cls = cls.clone();
-                        return self.emit_direct_method_call_typed(&sym, &cls, object, &oh, ot, args, &arg_exprs);
+                        return Some(self.emit_direct_method_call_typed(&sym, &cls, object, &oh, ot, args, &arg_exprs));
                     }
 
-                    // ハンドルを返すメソッド・ガード付きの受け手: ハンドル ABI（int は CB_TO_INT で開ける）。
-                    return self.gen_call_unwrapped(func, args, ret_ty, site);
+                    // ガード付きの受け手で `int` / `float` を返すメソッド: 当たりの道の生の値のまま合流する（7-5）
+                    if matches!(ret_ty, Ty::Float | Ty::Int) {
+                        let arg_exprs: Vec<(String, Ty)> = args.iter()
+                            .map(|a| self.gen_expr(a.expr())).collect();
+                        let (ov, ot) = self.gen_expr(object);
+                        let oh = self.to_handle(&ov, ot);
+                        let cls = cls.clone();
+                        return Some(self.emit_guarded_method_call_typed(&sym, &cls, attr, object, &oh, ot, args, &arg_exprs, site));
+                    }
+
+                    // ハンドルを返すメソッド: ハンドル ABI。
+                    return Some(self.gen_call_unwrapped(func, args, ret_ty, site));
                 }
             }
         }
-        (self.gen_call(func, args, site), Ty::Handle)
+        None
     }
+
+    /// `e` がこの関数のローカル変数（仮引数を含む）の読みか。
+    pub(super) fn is_local_ident(&self, e: &Expr) -> bool {
+        match e {
+            Expr::Ident { res: Resolution::Local(slot), .. }
+                if matches!(self.locals_by_slot.get(*slot as usize), Some(Some(_))) =>
+            {
+                true
+            }
+            _ => ident_name(e).is_some_and(|n| self.locals.contains_key(n)),
+        }
+    }
+
+    /// 番地で呼ぶ変種（`@X_blk`・copy_alloc_speed_plan.md 7-14）でメソッドを呼ぶ。当てはまらなければ何も出さずに `None`
+    /// （呼ぶ側が今までの呼び出しを使う）。
+    ///
+    /// 当てはまるのは、呼ぶメソッドに番地で呼ぶ変種があり（`blk_ok`）、受け手と `let` のクラスの引数が「ローカル変数」か
+    /// 「ローカル変数の属性」（`a.b`）、数値の引数が `int` / `float` と分かっている項（[`Self::numeric_leaf`]・値の評価が
+    /// 何も起こさない）のとき。出すコード:
+    /// 1. 受け手と引数の番地を取る（覚えた番地 `%_ip_x` / `%_apN`・8-5 / 7-13）
+    /// 2. 番地ごとに: 空でない・全フィールドの初期化の印が立っている・`mut self` なら不変の印が立っていない。ガード付きの
+    ///    受け手は塊の `class_id` がガードのセル（名前で引いたクラスの番号・0 はまだ）と同じ（番地を返すコールバックの表の
+    ///    照合は名前と並びだけで、本体とモジュールの同じ名前・同じ並びのクラスを区別しない）
+    /// 3. 平たくして渡す引数（受け手を除く）が `mut` の値なら、`__copy__` を持つクラスが無い（`let` で受ける写しが呼ぶ）
+    /// 4. そろえば平たくするフィールドを読み（呼んだときの写し）、`@X_blk` を呼ぶ。外れたら今までの呼び出し
+    ///    （[`Self::gen_method_call_expr`]。ガード付きなら先にガードを呼んでセルを埋める）。結果は置き場で合流する。
+    /// ⚠ 外れた道は受け手と引数を AST からもう一度評価する（読むのは変数・属性・数の項だけで、何も起こさない）。
+    /// ⚠ `let self` の写しは `__copy__` を呼ばない（`deep_copy`・7-7 の `ar_borrow_or_copy` と同じ）ので、受け手は 3 の対象外。
+    fn emit_blk_method_call(
+        &mut self,
+        func: &Expr,
+        object: &Expr,
+        attr: &str,
+        args: &[CallArg],
+        site: CallSite<'_>,
+    ) -> Option<(String, Ty)> {
+        use crate::interpreter::value::block;
+        if self.typed_mode || self.blk_mode || self.terminated {
+            return None;
+        }
+        let recv = self.receiver_class(object)?;
+        let sym = method_symbol(&recv.class, attr);
+        if !self.blk_ok.contains(&sym) || !self.direct_callee(&sym, args.len(), true) {
+            return None;
+        }
+        let sig = self.blk_sigs.get(&sym)?.clone();
+        if sig.params.len() != args.len() + 1 || args.iter().any(|a| !matches!(a, CallArg::Positional(_))) {
+            return None;
+        }
+        let operands: Vec<&Expr> = std::iter::once(object).chain(args.iter().map(|a| a.expr())).collect();
+
+        // ── 1) 当てはまるかを、コードを出す前に全部確かめる ──
+        for (op, want) in operands.iter().zip(&sig.params) {
+            match want {
+                BlkOp::Ptr(c) | BlkOp::Flat(c) => {
+                    if self.receiver_class(op).map(|r| r.class).as_ref() != Some(c) {
+                        return None;
+                    }
+                    let local_src = match op {
+                        Expr::Attr { object: parent, .. } => self.is_local_ident(parent),
+                        e => self.is_local_ident(e),
+                    };
+                    if !local_src {
+                        return None;
+                    }
+                    if let BlkOp::Flat(c) = want {
+                        let fields = self.class_fields_ord.get(c)?.clone();
+                        if fields.iter().any(|(f, t)| self.direct_read_plan(c, f, *t).is_none()) {
+                            return None;
+                        }
+                    }
+                }
+                BlkOp::Num(_) => {
+                    if !self.numeric_leaf(op) {
+                        return None;
+                    }
+                }
+            }
+        }
+        let ret = sig.ret;
+        let rt = if ret == Ty::Float { "double" } else { "i64" };
+
+        // ── 2) 受け手と引数の番地を取る: (親か変数のハンドル, 入れ子なら属性, 番地, 入れ子なら IC のセル) ──
+        // 根（ローカル変数）を先に全部読んでから番地を取る: 同じ親の入れ子の受け手（`self.pos.add_scaled(self.vel, dt)`）は
+        // `CB_ATTR_BLOCKS` の 1 回でまとめて取る（7-18）。根を読むのは何も起こさないので、順を変えても見分けられない
+        type Got = (String, Option<String>, String, Option<String>);
+        let mut srcs: Vec<(usize, String, String, Option<String>)> = Vec::new();
+        for (i, (op, want)) in operands.iter().zip(&sig.params).enumerate() {
+            let (BlkOp::Ptr(c) | BlkOp::Flat(c)) = want else { continue };
+            let (src_e, a) = match op {
+                Expr::Attr { object: parent, attr: a, .. } => (parent.as_ref(), Some(a.clone())),
+                e => (*e, None),
+            };
+            let (v, t) = self.gen_expr(src_e);
+            let h = self.to_handle(&v, t);
+            srcs.push((i, c.clone(), h, a));
+        }
+        let items: Vec<(String, String, Option<String>)> =
+            srcs.iter().map(|(_, c, h, a)| (c.clone(), h.clone(), a.clone())).collect();
+        // クラスは raw レイアウト（`blk_sig_of` で確かめた）なので表があり、必ず番地のコードを出す
+        let blocks = self.emit_block_srcs(&items).expect("a raw-layout class has a direct class table");
+        let mut got: Vec<Option<Got>> = vec![None; operands.len()];
+        for ((i, _, h, a), (p, ic)) in srcs.into_iter().zip(blocks) {
+            got[i] = Some((h, a, p, ic));
+        }
+
+        // ── 3) 確かめる（外れたら遅い道へ） ──
+        let slot = format!("%_bres{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{slot} = alloca {rt}, align 8"));
+        let (b_fast, b_slow, b_join) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        let guard_cell = recv.guarded.then(|| self.ic_cell());
+        for (i, (g, want)) in got.iter().zip(&sig.params).enumerate() {
+            let Some((_, _, p, _)) = g else { continue };
+            let (BlkOp::Ptr(c) | BlkOp::Flat(c)) = want else { continue };
+            let nonnull = self.fresh_reg();
+            self.ec(&format!("{nonnull} = icmp ne ptr {p}, null"));
+            let b_chk = self.fresh_blk();
+            self.br_cond(&nonnull, &b_chk, &b_slow);
+            self.start_block(&b_chk);
+            let n_fields = self.raw_classes.get(c).map_or(0, |rc| rc.layout.fields.len());
+            let init = (0..n_fields).fold(0u64, |m, k| m | block::init_bit(k));
+            let mask = if matches!(want, BlkOp::Ptr(_)) { init | block::IMMUTABLE } else { init };
+            let head = self.fresh_reg();
+            self.ec(&format!("{head} = load i64, ptr {p}, align 8"));
+            let masked = self.fresh_reg();
+            // LLVM の整数の定数は符号つきの 10 進で書く
+            self.ec(&format!("{masked} = and i64 {head}, {}", mask as i64));
+            let mut ok = self.fresh_reg();
+            self.ec(&format!("{ok} = icmp eq i64 {masked}, {}", init as i64));
+            if let (0, Some(cell)) = (i, &guard_cell) {
+                let cell_ref = cell.trim_start_matches("ptr ").to_string();
+                let cid = self.fresh_reg();
+                self.ec(&format!("{cid} = and i64 {head}, {}", block::CLASS_ID_MASK as i64));
+                let want_id = self.fresh_reg();
+                self.ec(&format!("{want_id} = load atomic i64, ptr {cell_ref} monotonic, align 8"));
+                let same = self.fresh_reg();
+                self.ec(&format!("{same} = icmp eq i64 {cid}, {want_id}"));
+                let known = self.fresh_reg();
+                self.ec(&format!("{known} = icmp ne i64 {want_id}, 0"));
+                let both = self.fresh_reg();
+                self.ec(&format!("{both} = and i1 {same}, {known}"));
+                let all = self.fresh_reg();
+                self.ec(&format!("{all} = and i1 {ok}, {both}"));
+                ok = all;
+            }
+            let b_next = self.fresh_blk();
+            self.br_cond(&ok, &b_next, &b_slow);
+            self.start_block(&b_next);
+        }
+        let flat_mut_arg = operands.iter().zip(&sig.params).skip(1)
+            .any(|(op, want)| matches!(want, BlkOp::Flat(_)) && self.operand_is_mutable(op));
+        if flat_mut_arg {
+            let hooks = self.load_cb_data("i8", CB_COPY_HOOKS);
+            let none = self.fresh_reg();
+            self.ec(&format!("{none} = icmp eq i8 {hooks}, 0"));
+            self.br_cond(&none, &b_fast, &b_slow);
+        } else {
+            self.br(&b_fast);
+        }
+
+        // ── 4) 速い道: 平たくするフィールドを読み、`@X_blk` を呼ぶ ──
+        self.start_block(&b_fast);
+        let mut parts: Vec<String> = Vec::new();
+        for ((op, want), g) in operands.iter().zip(&sig.params).zip(&got) {
+            match (want, g) {
+                (BlkOp::Ptr(_), Some((_, _, p, _))) => parts.push(format!("ptr {p}")),
+                (BlkOp::Flat(c), Some((_, _, p, _))) => {
+                    let p = p.clone();
+                    for (f, t) in self.class_fields_ord.get(c).cloned().unwrap_or_default() {
+                        let (r, _) = self.emit_trusted_read(c, &p, &f, t).expect("checked before emitting");
+                        parts.push(format!("{} {r}", llvm_ty(t)));
+                    }
+                }
+                (BlkOp::Num(t), _) => {
+                    let (v, vt) = self.gen_expr(op);
+                    let v = if *t == Ty::Float { self.to_f64(&v, vt) } else { self.to_i64(&v, vt) };
+                    parts.push(format!("{} {v}", llvm_ty(*t)));
+                }
+                _ => unreachable!("class operands always have a block"),
+            }
+        }
+        let r = self.fresh_reg();
+        self.ec(&format!("{r} = call {rt} @{sym}_blk({})", parts.join(", ")));
+        self.ec(&format!("store {rt} {r}, ptr {slot}"));
+        self.br(&b_join);
+
+        // ── 5) 遅い道: 今までの呼び出し ──
+        self.start_block(&b_slow);
+        // 遅い道が積む値（受け手・引数のハンドル・結果）は、結果が生の数か使わない値なら道の中で巻き戻す（7-17）
+        let region = (matches!(ret, Ty::Float | Ty::Int) || self.call_value_discarded(func))
+            .then(|| self.begin_fallback_region())
+            .flatten();
+        // 次から速い道を通れるように、空だった入れ子の受け手・引数の番地の読み出しの IC のセルを埋める（`CB_ATTR_BLOCK` は
+        // セルが空のうちは空を返す）。ガード付きの受け手は、ガードのセルが空なら埋める（結果は今までの呼び出しのガードが
+        // もう一度決める）。番地が取れてほかの検査で外れたとき（`__copy__` を持つクラスがある など）は何も足さない。
+        // ⚠ 以前は受け手のセルしか埋めず、`self.pos.add_scaled(self.vel, dt)` の `self.vel` がいつも空で、毎回この道を通った。
+        for (h, a, p, ic) in got.iter().flatten().cloned().collect::<Vec<_>>() {
+            let Some(a) = a else { continue };
+            let empty = self.fresh_reg();
+            self.ec(&format!("{empty} = icmp eq ptr {p}, null"));
+            let (b_fill, b_cont) = (self.fresh_blk(), self.fresh_blk());
+            self.br_cond(&empty, &b_fill, &b_cont);
+            self.start_block(&b_fill);
+            self.block_src_handle(BlockSrc::Field { parent_h: &h, attr: &a }, ic);
+            self.br(&b_cont);
+            self.start_block(&b_cont);
+        }
+        if let (Some(cell), Some(Some((h, a, _, ic)))) = (&guard_cell, got.first().cloned()) {
+            let cell_ref = cell.trim_start_matches("ptr ").to_string();
+            let have = self.fresh_reg();
+            self.ec(&format!("{have} = load atomic i64, ptr {cell_ref} monotonic, align 8"));
+            let empty = self.fresh_reg();
+            self.ec(&format!("{empty} = icmp eq i64 {have}, 0"));
+            let (b_fill, b_cont) = (self.fresh_blk(), self.fresh_blk());
+            self.br_cond(&empty, &b_fill, &b_cont);
+            self.start_block(&b_fill);
+            let oh = match &a {
+                Some(a) => self.block_src_handle(BlockSrc::Field { parent_h: &h, attr: a }, ic),
+                None => h,
+            };
+            let cls = recv.class.clone();
+            let cptr = self.str_const(cls.as_bytes());
+            let need_mut = i32::from(matches!(sig.params[0], BlkOp::Ptr(_)));
+            self.call_cb(CB_METHOD_GUARD, &[
+                format!("i64 {oh}"), cptr, format!("i32 {}", cls.len()), cell.clone(), format!("i32 {need_mut}"),
+            ]);
+            self.br(&b_cont);
+            self.start_block(&b_cont);
+        }
+        let (v, vt) = match self.gen_method_call_expr(func, args, site) {
+            Some(x) => x,
+            None => (self.gen_call(func, args, site), Ty::Handle),
+        };
+        let v = match ret {
+            Ty::Float => self.to_f64(&v, vt),
+            Ty::Int => self.to_i64(&v, vt),
+            _ => self.to_handle(&v, vt),
+        };
+        if !self.terminated {
+            self.ec(&format!("store {rt} {v}, ptr {slot}"));
+        }
+        self.end_fallback_region(region);
+        self.br(&b_join);
+
+        self.start_block(&b_join);
+        let out = self.fresh_reg();
+        self.ec(&format!("{out} = load {rt}, ptr {slot}"));
+        Some((out, ret))
+    }
+
     /// モジュール内のメソッドを `_impl`（ハンドル ABI）で直接呼ぶ（値渡しの複製・1-5、呼ばれる側の文脈・1-9 込み）。
     #[allow(clippy::too_many_arguments)]
     fn emit_direct_method_call(
@@ -1218,8 +1646,19 @@ impl<'a> GenCtx<'a> {
         let all_params = std::iter::once(format!("i64 {oh}"))
             .chain(explicit).collect::<Vec<_>>().join(", ");
         let ret = self.fn_sigs[sym].ret;
+        // 番地を受け取る変種（7-19）へ渡すのは、受け手がこの関数の `self` の今の値そのもので（`mut self` なので写さない）、
+        // 呼ばれる側が `mut self` のメソッドのとき。同じクラスの `self.m(..)` だけ（Arrow のクラスは継承しないので、
+        // `self` のクラスは呼ばれる側のクラス）
+        let pre = (!self.typed_mode
+            && !self.blk_mode
+            && ident_name(object) == Some("self")
+            && self.fn_sigs[sym].param_mutabilities.first().copied() == Some(true)
+            && self.fresh_var_of(&oh).as_deref() == Some("%_al_self"))
+            .then(|| self.pre_lists.get(sym).cloned())
+            .flatten()
+            .filter(|l| !l.is_empty());
         let ctx = self.enter_callee_ctx(cls, &oh);
-        let out = self.call_impl(sym, &all_params, ret, save);
+        let out = self.call_impl(sym, &all_params, ret, save, pre.as_deref());
         self.leave_callee_ctx(ctx);
         out
     }
@@ -1239,6 +1678,7 @@ impl<'a> GenCtx<'a> {
         args: &[CallArg],
         arg_exprs: &[(String, Ty)],
         site: CallSite<'_>,
+        discarded: bool,
     ) -> String {
         // `mut self` のメソッドは不変インスタンスでガードを外す（名前による呼び出しがエラーにする）
         let need_mut = self.fn_sigs[sym].param_mutabilities.first().copied().unwrap_or(true);
@@ -1260,13 +1700,79 @@ impl<'a> GenCtx<'a> {
         self.ec(&format!("store i64 {rd}, ptr {slot}"));
         self.br(&b_join);
         self.start_block(&b_name);
+        // 値を使わない呼び出し（式の文）なら、名前による呼び出しが積む値（引数の箱・結果）を道の中で巻き戻す（7-17）
+        let region = discarded.then(|| self.begin_fallback_region()).flatten();
         let rn = self.emit_method_call_by_name(key, object, oh, args, arg_exprs, site);
         self.ec(&format!("store i64 {rn}, ptr {slot}"));
+        self.end_fallback_region(region);
         self.br(&b_join);
         self.start_block(&b_join);
         let r = self.fresh_reg();
         self.ec(&format!("{r} = load i64, ptr {slot}"));
         r
+    }
+
+    /// [`Self::emit_guarded_method_call`] の、`int` / `float` を返すメソッドの版（copy_alloc_speed_plan.md 7-5）: 両方の道の結果を
+    /// **生の値**（`i64` / `double`）で合流する。以前はハンドルで合流していたので、当たりの道でも `_impl` の `double` を
+    /// 箱に詰め直し、結果を使う演算も型の無い道（`binop` のコールバック）になっていた（`e += b.kinetic()` で 1 回 4 コールバック）。
+    /// 外れた道（名前による呼び出し）の結果は `CB_EXPECT_RET` で宣言の型どおりに開け、違う型なら `TypeError`
+    /// （黙って変換しない・利用者の決定 2026-11-17・旧 known_problems.md #1）。
+    #[allow(clippy::too_many_arguments)]
+    fn emit_guarded_method_call_typed(
+        &mut self,
+        sym: &str,
+        cls: &str,
+        key: &str,
+        object: &Expr,
+        oh: &str,
+        ot: Ty,
+        args: &[CallArg],
+        arg_exprs: &[(String, Ty)],
+        site: CallSite<'_>,
+    ) -> (String, Ty) {
+        let ret = self.fn_sigs[sym].ret;
+        let t = llvm_ty(ret);
+        let need_mut = self.fn_sigs[sym].param_mutabilities.first().copied().unwrap_or(true);
+        let cell = self.ic_cell();
+        let cptr = self.str_const(cls.as_bytes());
+        let ok = self.call_cb(CB_METHOD_GUARD, &[
+            format!("i64 {oh}"), cptr, format!("i32 {}", cls.len()), cell, format!("i32 {}", i32::from(need_mut)),
+        ]);
+        let slot = format!("%_mres{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{slot} = alloca {t}, align 8"));
+        let cond = self.fresh_reg();
+        self.ec(&format!("{cond} = icmp ne i32 {ok}, 0"));
+        let (b_direct, b_name, b_join) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        self.ec(&format!("br i1 {cond}, label %{b_direct}, label %{b_name}"));
+        self.terminated = true;
+        self.start_block(&b_direct);
+        let (rd, rt) = self.emit_direct_method_call_typed(sym, cls, object, oh, ot, args, arg_exprs);
+        let rd = if ret == Ty::Float { self.to_f64(&rd, rt) } else { self.to_i64(&rd, rt) };
+        self.ec(&format!("store {t} {rd}, ptr {slot}"));
+        self.br(&b_join);
+        self.start_block(&b_name);
+        // 結果は宣言の型どおりに開けた生の数なので、名前による呼び出しが積む値は道の中で巻き戻す（7-17）
+        let region = self.begin_fallback_region();
+        let rn = self.emit_method_call_by_name(key, object, oh, args, arg_exprs, site);
+        let shown = format!("{cls}.{key}");
+        let name = self.str_const(shown.as_bytes());
+        let kind = i32::from(ret == Ty::Float);
+        let bits = self.call_cb(CB_EXPECT_RET, &[format!("i64 {rn}"), format!("i32 {kind}"), name, format!("i32 {}", shown.len())]);
+        let v = if ret == Ty::Float {
+            let f = self.fresh_reg();
+            self.ec(&format!("{f} = bitcast i64 {bits} to double"));
+            f
+        } else {
+            bits
+        };
+        self.ec(&format!("store {t} {v}, ptr {slot}"));
+        self.end_fallback_region(region);
+        self.br(&b_join);
+        self.start_block(&b_join);
+        let r = self.fresh_reg();
+        self.ec(&format!("{r} = load {t}, ptr {slot}"));
+        (r, ret)
     }
 
     /// 名前によるメソッド呼び出し（`CB_CALL_METHOD_IC`・外のメソッド・コンパイルしていないメソッド・ガードが外れたとき）。
@@ -1304,6 +1810,7 @@ impl<'a> GenCtx<'a> {
             None => ("ptr null".to_string(), 0),
         };
         let cell = self.ic_cell();
+        self.emit_fresh_mask(&handles);
         self.call_cb(CB_CALL_METHOD_IC, &[
             cell, format!("i64 {oh}"), method_ptr, format!("i32 {method_len}"),
             args_arr, format!("i32 {n}"), format!("i32 {mask}"), info_ptr, format!("i32 {info_len}"),
@@ -1334,7 +1841,8 @@ impl<'a> GenCtx<'a> {
                     if !guarded {
                         return self.emit_direct_method_call(&sym, &cls, object, &oh, ot, args, &arg_exprs);
                     }
-                    return self.emit_guarded_method_call(&sym, &cls, &key, object, &oh, ot, args, &arg_exprs, site);
+                    let discarded = self.call_value_discarded(func);
+                    return self.emit_guarded_method_call(&sym, &cls, &key, object, &oh, ot, args, &arg_exprs, site, discarded);
                 }
             }
             return self.emit_method_call_by_name(&key, object, &oh, args, &arg_exprs, site);
@@ -1398,9 +1906,13 @@ impl<'a> GenCtx<'a> {
                 && !self.locals.contains_key(name)
                 && args.iter().all(|a| matches!(a, CallArg::Positional(_)))
             {
+                let mask = self.method_mut_mask_args(args);
+                // 全フィールドが数値のクラスを合成した `__init__` で作るなら、数値の引数を番地へ直接書く（7-11）
+                if let Some(r) = self.emit_direct_construct(name, &arg_exprs, mask) {
+                    return r;
+                }
                 let ptr = self.str_const(name.as_bytes());
                 let len = name.len() as i32;
-                let mask = self.method_mut_mask_args(args);
                 let handles: Vec<String> = arg_exprs.iter()
                     .map(|(v, vt)| self.to_handle(v, *vt))
                     .collect();
@@ -1411,6 +1923,7 @@ impl<'a> GenCtx<'a> {
                 } else {
                     let n   = handles.len();
                     let arr = self.spill_handle_array(&handles, "kargs");
+                    self.emit_fresh_mask(&handles);
                     self.call_cb(CB_CONSTRUCT_IC, &[cell, ptr, format!("i32 {len}"), format!("ptr {arr}"), format!("i32 {n}"), format!("i32 {mask}")])
                 };
             }

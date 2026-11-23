@@ -1,0 +1,125 @@
+# immutable_path_args.ar — 不変と分かる経路を `let self` / `let` 仮引数へ渡す（copy_alloc_speed_plan.md 3-1〜3-3）
+#
+# `let` が根の経路（`self.vel`・`b.pos`）と、`let` のリストのループ変数は、誰からも書き換わらないので複製しない。
+# 次のものは今までどおり複製する（省くと値が変わる）:
+#   - `mut` が根の経路
+#   - 一時値を回したループ変数（関数が `mut` のリストをそのまま返しうる）
+#   - 型の値・`static mut` を通る経路
+# 同じ関数を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/immutable_path_module.ar
+#   2. cargo run --release -- examples/interop/immutable_path_args.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.immutable_path_module as m
+
+class V:
+    mut x: int
+
+    fn get(let self) -> int:
+        return self.x
+
+    fn add(let self, let o: V) -> int:
+        return self.x + o.x
+
+class Body:
+    mut pos: V
+    mut vel: V
+    mut n: int
+
+    fn energy(let self) -> int:
+        return self.pos.add(self.vel) + self.n
+
+    fn mut_path(mut self) -> int:
+        return read_after_write(self.pos, self)
+
+class World:
+    mut bodies: list[Body]
+
+    fn total(let self) -> int:
+        mut s = 0
+        for b in self.bodies:
+            s += b.energy()
+        return s
+
+    fn all(mut self) -> list[Body]:
+        return self.bodies
+
+# `static mut` を持つクラス: `let` に束縛したクラスの値を通っても、中身は書き換えられる
+class Registry:
+    static mut items: list[V] = []
+
+fn read_after_write(let v: V, mut b: Body) -> int:
+    b.pos.x = 500
+    return v.x
+
+fn peek_after_write(let b: Body, mut w: World) -> int:
+    w.bodies[0].n = 900
+    return b.n
+
+fn read_after_registry_write(let xs: list[V]) -> int:
+    Registry.items[0].x = 70
+    return xs[0].x
+
+fn make_world() -> World:
+    return World([Body(V(1), V(2), 3), Body(V(10), V(20), 30)])
+
+fn let_path_cases() -> int:
+    mut w = make_world()
+    return w.total()
+
+fn mut_path_cases() -> int:
+    mut b = Body(V(1), V(2), 3)
+    let r = b.mut_path()
+    return r * 1000 + b.pos.x
+
+fn temp_iter_cases() -> int:
+    mut w = make_world()
+    mut s = 0
+    for b in w.all():
+        s += peek_after_write(b, w)
+    return s
+
+fn param_path(let b: Body) -> int:
+    return b.pos.get() + b.vel.get()
+
+fn param_path_cases() -> int:
+    mut b = Body(V(4), V(5), 6)
+    return param_path(b)
+
+# `let` のリスト・辞書の要素
+fn element_cases() -> int:
+    let xs = [V(1), V(2)]
+    let d = {"a": V(30)}
+    mut s = 0
+    for v in xs:
+        s += v.get()
+    return s + xs[0].get() + d["a"].get()
+
+# 型の値を通る経路: `Registry.items` は `static mut`
+fn static_path_cases() -> int:
+    Registry.items.append(V(7))
+    let k = Registry
+    return read_after_registry_write(k.items)
+
+fn expect(let name: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError("immutable_path_args: " + name + " = " + str(got) + ", expected " + str(want))
+
+expect("vm let path", let_path_cases(), 66)
+expect("vm mut path", mut_path_cases(), 1500)
+expect("vm temp iter", temp_iter_cases(), 33)
+expect("vm param path", param_path_cases(), 9)
+expect("vm element", element_cases(), 34)
+expect("vm static path", static_path_cases(), 7)
+
+expect("compiled let path", m.let_path_cases(), 66)
+expect("compiled mut path", m.mut_path_cases(), 1500)
+expect("compiled temp iter", m.temp_iter_cases(), 33)
+expect("compiled param path", m.param_path_cases(), 9)
+
+# 最上位の `let` が根の経路
+let lw = make_world()
+expect("toplevel let path", lw.total(), 66)
+expect("toplevel let element", lw.bodies[1].energy(), 60)
+print("immutable_path_args: ok")

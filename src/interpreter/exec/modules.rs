@@ -542,11 +542,10 @@ impl Interpreter {
                 use crate::partial_compiler::NativePayload;
                 // ── DLL path (v1) ─────────────────────────────────────────────
                 let NativePayload::Dll(dll_bytes) = payload;
-                let ext = crate::partial_compiler::native_lib_ext();
                 let stem = module.last().cloned().unwrap_or_default();
-                let tmp_path = std::env::temp_dir().join(format!("{stem}_tl.{ext}"));
-                match std::fs::write(&tmp_path, &dll_bytes) {
-                    Ok(()) => match self.try_load_native_module(module, body, &tmp_path) {
+                // 同じ中身の DLL が置いてあれば書き直さない（書き直すと読み込みのたびに検査を受ける・7-8）
+                match crate::partial_compiler::materialize_native_lib(&format!("{stem}_tl"), &dll_bytes) {
+                    Ok(tmp_path) => match self.try_load_native_module(module, body, &tmp_path) {
                         Ok((ns, globals)) => {
                             self.module_globals_ids.insert(cache_key.clone(), globals);
                             self.module_cache.insert(cache_key, ModuleState::Loaded(ns.clone()));
@@ -941,11 +940,12 @@ impl Interpreter {
                 let dll_str = dll_path.to_string_lossy().into_owned();
                 let rust_src = crate::interpreter::cpp_bridge::gen_dll_wrapper(&dll_str, &sigs, &struct_defs);
                 let dll_bytes = crate::interpreter::cpp_bridge::compile_wrapper(&rust_src, &[])?;
-                let ext = crate::partial_compiler::native_lib_ext();
-                let tmp_path = std::env::temp_dir()
-                    .join(format!("_tl_cpp_{:x}.{ext}", simple_hash(header_path_str)));
-                std::fs::write(&tmp_path, &dll_bytes)
-                    .map_err(|e| format!("CppImport: cannot write wrapper DLL: {e}"))?;
+                // 同じ中身の中継 DLL が置いてあれば書き直さない（7-8）
+                let tmp_path = crate::partial_compiler::materialize_native_lib(
+                    &format!("_tl_cpp_{:x}", simple_hash(header_path_str)),
+                    &dll_bytes,
+                )
+                .map_err(|e| format!("CppImport: cannot write wrapper DLL: {e}"))?;
                 self.load_cpp_wrapper_dll(&tmp_path, &sigs, &struct_defs, header_path_str)
             }
             _ => unreachable!(),

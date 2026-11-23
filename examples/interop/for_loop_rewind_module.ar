@@ -1,0 +1,79 @@
+# for_loop_rewind_module.ar — examples/interop/for_loop_rewind.ar が読むモジュール（copy_alloc_speed_plan.md 7-15）
+#
+# `for` の 1 周で作る一時値（Python の `Tracker`）は、次の周の頭で捨てられる（周の終わりに残す値が無いループは、巻き戻しを
+# 次の周の取り出しにまとめる）。どの関数も、周の中で `len(P.alive_mark(P.make()))` が見た生きている数の最大を返す（1 なら前の周の
+# 一時値は捨てられている）。`len` は生の `int` を返すので `a` はハンドルにならない（ハンドルのローカルは周の終わりに残す値に
+# なり、まとめる道を通らない）。
+
+import[py] ffi_probe.lifetime_py as P
+
+class Cell:
+    mut n: int
+    mut tag: str
+
+fn peak_alive(let xs: list[int]) -> int:
+    mut peak = 0
+    for x in xs:
+        let a = len(P.alive_mark(P.make()))
+        if a > peak:
+            peak = a
+    return peak
+
+# `break` は見出しを通らない（最後の周の一時値は関数から戻るときに捨てられる）
+fn first_big(let xs: list[int], let lim: int) -> int:
+    mut found = -1
+    for x in xs:
+        let a = len(P.alive_mark(P.make()))
+        if x > lim:
+            found = x * 1000 + a
+            break
+    return found
+
+# `continue` は戻り口から見出しへ行く
+fn odd_sum(let xs: list[int]) -> int:
+    mut s = 0
+    mut peak = 0
+    for x in xs:
+        let a = len(P.alive_mark(P.make()))
+        if a > peak:
+            peak = a
+        if x % 2 == 0:
+            continue
+        s += x
+    return s * 1000 + peak
+
+# 入れ子のループ（内側のループに入るたびに保存点を取り直す）
+fn grid(let xs: list[int], let ys: list[int]) -> int:
+    mut peak = 0
+    mut s = 0
+    for x in xs:
+        for y in ys:
+            let a = len(P.alive_mark(P.make()))
+            if a > peak:
+                peak = a
+            s += x * y
+    return s * 1000 + peak
+
+# 反復はループに入ったときの写し: 途中で足した要素は回らない（写しから要素を取り出しても元のリストは変わらない）
+fn grow(mut xs: list[int]) -> int:
+    mut n = 0
+    for x in xs:
+        xs.append(x)
+        n += 1
+    return n * 1000 + len(xs)
+
+# ループ変数は元のリストの要素そのもの（書き換えは元のリストに見える）
+fn bump_all(mut cs: list[Cell]) -> int:
+    for c in cs:
+        c.n += 1
+    mut s = 0
+    for c in cs:
+        s += c.n
+    return s
+
+# 周の終わりに残す値がある（`seen` はハンドル）: 今までどおり戻り口で残して巻き戻す
+fn last_tag(let cs: list[Cell]) -> str:
+    mut seen = ""
+    for c in cs:
+        seen = c.tag + "!"
+    return seen

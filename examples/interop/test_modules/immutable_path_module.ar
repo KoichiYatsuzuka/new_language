@@ -1,0 +1,78 @@
+# immutable_path_module.ar — immutable_path_args.ar のコンパイル済みの側（copy_alloc_speed_plan.md 3-3）
+#
+# `let` が根の経路・`let` のリストのループ変数は、`let self` / `let` 仮引数で受けても複製しない。
+# `mut` が根の経路・一時値を回したループ変数は今までどおり複製する。どの関数も結果を数で返す。
+
+class V:
+    mut x: int
+
+    fn get(let self) -> int:
+        return self.x
+
+    fn add(let self, let o: V) -> int:
+        return self.x + o.x
+
+class Body:
+    mut pos: V
+    mut vel: V
+    mut n: int
+
+    # `let self` の中: 受け手も引数も `let` が根の経路
+    fn energy(let self) -> int:
+        return self.pos.add(self.vel) + self.n
+
+    # `mut self` の中: 経路の根は `mut`（複製する）。読む前に元を書き換えても、受けた値は変わらない
+    fn mut_path(mut self) -> int:
+        return read_after_write(self.pos, self)
+
+class World:
+    mut bodies: list[Body]
+
+    # `let` のリストのループ変数を受け手にする
+    fn total(let self) -> int:
+        mut s = 0
+        for b in self.bodies:
+            s += b.energy()
+        return s
+
+    fn all(mut self) -> list[Body]:
+        return self.bodies
+
+fn read_after_write(let v: V, mut b: Body) -> int:
+    b.pos.x = 500
+    return v.x
+
+fn peek_after_write(let b: Body, mut w: World) -> int:
+    w.bodies[0].n = 900
+    return b.n
+
+fn make_world() -> World:
+    return World([Body(V(1), V(2), 3), Body(V(10), V(20), 30)])
+
+fn let_path_cases() -> int:
+    mut w = make_world()
+    # 6 + 60 = 66
+    return w.total()
+
+fn mut_path_cases() -> int:
+    mut b = Body(V(1), V(2), 3)
+    let r = b.mut_path()
+    # 受けた値は 1 のまま・元は 500 に書き換わっている → 1 * 1000 + 500 = 1500
+    return r * 1000 + b.pos.x
+
+# 一時値（`mut` のリストをそのまま返す関数の結果）を回したループ変数: 複製する
+fn temp_iter_cases() -> int:
+    mut w = make_world()
+    mut s = 0
+    for b in w.all():
+        s += peek_after_write(b, w)
+    # 1 回目は 3（書き換える前の値）・2 回目は 30 → 33
+    return s
+
+# `let` の仮引数が根の経路
+fn param_path(let b: Body) -> int:
+    return b.pos.get() + b.vel.get()
+
+fn param_path_cases() -> int:
+    mut b = Body(V(4), V(5), 6)
+    return param_path(b)

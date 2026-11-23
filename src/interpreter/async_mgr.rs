@@ -42,6 +42,37 @@ pub enum AsyncStatus {
 // sharing safe. Thread-bound values (files, AsyncManager, Signal, EventLoop) are never shared (7-19).
 // ---------------------------------------------------------------------------
 
+/// 走っている非同期タスクのスレッドの数（プロセスに 1 つ・copy_alloc_speed_plan.md D-8）。
+///
+/// `mut` の値を `let self` / `let` 仮引数で受けるときの複製は、タスクが同じ値を書き換えている最中でも `let` の
+/// 見え方を守る役目を持つ（同 D-7）。読むだけの関数へ渡すときにこの複製を省くのは、**この数が 0 のときだけ**
+/// （[`no_live_tasks`]）。1 つでも走っていれば今までどおり複製する。
+/// ⚠ Arrow のコードを別のスレッドで走らせる所はここ（`try_schedule`）だけ。増やしたら、ここで数えること。
+pub(crate) static LIVE_TASKS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// 走っているタスクのスレッドが 1 つも無いか。
+/// ⚠ タスクのスレッドの中から呼べば、自分が数に入っているので必ず `false`（タスクの中では省かない）。
+#[inline]
+pub(crate) fn no_live_tasks() -> bool {
+    LIVE_TASKS.load(Ordering::Relaxed) == 0
+}
+
+/// `LIVE_TASKS` を 1 つ増やし、落とされたとき（スレッドの終わり・パニック）に 1 つ減らす。
+struct LiveTaskGuard;
+
+impl LiveTaskGuard {
+    fn enter() -> Self {
+        LIVE_TASKS.fetch_add(1, Ordering::SeqCst);
+        LiveTaskGuard
+    }
+}
+
+impl Drop for LiveTaskGuard {
+    fn drop(&mut self) {
+        LIVE_TASKS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
 /// タスクへ送る環境（名前空間の分離・2026-09-26）。
 ///
 /// ⚠⚠ **見えている名前だけでは足りない。** タスクの中で呼んだ関数は、自分を定義したモジュールの
@@ -205,7 +236,11 @@ impl AsyncManagerData {
             let body = SendableBody(task.body);
             let env = SendableEnv(task.env);
 
+            // 走っているタスクの数（`LIVE_TASKS`）は、スレッドを起こす**前**に増やす（起こした直後から `mut` の値を
+            // 書き換えうる）。減らすのはスレッドの終わり（パニックでも減るようにガードで）。
+            let live = LiveTaskGuard::enter();
             let handle = std::thread::spawn(move || {
+                let _live = live;
                 // Rebind whole structs so the closure captures SendableBody/SendableEnv
                 // (both declared Send), not the inner Vec which is not Send (Rust 2021
                 // precise-field capture would otherwise bypass our unsafe impl Send).

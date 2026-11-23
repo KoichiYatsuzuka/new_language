@@ -123,6 +123,19 @@ fn int_cache_handle(n: i64) -> i64 {
     3 + n
 }
 
+/// アリーナへ積まずに決まったハンドルで表す値（`None`・真偽値・小さい整数）のハンドル。ほかの値は `None`。
+/// 値を積むところ（[`NativeCallState::push_value`]・[`push_handle`]・`ar_iter_begin` の並び）はこれ 1 つで決める。
+#[inline(always)]
+fn fixed_handle(v: &Value) -> Option<i64> {
+    match v {
+        Value::None => Some(TL_NONE),
+        Value::Bool(true) => Some(TL_TRUE),
+        Value::Bool(false) => Some(TL_FALSE),
+        Value::Int(n) if *n >= 0 && *n < INT_CACHE_END => Some(int_cache_handle(*n)),
+        _ => None,
+    }
+}
+
 // ── Consolidated thread-local state ─────────────────────────────────────────
 //
 // All previously separate thread_local! variables are combined here so that
@@ -137,8 +150,13 @@ fn int_cache_handle(n: i64) -> i64 {
 
 /// ネイティブコードの `for` の反復状態（`ar_iter_from` / `ar_iter_next`）。
 pub(crate) enum NativeIter {
-    /// 実体化した要素と次の位置（`list` / `tuple` / `str` / `dict` のキー / `fixed_list`）。
+    /// 実体化した要素と次の位置（`list` / `tuple` / `str` / `dict` のキー / `fixed_list`）。要素は反復のための写しで、
+    /// 取り出した要素（位置より前）は `None` に置き換わっている（`iter_next_impl` が複製せずに取り出す・7-15）。
     Items(Vec<Value>, usize),
+    /// 入口で全部積んだ要素のハンドルの並び（`ar_iter_begin`・copy_alloc_speed_plan.md 7-20）。生成コードが並びの番地から
+    /// 周ごとに読むので、`iter_next` では進めない（呼ばれたらエラー）。並びは捨てるまで書き換えない（番地が動かない）。
+    /// Rust からは読まない（並びを生かしておくために持つだけ）。
+    Run(#[allow(dead_code)] Vec<i64>),
     /// インタープリタの反復プロトコル: `make_for_iterator` が作ったジェネレータを `gen_next` で進める
     /// （VM の `GetIter` / `ForIter` と同じ。`set`・`bytes`・`enumerate` / `zip`・ジェネレータ・`__iter__` を持つ
     /// インスタンスなど・native_object_access_plan.md 1-3）。⚠ 以前はこれらが「not iterable in native context」だった。
@@ -158,6 +176,12 @@ struct NativeCallState {
     arena_save: usize,
     /// Iter table size saved at the outermost native call entry.
     iter_save: usize,
+    /// 入れ子のネイティブ呼び出し（コンパイル済みコード → コールバック → 利用者のコード → コンパイル済みの関数）に
+    /// 入ったときのアリーナの長さ（いちばん内側が末尾）。抜けるときにそこまで巻き戻す（known_bugs.md #25）。
+    /// ⚠ 以前は巻き戻すのがいちばん外の呼び出しだけで、入れ子の呼び出しが積んだ値（引数・結果の箱・本体の値）は、
+    ///   呼ぶ側の生成コードが巻き戻すまで残った。値を積まないと判定した関数の呼び出しは巻き戻さないので
+    ///   （`pushing_fns`・9-2）、その中の `len(x)`（`__len__` がコンパイル済み）をループで呼ぶと回数だけ溜まった。
+    nested_saves: Vec<usize>,
     /// Error set by a callback on failure; checked after each native call.
     error: Option<String>,
     /// Exception raised by CB_RAISE; (type_name, message) pair.
@@ -172,11 +196,15 @@ struct NativeCallState {
     ///   `String` を 2 個作っていた（生成のたびに・ネイティブのクラスでなくても・1 回 約 50〜100 ns）。
     /// ⚠ キーは**クラスの番号**（`class_id`・11-4）。以前は素のクラス名で、本体（や別のモジュール）の同じ名前のクラスの
     ///   生成・メソッド呼び出しでも、コンパイル済みのモジュールのメソッドが呼ばれていた（型はモジュールごとに別・10-8）。
-    native_methods: HashMap<u32, HashMap<String, (usize, u32)>>,
+    /// ⚠ 外側の表は FxHash（`ClassIdMap`・copy_alloc_speed_plan.md 7-10。インスタンスを作るたびに `__init__` を引く）。
+    native_methods: crate::interpreter::ClassIdMap<HashMap<String, (usize, u32)>>,
     /// 文字列のリテラルの表（11-2・D-12）: 呼び出し箇所のセルに入れた番号 − 1 → 1 度だけ作った文字列。VM の定数表と同じく、
     /// 評価のたびに作り直さず参照数の加算で使う。番号はプロセスで一意（`ar_make_str_ic`）、表はスレッドごと
     /// （`Rc<str>` はスレッドをまたげないので、非同期タスクのワーカーは自分の表に作る）。いちばん外の呼び出しを抜けても捨てない。
     str_consts: Vec<Option<Value>>,
+    /// 次の `ar_construct_ic` / `ar_call_method_ic` の引数のうち、「作りたての値を積んだばかりの欄」の印
+    /// （bit i+1 = 引数 i・`ar_set_fresh` が入れ、次の呼び出しが入口で必ず読んで 0 に戻す・copy_alloc_speed_plan.md 2-4）。
+    fresh_mask: u32,
 }
 
 impl NativeCallState {
@@ -196,19 +224,45 @@ impl NativeCallState {
     /// Small integers (0..256), booleans and None return cached handles without arena push.
     #[inline]
     fn push_value(&mut self, v: Value) -> i64 {
-        match &v {
-            Value::None => TL_NONE,
-            Value::Bool(true) => TL_TRUE,
-            Value::Bool(false) => TL_FALSE,
-            Value::Int(n) if *n >= 0 && *n < INT_CACHE_END => int_cache_handle(*n),
-            _ => {
-                let h = self.arena.len() as i64;
-                self.arena.push(v);
-                h
-            }
+        if let Some(h) = fixed_handle(&v) {
+            return h;
         }
+        let h = self.arena.len() as i64;
+        self.arena.push(v);
+        h
     }
 
+}
+
+thread_local! {
+    /// [`STATE`] の番地（copy_alloc_speed_plan.md 7-6）。初期化を遅らせない const の TLS なので、取り出しは TLS の番地の
+    /// 読み出しだけで済む（`STATE` は初めての参照で作るので、参照のたびに「作ったか」を調べ、解放の登録を確かめる）。
+    /// 空なら [`with_state`] が `STATE` を引いて埋める。`STATE` が解放されるとき（スレッドの終わり）は
+    /// `NativeCallState::drop` が空に戻す。
+    static STATE_PTR: std::cell::Cell<*const RefCell<NativeCallState>> = const { std::cell::Cell::new(std::ptr::null()) };
+}
+
+/// スレッドの状態（[`STATE`]）を借りる**唯一の入口**（7-6）。`STATE.with(..)` と同じ意味で、取り出しが安い。
+/// ⚠ 以前はコールバックのたびに `STATE.with` を通っていた。試作の A/B でコンパイル済みの k1 1.12x・フィールドの読み書きの
+///   単価 1.18〜1.27x（借用と本体は変えていない＝取り出しの固定費だけの差）。
+#[inline(always)]
+fn with_state<R>(f: impl FnOnce(&RefCell<NativeCallState>) -> R) -> R {
+    let p = STATE_PTR.with(|c| c.get());
+    if !p.is_null() {
+        // SAFETY: `STATE` はスレッドが終わるまで動かない。消えるときは `Drop` が番地を空にする
+        return f(unsafe { &*p });
+    }
+    STATE.with(|s| {
+        STATE_PTR.with(|c| c.set(s as *const _));
+        f(s)
+    })
+}
+
+/// [`STATE_PTR`] を空に戻す（解放された `STATE` を指したままにしない）。`STATE` のほかに `NativeCallState` は作らない。
+impl Drop for NativeCallState {
+    fn drop(&mut self) {
+        let _ = STATE_PTR.try_with(|c| c.set(std::ptr::null()));
+    }
 }
 
 thread_local! {
@@ -227,22 +281,31 @@ thread_local! {
             call_depth: 0,
             arena_save: INT_CACHE_BASE,
             iter_save: 0,
+            nested_saves: Vec::new(),
             error: None,
             pending_raise: None,
             cstr_bufs: Vec::new(),
             protocol_args: Vec::new(),
-            native_methods: HashMap::new(),
+            native_methods: crate::interpreter::ClassIdMap::default(),
             str_consts: Vec::new(),
+            fresh_mask: 0,
         }
     });
 }
 
 // ── Public API for the interpreter ──────────────────────────────────────────
 
+/// このスレッドでコンパイル済みコードの呼び出しの途中か（copy_alloc_speed_plan.md 7-3 の検査）。
+pub fn native_call_active() -> bool {
+    with_state(|s| s.borrow().call_depth > 0)
+}
+
 /// ネイティブ関数呼び出しを開始する。最外呼び出し（深さ0）のとき `true` を返す。
 /// 最外レベルではアリーナとイテレータテーブルの保存点を記録し `interp_ptr` をセットする。
+/// 入れ子の呼び出しは、入ったときのアリーナの長さを `nested_saves` に積む（抜けるときにそこまで巻き戻す・#25）。
+/// ⚠ 呼んだら必ず [`exit_native_call`] か [`abort_native_call`] を同じ `is_outermost` で 1 回呼ぶこと（積んだ長さが残る）。
 pub fn enter_native_call(interp: *mut Interpreter) -> bool {
-    STATE.with(|s| {
+    with_state(|s| {
         let mut st = s.borrow_mut();
         let prev = st.call_depth;
         st.call_depth = prev + 1;
@@ -252,71 +315,68 @@ pub fn enter_native_call(interp: *mut Interpreter) -> bool {
             st.iter_save = st.iter_table.len();
             true
         } else {
+            let len = st.arena.len();
+            st.nested_saves.push(len);
             false
         }
     })
 }
 
+/// 呼び出しを抜けるときの片づけ（[`exit_native_call`] / [`abort_native_call`] の共通部分）。
+/// いちばん外ならアリーナ・イテレータの表などを入ったときまで戻す。入れ子ならアリーナだけを入ったときの長さまで
+/// 巻き戻す（#25）。呼ぶ側の生成コードが持つハンドルは入る前に積んだもの（その長さより下）なので消えない。
+/// ⚠ イテレータの表は入れ子では戻さない（以前と同じ。イテレータは呼ぶ側の生成コードの `for` が片づける）。
+fn leave_native_call(st: &mut NativeCallState, is_outermost: bool) {
+    if st.call_depth > 0 {
+        st.call_depth -= 1;
+    }
+    if is_outermost {
+        st.interp_ptr = std::ptr::null_mut();
+        let arena_save = st.arena_save;
+        let iter_save = st.iter_save;
+        st.arena.truncate(arena_save);
+        st.iter_table.truncate(iter_save);
+        st.cstr_bufs.clear();
+        st.protocol_args.clear();
+        // いちばん外を抜けたら入れ子の長さは残らない（対になっていれば空。念のため捨てる）
+        st.nested_saves.clear();
+    } else if let Some(len) = st.nested_saves.pop() {
+        st.arena.truncate(len);
+    }
+}
+
 /// ネイティブ関数呼び出しを正常終了する。
-/// `result_h` から結果値をクローンし、最外呼び出しであればアリーナ等を保存点まで巻き戻す。
+/// `result_h` から結果値をクローンし（巻き戻す前）、アリーナを入ったときまで巻き戻す（[`leave_native_call`]）。
 pub fn exit_native_call(result_h: i64, is_outermost: bool) -> Value {
-    STATE.with(|s| {
+    with_state(|s| {
         let mut st = s.borrow_mut();
         let result = st.clone_value(result_h);
-        if st.call_depth > 0 {
-            st.call_depth -= 1;
-        }
-        if is_outermost {
-            st.interp_ptr = std::ptr::null_mut();
-            let arena_save = st.arena_save;
-            let iter_save = st.iter_save;
-            st.arena.truncate(arena_save);
-            st.iter_table.truncate(iter_save);
-            st.cstr_bufs.clear();
-            st.protocol_args.clear();
-        }
+        leave_native_call(&mut st, is_outermost);
         result
     })
 }
 
 /// ネイティブ関数呼び出しをエラー終了する（値を返さずクリーンアップのみ）。
 pub fn abort_native_call(is_outermost: bool) {
-    STATE.with(|s| {
-        let mut st = s.borrow_mut();
-        if st.call_depth > 0 {
-            st.call_depth -= 1;
-        }
-        if is_outermost {
-            st.interp_ptr = std::ptr::null_mut();
-            let arena_save = st.arena_save;
-            let iter_save = st.iter_save;
-            st.arena.truncate(arena_save);
-            st.iter_table.truncate(iter_save);
-            st.cstr_bufs.clear();
-            st.protocol_args.clear();
-        }
-    })
+    with_state(|s| leave_native_call(&mut s.borrow_mut(), is_outermost))
 }
 
 /// 値をアリーナにプッシュしてハンドルを返す（小整数・真偽値はキャッシュ済みハンドルを返す）。
 pub fn push_handle(v: Value) -> i64 {
-    match &v {
-        Value::None => TL_NONE,
-        Value::Bool(true) => TL_TRUE,
-        Value::Bool(false) => TL_FALSE,
-        Value::Int(n) if *n >= 0 && *n < INT_CACHE_END => int_cache_handle(*n),
-        _ => STATE.with(|s| {
-            let mut st = s.borrow_mut();
-            let h = st.arena.len() as i64;
-            st.arena.push(v);
-            h
-        }),
+    if let Some(h) = fixed_handle(&v) {
+        return h;
     }
+    with_state(|s| {
+        let mut st = s.borrow_mut();
+        let h = st.arena.len() as i64;
+        st.arena.push(v);
+        h
+    })
 }
 
 /// 値をアリーナに**常に新規スロット**としてプッシュしてハンドルを返す（cpp-bridge write-back 用）。
 pub fn push_handle_writeback(v: Value) -> i64 {
-    STATE.with(|s| {
+    with_state(|s| {
         let mut st = s.borrow_mut();
         let h = st.arena.len() as i64;
         st.arena.push(v);
@@ -331,7 +391,7 @@ pub fn clone_value_at(h: i64) -> Value {
         TL_TRUE => Value::Bool(true),
         TL_FALSE => Value::Bool(false),
         n if n >= 3 => {
-            STATE.with(|s| s.borrow().arena.get(n as usize).cloned().unwrap_or(Value::None))
+            with_state(|s| s.borrow().arena.get(n as usize).cloned().unwrap_or(Value::None))
         }
         _ => Value::None,
     }
@@ -339,19 +399,19 @@ pub fn clone_value_at(h: i64) -> Value {
 
 /// 直前のネイティブ呼び出しチェーンでセットされたエラーを取り出して返す。
 pub fn take_error() -> Option<String> {
-    STATE.with(|s| s.borrow_mut().error.take())
+    with_state(|s| s.borrow_mut().error.take())
 }
 
 /// Take any exception raised by CB_RAISE. Returns (type_name, message) if set.
 pub fn take_pending_raise() -> Option<(String, String)> {
-    STATE.with(|s| s.borrow_mut().pending_raise.take())
+    with_state(|s| s.borrow_mut().pending_raise.take())
 }
 
 /// Register a natively compiled class method so `ar_call_method` can dispatch to it.
 /// `class_id` はモジュールが定義したクラスの番号（同じ名前の別のクラスと混ざらない・11-4）。
 /// `globals` はクラスを定義したモジュールの大域の番号（呼ぶ間だけそこへ差し替える・1-7）。
 pub fn register_native_method(class_id: u32, method_name: &str, fn_ptr: usize, globals: u32) {
-    STATE.with(|s| {
+    with_state(|s| {
         s.borrow_mut()
             .native_methods
             .entry(class_id)
@@ -367,7 +427,7 @@ pub fn lookup_native_method_ptr(class_id: u32, method_name: &str) -> Option<usiz
 
 /// ネイティブのメソッドの関数ポインタと、走らせる大域の番号（1-7）。
 pub(crate) fn lookup_native_method(class_id: u32, method_name: &str) -> Option<(usize, u32)> {
-    STATE.with(|s| {
+    with_state(|s| {
         s.borrow()
             .native_methods
             .get(&class_id)
@@ -464,7 +524,7 @@ pub fn try_dispatch_native_method_evaled(
     if decl.params.first().is_none_or(|p| p.name != "self") {
         return None;
     }
-    let mut vals = match interp.bind_native_args(&decl.params, decl.globals, evaled, Some(obj), recv_mut) {
+    let mut vals = match interp.bind_native_args(method_name, &decl.params, decl.globals, evaled, Some(obj), recv_mut) {
         Ok(v) => v,
         Err(e) => return Some(Err(e)),
     };
@@ -709,6 +769,115 @@ pub struct ArCallbacks {
     /// 2 = `float`（ビット列）。⚠ 生成コードは値を先に評価するので、値の評価が何も起こさない形（リテラル・変数・
     /// 数の演算）のときだけ使う（途中の読み出しの順が VM と入れ替わっても見分けられない）。
     pub assign_path_ic: extern "C" fn(i64, *const i64, i32, i32, i64),
+
+    // ── Fresh temporaries (fields 75-76・copy_alloc_speed_plan.md 2-4) ──
+    /// 直後の `construct_ic` / `call_method_ic` の引数のうち、作りたての値を積んだばかりの欄の印（bit i+1 = 引数 i）。
+    /// 印の付いた引数は、欄から値を**取り出して**渡す（欄に写しを残さない）ので、誰とも共有していない値は
+    /// VM と同じく複製されずに渡る（`copy_value_held`・`copy_for_store`）。生成コードはその欄を二度と読まない。
+    pub set_fresh: extern "C" fn(u32),
+    /// 直接呼び出し（`_impl`）の `let self` / `let` 仮引数へ渡す作りたての値の複製。(ハンドル, `let self` か) を取り、
+    /// 誰とも共有していなければ同じハンドルを返す（欄の 1 個は数えない）。共有していれば今までどおり複製を積む。
+    pub copy_fresh: extern "C" fn(i64, i32) -> i64,
+
+    // ── Read-only callees (field 77・copy_alloc_speed_plan.md 4-4) ──
+    /// 直接呼び出し（`_impl`）の `let self` / `let` 仮引数へ渡す `mut` の値。(ハンドル, `let self` か, 呼ぶ関数の名前,
+    /// 長さ, 箇所ごとのセル) を取り、呼ぶ関数が読むだけで走っているタスクが無ければ**同じハンドルを返す**（複製しない）。
+    /// そうでなければ今までの複製（`let self` は `deep_copy`・仮引数は `copy_arg`）を積んで返す。
+    /// セルには「読むだけか」を 1 回だけ調べて覚える（0 = まだ・1 = 読むだけ・2 = 違う）。
+    /// 2 つ目の引数は種類: 0 = `let` 仮引数・1 = `let self`・2 = 受け手やほかの引数と重ならない `let` 仮引数（4-6。
+    /// 呼ぶ関数が自分の `mut` 仮引数だけを書き換える関数でも複製しない）。
+    pub borrow_or_copy: extern "C" fn(i64, i32, *const u8, i32, *mut u64) -> i64,
+
+    // ── Direct field access (field 78・copy_alloc_speed_plan.md 8-2・D-13) ──
+    /// ハンドルの指すインスタンスの**先頭の塊の番地**（`InstanceData::raw`）。(ハンドル, 生成コードの持つクラスの表
+    /// [`crate::interpreter::value::DirectClassDesc`], 箇所ごとのセル) を取る。インスタンスのクラスが表のとおり
+    /// （名前・フィールドの名前・位置・幅・`mut` か・全部 public）と確かめられたときだけ番地を返し、そうでなければ空を返す
+    /// （生成コードは今までのコールバックの道を使う）。確かめたクラスの番号はセルに覚える（0 = まだ）。
+    /// 番地は、そのハンドルの欄が値を持っている間だけ使える（塊はインスタンスが生きている間動かない）。
+    pub inst_block: extern "C" fn(i64, *const crate::interpreter::value::DirectClassDesc, *mut u64) -> *mut u64,
+    /// 入れ子の受け手（`a.b.x` の `a.b`）の先頭の塊の番地（field 79・8-7）。(親のハンドル, 属性名, 長さ, 読み出しの IC のセル,
+    /// 子のクラスの表, 子のクラスのセル) を取る。親の読み出しの IC が当たり、その slot が持っている値が表のとおりのクラスの
+    /// インスタンスのときだけ、子の番地を返す（**アリーナには積まない**）。ほかは空で、生成コードは今までの
+    /// 読み出し（field 58・同じ IC のセル）へ回る。番地は、次にコールバックを呼ぶまでの間だけ使える（子を生かしているのは
+    /// 親のフィールド）。
+    pub attr_block: extern "C" fn(
+        i64,
+        *const u8,
+        i32,
+        *mut u64,
+        *const crate::interpreter::value::DirectClassDesc,
+        *mut u64,
+    ) -> *mut u64,
+    /// 宣言の型どおりの戻り値を開ける（field 80・copy_alloc_speed_plan.md 7-5）。(ハンドル, 種類 0 = `int` / 1 = `float`,
+    /// 呼んだメソッドの表示名, 長さ) を取り、`int` は値そのもの、`float` はビット列（`f64::to_bits`）を返す。
+    /// 宣言の型と違う値（`int` に `float`・`float` に `int`・数でない値）は `TypeError` にして 0 を返す。
+    /// ガード付きのメソッド呼び出しで、ガードが外れて名前で呼んだときの結果だけに使う（利用者の決定 2026-11-17）。
+    pub expect_ret: extern "C" fn(i64, i32, *const u8, i32) -> i64,
+
+    // ── Data the generated code reads directly (fields 81-82・copy_alloc_speed_plan.md 7-7) ──
+    /// 走っているタスクのスレッドの数（`async_mgr::LIVE_TASKS`）の番地。⚠ 関数ではなくデータの番地。
+    pub live_tasks: *const std::sync::atomic::AtomicUsize,
+    /// `__copy__` を持つクラスが定義されたかの印（`value::COPY_HOOKS`）の番地。⚠ 関数ではなくデータの番地。
+    /// 生成コードはこの 2 つと箇所ごとのセルを読み、読むだけの関数へ `mut` の値を渡すときに、そろえば `CB_BORROW_OR_COPY`
+    /// を呼ばずに同じハンドルを使う。
+    pub copy_hooks: *const std::sync::atomic::AtomicU8,
+
+    // ── Direct construction (field 83・copy_alloc_speed_plan.md 7-11) ──
+    /// 合成した `__init__` で作るインスタンスを、引数を格納する前の状態で作ってアリーナに積む。(生成の箇所のセル
+    /// 〔`construct_ic` と共有〕, 照合のセル〔確かめたクラスの番号 + 1〕, クラスの名前, 長さ, 生成コードの持つクラスの表,
+    /// 格納の順〔フィールドの slot の並び〕, その長さ, 先頭の塊の番地の書き込み先) を取り、ハンドルを返す。生成コードは
+    /// このあと数値の引数を番地へ直接書き、初期化の印を立てる。クラスが表のとおりでない・合成した `__init__` の順が違う・
+    /// 先に積まれたエラーがある、ときは 0 を返し、何もしない（生成コードは今までの `construct_ic` へ回る）。番地は、次に
+    /// コールバックを呼ぶまでの間だけ使う。
+    pub new_instance: extern "C" fn(
+        *mut u64,
+        *mut u64,
+        *const u8,
+        i32,
+        *const crate::interpreter::value::DirectClassDesc,
+        *const i64,
+        i32,
+        *mut *mut u64,
+    ) -> i64,
+
+    // ── `for` の見出しで巻き戻してから次の要素（field 84・copy_alloc_speed_plan.md 7-15） ──
+    /// (イテレータ, 保存点) を取り、保存点が 0 以上ならアリーナをそこまで巻き戻してから、`iter_next` と同じく次の要素を返す。
+    /// 周の終わりに残す値が無いループの巻き戻し（`compact_many` の 0 個の版）を、次の周の頭の取り出しにまとめる
+    /// （1 周のコールバックが 2 回 → 1 回）。保存点 -1 は巻き戻さない（`iter_next` と同じ）。
+    pub iter_next_at: extern "C" fn(i64, i64) -> i64,
+
+    // ── 数値のフィールドの複合代入を 1 回で（field 85・copy_alloc_speed_plan.md 7-16） ──
+    /// (受け手, 属性名, 長さ, 読み出しの IC のセル, 種類 0 = `int` / 1 = `float`) を取り、raw レイアウトでないクラスの
+    /// インスタンスで、IC が当たり、スロットが初期化済みで可変の印が立ち、種類どおりの `Int` / `Float` を持つときだけ、その値
+    /// （`i64` / `f64`）の番地を返す。ほかは空（生成コードは今までの読み出し → 演算 → 書き込みへ回る）。番地は、次に
+    /// コールバックを呼ぶまでの間だけ使える（生成コードは読んで演算して書くまで何も呼ばない）。
+    pub num_field_ptr: extern "C" fn(i64, *const u8, i32, *mut u64, i32) -> *mut u64,
+
+    // ── 同じ親の入れ子の受け手の番地をまとめて（field 86・copy_alloc_speed_plan.md 7-18） ──
+    /// (親, 件数 n, n 件の表 [`AttrBlockReq`], n 個の番地の置き場) を取り、親を 1 回だけたどって、1 件ごとに
+    /// field 79（`attr_block`）と同じ番地（外れた件は空）を置き場へ書く。
+    pub attr_blocks: extern "C" fn(i64, i32, *const AttrBlockReq, *mut *mut u64),
+
+    // ── `for` の入口で要素を全部積む（field 87・copy_alloc_speed_plan.md 7-20） ──
+    /// (反復対象, 2 個の `i64` の置き場 `out`) を取り、`iter_from` と同じくイテレータのハンドルを返す。反復対象が `iter_from`
+    /// の写す型（`list` / `tuple` / `str` / `dict` のキー / `fixed_list`）なら、要素を全部アリーナへ積み、そのハンドルの並びの
+    /// 番地を `out[0]`、個数を `out[1]` へ書く（並びはイテレータを捨てるまで動かない・生成コードが周ごとに読む）。ほかの型は
+    /// `out[1] = -1`（生成コードは field 84 で 1 つずつ取る）。失敗したら `TL_NONE` を返し、`out` は 0 個の並び。
+    pub iter_begin: extern "C" fn(i64, *mut i64) -> i64,
+}
+
+// SAFETY: 表の中身は関数の番地と、プロセスに 1 つの原子的な値の番地（読むだけ）だけ（7-7）。
+unsafe impl Sync for ArCallbacks {}
+
+/// field 86（`attr_blocks`）の 1 件（copy_alloc_speed_plan.md 7-18）: field 79（`attr_block`）の引数の、親のハンドル以外。
+/// 生成コードが DLL の定数として並べる（`{ ptr, i64, ptr, ptr, ptr }`）。
+#[repr(C)]
+pub struct AttrBlockReq {
+    pub name: *const u8,
+    pub name_len: i64,
+    pub ic_cell: *mut u64,
+    pub desc: *const crate::interpreter::value::DirectClassDesc,
+    pub class_cell: *mut u64,
 }
 
 // ── Callback implementations ─────────────────────────────────────────────────
@@ -749,5 +918,37 @@ mod tests {
                 "binop code {code} of {op:?} is not decoded back by the callbacks"
             );
         }
+    }
+
+    /// 入れ子の呼び出し（コンパイル済みコード → コールバック → 利用者のコード → コンパイル済みの関数）は、抜けるときに
+    /// 入ったときのアリーナの長さまで巻き戻す（known_bugs.md #25）。結果は巻き戻す前に取り出し、外の呼び出しが
+    /// 積んだ値は残る。エラーで抜けても（`abort_native_call`）、入れ子の中の入れ子でも同じ。
+    #[test]
+    fn nested_native_calls_drop_what_they_pushed() {
+        use super::*;
+        let arena_len = || with_state(|s| s.borrow().arena.len());
+        let is_str = |v: &Value, want: &str| matches!(v, Value::Str(s) if &**s == want);
+        assert!(enter_native_call(std::ptr::null_mut()), "the test starts outside any native call");
+        let kept = push_handle(Value::str("outer"));
+        let before = arena_len();
+        // 正常に抜ける入れ子: 引数と結果の箱を積んで抜ける
+        assert!(!enter_native_call(std::ptr::null_mut()));
+        push_handle(Value::str("arg"));
+        let r = push_handle(Value::str("result"));
+        assert!(is_str(&exit_native_call(r, false), "result"), "the result is taken before the arena is cut back");
+        assert_eq!(arena_len(), before, "a nested call leaves nothing behind");
+        // エラーで抜ける入れ子の中の入れ子
+        assert!(!enter_native_call(std::ptr::null_mut()));
+        push_handle(Value::str("a"));
+        let mid = arena_len();
+        assert!(!enter_native_call(std::ptr::null_mut()));
+        push_handle(Value::str("b"));
+        abort_native_call(false);
+        assert_eq!(arena_len(), mid, "the inner nested call is cut back to its own entry");
+        abort_native_call(false);
+        assert_eq!(arena_len(), before, "an aborted nested call leaves nothing behind");
+        assert!(is_str(&clone_value_at(kept), "outer"), "what the outer call pushed stays");
+        exit_native_call(TL_NONE, true);
+        assert!(!native_call_active());
     }
 }

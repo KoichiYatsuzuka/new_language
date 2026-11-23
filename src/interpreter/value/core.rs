@@ -14,6 +14,48 @@ use super::*;
 /// 次に割り当てるクラス ID（グローバルアトミックカウンタ）。
 static NEXT_CLASS_ID: AtomicU32 = AtomicU32::new(1); // 0 = 未割り当て
 
+/// private / protected のメンバーを持つ Arrow のクラスが、このプロセスで 1 つでも定義されたか（copy_alloc_speed_plan.md 7-3）。
+///
+/// 実行時の文脈（`Interpreter::current_class`）を読むのは、アクセスの検査（`check_access_level`）が public でない
+/// メンバーを見るときだけ。⇒ この印が立っていない間は、文脈がどのクラスでも結果は変わらない（全部 public なので通る）。
+/// コンパイル済みコードの直接呼び出しは、その間だけ文脈の切り替え（`ar_enter_method_ctx`）を省く。
+/// ⚠ 立てるのは [`note_class_access`] の 1 か所（クラスの定義 `exec_class_def`）。一度立てたら戻さない。
+/// ⚠ 文脈を読む所はほかに、ネストした関数の `owner_class`・タスクのクラスの文脈・`Self`（`LoadSelfClass`）があるが、
+///   どれもコンパイル済みコードの中には現れない（クロージャ・`async`・`Self` は適格でない）。VM の関数・メソッドは
+///   自分で文脈を張り直す（`run_vm_method`・`exec_fn_evaled_recv`）。
+static RESTRICTED_MEMBERS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// private / protected のメンバーを持つクラスが定義されたことがあるか（[`RESTRICTED_MEMBERS`]）。
+#[inline]
+pub fn restricted_members_exist() -> bool {
+    RESTRICTED_MEMBERS.load(Ordering::Relaxed)
+}
+
+/// クラスを定義したときに呼ぶ: public でないメンバー（フィールド・メソッド・trait から受けたフィールド）があれば印を立てる。
+/// 戻り値は「この呼び出しで初めて立てたか」。
+pub fn note_class_access(field_access_empty: bool, method_access_empty: bool) -> bool {
+    if field_access_empty && method_access_empty {
+        return false;
+    }
+    !RESTRICTED_MEMBERS.swap(true, Ordering::Relaxed)
+}
+
+/// `__copy__` を持つ Arrow のクラスが、このプロセスで 1 つでも定義されたか（copy_alloc_speed_plan.md 7-7）。
+///
+/// 読むだけの関数の `let` 仮引数へ `mut` の値を写さずに渡せるのは、値のクラスが `__copy__` を持たないとき
+/// （`Interpreter::has_copy_hook`・持つなら今までどおり `__copy__` を呼ぶ）。コンパイル済みコードはこの印が立っていない
+/// 間だけ、値を見ずに写さないと決める（印が立っていればコールバックが値ごとに確かめる）。
+/// ⚠ 立てるのはクラスの定義（`exec_class_def`）の 1 か所。一度立てたら戻さない。生成コードは番地を
+///   `ArCallbacks::copy_hooks` から読む。
+pub static COPY_HOOKS: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// クラスを定義したときに呼ぶ: `__copy__` を持てば [`COPY_HOOKS`] を立てる。
+pub fn note_class_copy_hook(has_copy: bool) {
+    if has_copy {
+        COPY_HOOKS.store(1, Ordering::Relaxed);
+    }
+}
+
 /// 新しい一意なクラス ID を発行する。クラス定義時に一度だけ呼ぶ。
 #[inline]
 pub fn alloc_class_id() -> u32 {

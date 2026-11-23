@@ -1,0 +1,12 @@
+# p_k4.ar — プロファイル用のドライバ（scripts/prof_stacks.ps1）: 文字列の連結（run_labels・先に run_record で軌跡を 500 個にする）
+# bench.ar の同じ区間を、同じ状態で AR_PROF_M 倍だけ繰り返す。sim_core は隣に写したもの（コンパイル済みなら .arc）を読む。
+
+import[py] time
+from sim_core import World, make_world, run_step, run_energy, run_record, run_labels, run_spawn
+
+let M = int(getenv("AR_PROF_M", "1"))
+let t0 = time.perf_counter()
+mut w = make_world(256)
+let pre = run_record(w, 500)
+let r = run_labels(w, 500 * M)
+print("PROF p_k4 " + str(time.perf_counter() - t0) + " " + str(r))

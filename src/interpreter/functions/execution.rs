@@ -12,6 +12,21 @@ use {
 };
 
 impl Interpreter {
+    /// 引数の並びの `Vec` を置き場から取る（無ければ新しく作る・6-3）。
+    #[inline]
+    pub(crate) fn take_evaled_buf(&mut self) -> Vec<(Option<String>, Value, bool)> {
+        self.evaled_pool.pop().unwrap_or_default()
+    }
+
+    /// 呼び終えた引数の並びを空にして置き場へ戻す（6-3）。置き場は呼び出しの深さ程度しか要らないので、多すぎる分は捨てる。
+    #[inline]
+    pub(crate) fn recycle_evaled(&mut self, mut v: Vec<(Option<String>, Value, bool)>) {
+        v.clear();
+        if self.evaled_pool.len() < 32 && v.capacity() <= 16 {
+            self.evaled_pool.push(v);
+        }
+    }
+
     /// 呼び出し名スタックへ push する（#12）。
     /// プールに空きバッファがあれば確保せず詰め直す。
     #[inline]
@@ -584,6 +599,21 @@ impl Interpreter {
             }
         }
 
+        // 読むだけの関数へは、`mut` の値を複製せずに渡す（copy_alloc_speed_plan.md 4-3・D-11）。呼ばれた側は受けた値を
+        // 書き換えず、中身を外へ出さないので、写しても写さなくても結果は同じ（`crate::readonly_fns`）。
+        // ⚠ 走っているタスクがあれば今までどおり複製する（別のスレッドが同じ値を書き換えうる・D-7 / D-8）。
+        // ⚠ 名前の集合を引くのは**複製が起きる呼び出しだけ**（下の `wants_copy`）。毎回引くと、複製の無い呼び出し
+        //   （`mut self` のメソッド・`let` の受け手）が名前のハッシュの分だけ遅くなる（4-3 の A/B で 4〜11%）。
+        let wants_copy = (has_self && !params[0].mutable && recv_mut)
+            || bind_params.iter().zip(evaled.iter()).any(|(p, (_, _, arg_mut))| !p.mutable && *arg_mut);
+        let borrow = wants_copy && self.may_borrow_for(&fn_val.name);
+        // 「重ならない引数」の印（4-6）。この呼び出しの引数の並びに置かれたものだけを使う
+        let disjoint = if wants_copy && self.pending_disjoint.0 == evaled.as_ptr() as usize && bind_params.len() < 30 {
+            self.pending_disjoint.1
+        } else {
+            0
+        };
+
         // 直接バインド。
         let mut buf = std::mem::take(&mut self.vm_stack);
         let base = buf.len();
@@ -592,14 +622,34 @@ impl Interpreter {
         if has_self {
             let sv = self_val.as_ref().unwrap();
             // `let self` は `mut` の受け手だけ deep_copy（bind_args と同一の規則・6-1・D-8）
-            let self_bound = Self::bind_self_value(params[0].mutable, sv.clone(), recv_mut);
+            // 読むだけの関数（4-3）: `mut` の受け手を `let self` で受けても複製しない
+            let self_bound = if borrow && !params[0].mutable && recv_mut {
+                use crate::interpreter::copy_stats::{record, CopyKind};
+                record(CopyKind::LetSelfReadonly, sv, true);
+                record(CopyKind::LetSelf, sv, true);
+                sv.clone()
+            } else {
+                Self::bind_self_value(params[0].mutable, sv.clone(), recv_mut)
+            };
             if slot < chunk.n_locals {
                 buf[base + slot] = self_bound;
             }
             slot += 1;
         }
         for (p, (_, val, arg_mut)) in bind_params.iter().zip(evaled.iter()) {
-            let v = self.bind_param_value(p, val.clone(), *arg_mut)?;
+            // 読むだけの関数（4-3）: `mut` の値を `let` 仮引数で受けても複製しない（「可変でない値」として束縛する）。
+            // ⚠ `__copy__` を持つクラスの値は今までどおり `__copy__` を呼ぶ（利用者のコードが走る）
+            let mut skip_copy = borrow && !p.mutable && *arg_mut && !self.has_copy_hook(val);
+            // 自分の `mut` 仮引数だけを書き換える関数へ、受け手・ほかの引数と重ならない値を渡す（4-6）
+            if !skip_copy && !p.mutable && *arg_mut && disjoint & (1 << (slot - usize::from(has_self))) != 0 {
+                skip_copy = self.may_borrow_disjoint_for(&fn_val.name) && !self.has_copy_hook(val);
+            }
+            if skip_copy {
+                use crate::interpreter::copy_stats::{record, CopyKind};
+                record(CopyKind::LetParamReadonly, val, true);
+                record(CopyKind::LetParam, val, true);
+            }
+            let v = self.bind_param_value(p, val.clone(), *arg_mut && !skip_copy)?;
             if slot < chunk.n_locals {
                 buf[base + slot] = v;
             }
@@ -613,8 +663,19 @@ impl Interpreter {
     /// `let` 仮引数 ＋ `mut` の値は `copy_value`（一般経路の複製ループと同一）、それ以外は共有。そのあと `float` 注釈の
     /// 仮引数へ来た `int` を昇格する（案 B・0-B2。⚠ 一般経路の `bind_args` の後のループと同じ規則・同じ位置）。
     pub(crate) fn bind_param_value(&mut self, p: &crate::ast::Param, v: Value, arg_mut: bool) -> Result<Value, String> {
+        // 作り直さない値（`is_plain_scalar`）は、下の検査（Python の物か）も複製（`copy_value_held` が同じ値を返す）も
+        // 何もしないので、昇格だけを行う（copy_alloc_speed_plan.md 7-10。生成のたびに仮引数の数だけ通る。以前はこの関数の
+        // 自己時間が VM の `Vec3` の生成の 18% だった）。診断の数え方は下と同じにする。
+        if Self::is_plain_scalar(&v) {
+            if !p.mutable && arg_mut {
+                crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetParam, &v, true);
+            }
+            return Ok(crate::interpreter::exec::vars::coerce_binding(p.type_ann.as_deref(), v));
+        }
         Self::check_param_binding(p.mutable, &p.name, &v)?;
-        let v = if !p.mutable && arg_mut { self.copy_value(v)? } else { v };
+        // ⚠ 呼ぶ側は**評価済みの引数の並びの要素の写し**を渡す（`try_fast_bind`・`store_auto_init`）。並びの 1 個は
+        //   束縛が済むまで誰からも見えないので、数えない（`held` = 1・copy_alloc_speed_plan.md 2-2）。
+        let v = if !p.mutable && arg_mut { self.copy_value_held(v, 1)? } else { v };
         Ok(crate::interpreter::exec::vars::coerce_binding(p.type_ann.as_deref(), v))
     }
 
@@ -699,8 +760,22 @@ impl Interpreter {
     /// （`self` を含む）を返す。既定値は定義したモジュールの大域 `globals` で評価する（`exec_fn_evaled` と同じ）。
     /// ⚠ 以前は評価済みの引数を呼び出しの順にそのまま渡しており、`let` で受けても複製せず（§0.3 ⑬）、名前つき引数が
     ///   位置で束縛され（⑭）、既定値を省くと引数の配列の外を読んでいた（⑮）。
+    /// `name` という関数へ渡す `mut` の値を、複製せずに渡してよいか（copy_alloc_speed_plan.md 4-3・4-4）:
+    /// 読むだけの関数（`crate::readonly_fns`）で、走っているタスクが無い（D-8）。
+    /// ⚠ 名前の集合を引くので、**複製が起きる呼び出しでだけ**呼ぶこと。
+    pub(crate) fn may_borrow_for(&self, name: &str) -> bool {
+        crate::interpreter::async_mgr::no_live_tasks() && self.readonly_fns.contains(name)
+    }
+
+    /// `name` という関数の `let` 仮引数へ、受け手・ほかの引数と**重ならない** `mut` の値を複製せずに渡してよいか
+    /// （4-6）: 自分の `mut` 仮引数だけを書き換える関数（読むだけの関数を含む）で、走っているタスクが無い。
+    pub(crate) fn may_borrow_disjoint_for(&self, name: &str) -> bool {
+        crate::interpreter::async_mgr::no_live_tasks() && self.readonly_fns.is_confined_writer(name)
+    }
+
     pub(crate) fn bind_native_args(
         &mut self,
+        fn_name: &str,
         params: &[crate::ast::Param],
         globals: u32,
         evaled: &[(Option<String>, Value, bool)],
@@ -716,13 +791,27 @@ impl Interpreter {
             && evaled.iter().all(|(k, _, _)| k.is_none())
             && !params.iter().any(|p| p.variadic || p.default.is_some())
         {
+            // 読むだけの関数へは `mut` の値を複製せずに渡す（`try_fast_bind` と同じ・4-4）
+            let wants_copy = (has_self && !params[0].mutable && recv_mut)
+                || rest.iter().zip(evaled).any(|(p, (_, _, arg_mut))| !p.mutable && *arg_mut);
+            let borrow = wants_copy && self.may_borrow_for(fn_name);
             let mut out = Vec::with_capacity(params.len());
             if let (true, Some(sv)) = (has_self, self_val) {
-                out.push(Self::bind_self_value(params[0].mutable, sv, recv_mut));
+                if borrow && !params[0].mutable && recv_mut {
+                    crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetSelf, &sv, true);
+                    out.push(sv);
+                } else {
+                    out.push(Self::bind_self_value(params[0].mutable, sv, recv_mut));
+                }
             }
             for (p, (_, v, arg_mut)) in rest.iter().zip(evaled) {
                 Self::check_param_binding(p.mutable, &p.name, v)?;
-                out.push(if !p.mutable && *arg_mut { self.copy_value(v.clone())? } else { v.clone() });
+                let skip_copy = borrow && !p.mutable && *arg_mut && !self.has_copy_hook(v);
+                if skip_copy {
+                    crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::LetParam, v, true);
+                }
+                // 評価済みの引数の並び（`evaled`）が持つ 1 個は数えない（`bind_param_value` と同じ・2-2）
+                out.push(if !p.mutable && *arg_mut && !skip_copy { self.copy_value_held(v.clone(), 1)? } else { v.clone() });
             }
             return Ok(out);
         }
@@ -780,7 +869,9 @@ impl Interpreter {
         if let Some(bound) = fn_val.bound.clone() {
             return self.call_bound_method(&bound, evaled, call_span);
         }
-        let declared_ret = fn_val.return_type.clone();
+        // 戻り値の型は関数の値から読む（`Rc` を 1 つ増やすだけ）。⚠ 以前は `return_type`（`Option<String>`）を呼び出しのたびに
+        // 写していた（戻り値の型を書いた関数は 1 回ごとに文字列を 1 つ確保・copy_alloc_speed_plan.md 6-3）。
+        let declared = Rc::clone(&fn_val);
         // クラスの文脈（10-6）。インスタンスメソッドは `self` のクラス（`run_vm_method` が張る）。
         // それ以外は定義したときのクラス（入れ子の関数）か、クラス経由の呼び出しのクラス。
         // ⚠ `class_call_ctx` は**ここで取り去る**（`Interpreter::class_call_ctx` の doc）。
@@ -798,7 +889,7 @@ impl Interpreter {
         self.switch_globals(prev_globals);
         let out = out?;
         Ok(crate::interpreter::exec::vars::coerce_binding(
-            declared_ret.as_deref(),
+            declared.return_type.as_deref(),
             out,
         ))
     }

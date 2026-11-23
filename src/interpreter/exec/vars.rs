@@ -35,11 +35,13 @@ use {
 /// 要素単位の昇格は行わない（要素ごとの走査になり、`let` の複製規則とも絡む）。
 /// 拡大は `int` → `float` の一方向のみで、逆（`float` → `int`）は情報を落とすので行わない。
 pub(crate) fn coerce_binding(type_ann: Option<&str>, value: Value) -> Value {
+    // 昇格するのは `int` の値だけなので、注釈の文字列は `int` のときだけ比べる（copy_alloc_speed_plan.md 7-10。以前は
+    // どの値でも先に注釈を C ABI の別名の表と比べていた。束縛のたびに通る）
+    let Value::Int(n) = value else { return value };
     let Some(ann) = type_ann else { return value };
     // C ABI 別名（`float32` / `float64`）も基底型で判定する。
-    let ann = crate::ast::c_abi_base_type(ann).unwrap_or(ann);
-    match (ann, &value) {
-        ("float", Value::Int(n)) => Value::Float(*n as f64),
+    match crate::ast::c_abi_base_type(ann).unwrap_or(ann) {
+        "float" => Value::Float(n as f64),
         _ => value,
     }
 }
@@ -174,6 +176,7 @@ impl Interpreter {
             return Err(IMMUTABLE_PYTHON_OBJECT.to_string());
         }
         let unshared = held.is_some_and(|h| Self::is_unshared(&value, 1 + h));
+        crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::Bind, &value, unshared);
         let copied = if unshared { value } else { Self::deep_copy_value(value) };
         if mode == BindCopy::CopyFreeze {
             self.freeze_value_in_place(&copied)?;

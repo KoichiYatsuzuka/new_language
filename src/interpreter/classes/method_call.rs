@@ -45,7 +45,8 @@ impl Interpreter {
                     inst_rc.borrow().class.name
                 ));
             }
-            return self.copy_value(obj);
+            crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::Explicit, &obj, false);
+            return self.copy_value_uncounted(obj);
         }
 
         // method IC 命中: plain 非 mut-self 単一メソッドを直接ディスパッチ（eval_method_call と同一）。
@@ -60,7 +61,9 @@ impl Interpreter {
                 if let Some(overloads) = class.methods.get(method_name) {
                     if overloads.len() == 1 {
                         let f = overloads[0].clone();
-                        return self.exec_fn_evaled_recv(f, &evaled, Some(obj), recv_mut, method_name, call_span);
+                        let r = self.exec_fn_evaled_recv(f, &evaled, Some(obj), recv_mut, method_name, call_span);
+                        self.recycle_evaled(evaled);
+                        return r;
                     }
                 }
             }
@@ -101,7 +104,9 @@ impl Interpreter {
         ) {
             return result;
         }
-        let Some(overloads) = self.lookup_method_in_class(&class, method_name) else {
+        // ⚠ 候補は借りて使う。以前は `lookup_method_in_class` が `Vec` を写していた（`mut self` のメソッドは IC が埋まらず
+        //   呼び出しのたびにここを通るので、1 回ごとに 1 つ確保・copy_alloc_speed_plan.md 6-3）。
+        let Some(overloads) = class.methods.get(method_name) else {
             // クラス変数に入ったクラス（`self.Inner()`・入れ子のクラス・10-18）なら、それを呼ぶ。
             if let Some(v) = Self::class_var_class(&class, method_name) {
                 return self.call_value_evaled(v, evaled, method_name, None, 0);
@@ -131,6 +136,19 @@ impl Interpreter {
                 method_name, class.name, method_name
             ));
         }
+        // 候補が 1 つで呼べる（可変のインスタンス、または `mut self` でない）なら、写さずにそのまま呼ぶ
+        let callable_one = overloads.len() == 1
+            && (!inst_immutable
+                || overloads[0].params.first().map(|p| p.name != "self" || !p.mutable).unwrap_or(true));
+        if callable_one {
+            let f = Rc::clone(&overloads[0]);
+            if let Some(c) = cache {
+                Self::fill_method_ic(c, &class, &f, n_overloads, level, method_name);
+            }
+            let r = self.exec_fn_evaled_recv(f, &evaled, Some(obj), recv_mut, method_name, call_span);
+            self.recycle_evaled(evaled);
+            return r;
+        }
         let callable: Vec<Rc<FnValue>> = if inst_immutable {
             overloads
                 .iter()
@@ -143,7 +161,7 @@ impl Interpreter {
                 .cloned()
                 .collect()
         } else {
-            overloads
+            overloads.clone()
         };
         if callable.is_empty() {
             return Err(format!(
@@ -152,27 +170,30 @@ impl Interpreter {
             ));
         }
         if callable.len() == 1 {
-            // method IC 充填（eval_method_call と同一条件: 単一 overload・非 mut-self・native なし）。
             if let Some(c) = cache {
-                let self_is_mut = callable[0]
-                    .params
-                    .first()
-                    .map(|p| p.name == "self" && p.mutable)
-                    .unwrap_or(false);
-                if n_overloads == 1
-                    && !self_is_mut
-                    && crate::interpreter::native_api::lookup_native_method_ptr(
-                        class.class_id,
-                        method_name,
-                    )
-                    .is_none()
-                {
-                    c.fill(class.class_id, 0, level);
-                }
+                Self::fill_method_ic(c, &class, &callable[0], n_overloads, level, method_name);
             }
             self.exec_fn_evaled_recv(callable[0].clone(), &evaled, Some(obj), recv_mut, method_name, call_span)
         } else {
             self.dispatch_overload_evaled(callable, evaled, Some(obj), method_name, call_span)
+        }
+    }
+
+    /// method IC 充填（eval_method_call と同一条件: 単一 overload・非 mut-self・native なし）。
+    fn fill_method_ic(
+        c: &crate::ast::AttrCache,
+        class: &crate::interpreter::ClassValue,
+        f: &FnValue,
+        n_overloads: usize,
+        level: u8,
+        method_name: &str,
+    ) {
+        let self_is_mut = f.params.first().map(|p| p.name == "self" && p.mutable).unwrap_or(false);
+        if n_overloads == 1
+            && !self_is_mut
+            && crate::interpreter::native_api::lookup_native_method_ptr(class.class_id, method_name).is_none()
+        {
+            c.fill(class.class_id, 0, level);
         }
     }
 

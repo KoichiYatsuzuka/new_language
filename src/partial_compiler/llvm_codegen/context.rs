@@ -62,6 +62,20 @@ impl<'a> GenCtx<'a> {
             attr_stats:            AttrResolutionStats::default(),
             expr_stats:            HandleFallbackStats::default(),
             ident_stats:           IdentHandleStats::default(),
+            raw_classes:           HashMap::new(),
+            direct_descs:          HashMap::new(),
+            ip_vars:               HashMap::new(),
+            ap_vars:               HashMap::new(),
+            blk_sigs:              HashMap::new(),
+            blk_ok:                HashSet::new(),
+            blk_evicted:           HashSet::new(),
+            blk_mode:              false,
+            blk_failed:            false,
+            blk_self:              None,
+            loop_fuse_slot:        None,
+            discarded_func:        None,
+            pre_lists:             HashMap::new(),
+            pre_found:             HashMap::new(),
         }
     }
 
@@ -70,6 +84,10 @@ impl<'a> GenCtx<'a> {
     /// `true`（複製する。結果は変わらず、複製が多いだけ）。
     /// ⚠ VM はモジュール最上位の `let` も共有する（`toplevel_mut`）が、ここは最上位の表を持たないので複製する。
     pub(super) fn operand_is_mutable(&self, e: &Expr) -> bool {
+        // VM の `arg_is_mutable` と同じ: 型検査が不変と証明した経路は複製しない（copy_alloc_speed_plan.md 3-3）
+        if e.node_id().is_some_and(|id| self.annotations.is_immutable_path(id)) {
+            return false;
+        }
         match e {
             Expr::Ident { name, .. } => self.binding_mut.get(name.as_str()).copied().unwrap_or(true),
             _ => true,
@@ -86,6 +104,21 @@ impl<'a> GenCtx<'a> {
             }
         }
         mask
+    }
+
+    /// 引数のハンドルのうち「作りたての値を積んだばかりの欄」（`fresh_regs`）の印（bit i+1 = 引数 i・2-4）。0 でなければ
+    /// 直後の `CB_CONSTRUCT_IC` / `CB_CALL_METHOD_IC` の前に `CB_SET_FRESH` で渡す（コールバックは欄から値を取り出す）。
+    /// ⚠ 印を付けたレジスタは、その呼び出しの引数としてしか使わないこと（欄は空になる）。
+    pub(super) fn emit_fresh_mask(&mut self, handles: &[String]) {
+        let mut mask = 0u32;
+        for (i, h) in handles.iter().enumerate().take(31) {
+            if self.fresh_regs.contains(h) {
+                mask |= 1 << (i + 1);
+            }
+        }
+        if mask != 0 {
+            self.call_cb(CB_SET_FRESH, &[format!("i32 {mask}")]);
+        }
     }
 
     /// 受け手の無い呼び出し（生成・5-1）の `mut_mask`: bit i+1 = 引数 i が `mut` の値か（bit 0 は使わない）。
@@ -109,28 +142,234 @@ impl<'a> GenCtx<'a> {
         operand: &Expr,
         callee_mutable: bool,
         is_self: bool,
+        callee: &str,
+        disjoint: bool,
     ) -> String {
         if callee_mutable || vt != Ty::Handle || !self.operand_is_mutable(operand) {
             return h.to_string();
         }
         // 複製の前に保存点を取り、呼び出しの後で巻き戻す（1-15）。⚠ 取らないと複製がいちばん外の呼び出しが
         // 終わるまでアリーナに残り、ループの中の呼び出しでは周の数だけ溜まった（`let self` の深いコピーで 1 GB 超）。
+        // 呼ばれた側が値を積まないなら、保存点は複製しうる道（下の `note_lazy_save`）でだけ取る（7-12・`CallSave::Lazy`）。
         if self.pending_save.is_none() {
-            self.pending_save = Some(self.call_cb(CB_ARENA_SAVE, &[]));
+            self.pending_save = Some(if self.pushing_fns.contains(callee) || self.terminated {
+                CallSave::Taken(self.call_cb(CB_ARENA_SAVE, &[]))
+            } else {
+                let slot = self.fresh_reg();
+                self.ea(&format!("{slot} = alloca i64, align 8"));
+                self.ec(&format!("store i64 -1, ptr {slot}"));
+                CallSave::Lazy(slot)
+            });
         }
-        let cb = if is_self { CB_DEEP_COPY } else { CB_COPY_ARG };
-        self.call_cb(cb, &[format!("i64 {h}")])
+        // 作りたての値を積んだばかりの欄（`fresh_regs`）は、誰とも共有していなければ複製しない（2-4・`ar_copy_fresh`）
+        if self.fresh_regs.contains(h) {
+            self.note_lazy_save();
+            return self.call_cb(CB_COPY_FRESH, &[format!("i64 {h}"), format!("i32 {}", i32::from(is_self))]);
+        }
+        // 呼ぶ関数が読むだけなら複製しない（4-4・`ar_borrow_or_copy`）。読むだけかは実行時に、プログラム全体の
+        // 判定（`Interpreter::readonly_fns`）を呼ぶ関数の名前で引く（箇所ごとのセルに覚える）。そうでなければ
+        // コールバックの中で今までの複製（`let self` は `deep_copy_value`・仮引数は `copy_value`）をする。
+        let name = self.callee_fn_name(callee).to_string();
+        let name_ptr = self.str_const(name.as_bytes());
+        let cell = self.ic_cell();
+        // 種類: 1 = `let self`・2 = 受け手やほかの引数と重ならない `let` 仮引数（4-6）・0 = ほかの `let` 仮引数
+        let kind = if is_self { 1 } else if disjoint { 2 } else { 0 };
+        // 7-7: セルが「読むだけ」（1）と覚えていて、走っているタスクが無く、（仮引数なら）`__copy__` を持つクラスが 1 つも
+        // 無ければ、コールバックを呼ばずに同じハンドルを使う（コールバックと同じ判定・値を見ないので `__copy__` の印は
+        // プロセス全体で見る）。ほかは今までどおりコールバックが判定し、必要なら複製する（セルを埋めるのもこちら）。
+        if self.terminated {
+            self.note_lazy_save();
+            return self.call_cb(CB_BORROW_OR_COPY, &[
+                format!("i64 {h}"), format!("i32 {kind}"), name_ptr, format!("i32 {}", name.len()), cell,
+            ]);
+        }
+        let (bchk, bfast, bslow, bdone) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        let cell_ref = cell.trim_start_matches("ptr ").to_string();
+        let known = self.fresh_reg();
+        self.ec(&format!("{known} = load atomic i64, ptr {cell_ref} monotonic, align 8"));
+        let is_ro = self.fresh_reg();
+        self.ec(&format!("{is_ro} = icmp eq i64 {known}, 1"));
+        self.br_cond(&is_ro, &bchk, &bslow);
+        self.start_block(&bchk);
+        let lt = self.load_cb_data("i64", CB_LIVE_TASKS);
+        let no_tasks = self.fresh_reg();
+        self.ec(&format!("{no_tasks} = icmp eq i64 {lt}, 0"));
+        let ok = if is_self {
+            no_tasks
+        } else {
+            let ch = self.load_cb_data("i8", CB_COPY_HOOKS);
+            let no_hooks = self.fresh_reg();
+            self.ec(&format!("{no_hooks} = icmp eq i8 {ch}, 0"));
+            let both = self.fresh_reg();
+            self.ec(&format!("{both} = and i1 {no_tasks}, {no_hooks}"));
+            both
+        };
+        self.br_cond(&ok, &bfast, &bslow);
+        self.start_block(&bfast);
+        self.br(&bdone);
+        self.start_block(&bslow);
+        self.note_lazy_save();
+        let copied = self.call_cb(CB_BORROW_OR_COPY, &[
+            format!("i64 {h}"), format!("i32 {kind}"), name_ptr, format!("i32 {}", name.len()), cell,
+        ]);
+        self.br(&bdone);
+        self.start_block(&bdone);
+        let r = self.fresh_reg();
+        self.ec(&format!("{r} = phi i64 [ {h}, %{bfast} ], [ {copied}, %{bslow} ]"));
+        r
+    }
+
+    /// `func` が値を使わない呼び出し（式の文のいちばん外の呼び出し）の `func` か（7-17・`discarded_func`）。
+    pub(super) fn call_value_discarded(&self, func: &Expr) -> bool {
+        self.discarded_func == Some(func as *const Expr)
+    }
+
+    /// 遅い道（直接の道から外れたときの今までの道）の始まり（copy_alloc_speed_plan.md 7-17）: 保存点を取り、そこまでに数えた
+    /// 積む箇所の数を覚える。[`Self::end_fallback_region`] で巻き戻し、道の中の積む箇所を数えない（関数が値を積まない関数の
+    /// ままになり、呼ぶ側が前後で巻き戻さなくて済む）。⚠ 道の結果は生の `int` / `float` か、使わない値であること（ハンドルの
+    /// 結果は巻き戻すと消える）。到達しない位置・typed / 番地で呼ぶ変種の中では何もしない（`None`）。
+    pub(super) fn begin_fallback_region(&mut self) -> Option<FallbackRegion> {
+        if self.terminated || self.typed_mode || self.blk_mode {
+            return None;
+        }
+        let pushes = self.push_sites;
+        let log_len = self.handle_store_log.len();
+        let save = self.call_cb(CB_ARENA_SAVE, &[]);
+        Some(FallbackRegion { save, pushes, log_len })
+    }
+
+    /// [`Self::begin_fallback_region`] の終わり: 保存点まで巻き戻し（残す値は無い）、道の中の積む箇所を数えなかったことにする。
+    /// 道がローカル変数へハンドルを書いた（`handle_store_log` が伸びた）・道の終わりへ届かない（`return` など）ときは何もせず、
+    /// 積む箇所はそのまま数える（巻き戻すと変数の値が消える・巻き戻しを出せない）。
+    pub(super) fn end_fallback_region(&mut self, region: Option<FallbackRegion>) {
+        let Some(r) = region else { return };
+        if self.terminated || self.handle_store_log.len() != r.log_len {
+            return;
+        }
+        self.call_cb(CB_ARENA_COMPACT, &["i64 0".to_string(), format!("i64 {}", r.save)]);
+        self.push_sites = r.pushes;
+    }
+
+    /// コールバックの表の欄 `field` にあるデータの番地から、型 `ty` の値を原子的に読む（7-7・`CB_LIVE_TASKS` など）。
+    pub(super) fn load_cb_data(&mut self, ty: &str, field: usize) -> String {
+        let cb = self.fresh_reg();
+        self.ec(&format!("{cb} = load ptr, ptr @CB"));
+        let fp = self.fresh_reg();
+        self.ec(&format!("{fp} = getelementptr inbounds %ArCallbacks, ptr {cb}, i32 0, i32 {field}"));
+        let p = self.fresh_reg();
+        self.ec(&format!("{p} = load ptr, ptr {fp}"));
+        let v = self.fresh_reg();
+        let align = if ty == "i64" { 8 } else { 1 };
+        self.ec(&format!("{v} = load atomic {ty}, ptr {p} monotonic, align {align}"));
+        v
+    }
+
+    /// `arg` が、`others`（受け手とほかの引数）のどれとも**重ならない**と言えるか（copy_alloc_speed_plan.md 4-6）。
+    /// 言えるのは、`arg` と相手が同じ変数を根にした属性だけの経路で、途中で別のフィールドへ分かれるとき
+    /// （`self.pos` と `self.vel`。格納のたびに複製するので、別のフィールドの中身は共有しない）。
+    /// 相手が `let` の値（書き換えられない）なら見なくてよい。それ以外（別の変数・添字・呼び出しの結果・片方が
+    /// もう片方の中）は「重なりうる」。⚠ 迷ったら `false`（複製する側）。
+    pub(super) fn disjoint_from_all(&self, arg: &Expr, others: &[&Expr]) -> bool {
+        // 規則は型検査と同じ 1 つ（`type_check::annotations::arg_is_disjoint`）。「書き換えられない値」の判定だけが
+        // 生成コードの `operand_is_mutable`
+        let mut immutable = |e: &Expr| !self.operand_is_mutable(e);
+        crate::type_check::arg_is_disjoint(arg, others, &mut immutable)
+    }
+
+    /// 直接呼び出しのシンボル（`{クラス}__{メソッド}` か関数名）から、関数・メソッドの名前を取り出す。
+    pub(super) fn callee_fn_name<'s>(&self, sym: &'s str) -> &'s str {
+        match sym.split_once("__") {
+            Some((class, method)) if self.all_class_fields.contains_key(class) => method,
+            _ => sym,
+        }
     }
 
     /// 直接呼び出しの被演算子を組み立てる前に呼ぶ: 外側の呼び出しの保存点を退避する（1-15）。
-    pub(super) fn take_call_save(&mut self) -> Option<String> {
+    pub(super) fn take_call_save(&mut self) -> Option<CallSave> {
         self.pending_save.take()
     }
 
     /// 被演算子を組み立てた後に呼ぶ: この呼び出しの複製の前に取った保存点（無ければ `None`）を返し、外側の
     /// 呼び出しの保存点を戻す（1-15）。
-    pub(super) fn finish_call_save(&mut self, outer: Option<String>) -> Option<String> {
+    pub(super) fn finish_call_save(&mut self, outer: Option<CallSave>) -> Option<CallSave> {
         std::mem::replace(&mut self.pending_save, outer)
+    }
+
+    /// 組み立て中の呼び出しの保存点が `CallSave::Lazy` なら、ここで保存点を取る（今の長さと置き場の小さい方を置く）。
+    /// `copy_for_let` が、値を積みうる（複製しうる）コールバックの直前で呼ぶ（7-12）。
+    fn note_lazy_save(&mut self) {
+        if let Some(CallSave::Lazy(slot)) = self.pending_save.clone() {
+            self.emit_lazy_save(&slot);
+        }
+    }
+
+    /// `slot` に保存点を置く: 取っていなければ今の長さ、取ってあれば小さい方（初めに取った方）。`-1` は u64 の最大なので
+    /// 「取っていない」も同じ比較で済む。
+    fn emit_lazy_save(&mut self, slot: &str) {
+        let now = self.call_cb(CB_ARENA_SAVE, &[]);
+        let old = self.fresh_reg();
+        self.ec(&format!("{old} = load i64, ptr {slot}"));
+        let lt = self.fresh_reg();
+        self.ec(&format!("{lt} = icmp ult i64 {now}, {old}"));
+        let m = self.fresh_reg();
+        self.ec(&format!("{m} = select i1 {lt}, i64 {now}, i64 {old}"));
+        self.ec(&format!("store i64 {m}, ptr {slot}"));
+    }
+
+    /// 直接呼び出し（`@{sym}_impl` / `_fast`）の直前に呼ぶ: 呼ばれた側がハンドルを作りうる（`pushing_fns`）なら、
+    /// 保存点が必ずあるようにする（9-2・7-12）。作らないなら被演算子の複製の保存点（あれば）のまま。
+    pub(super) fn save_before_call(&mut self, sym: &str, save: Option<CallSave>) -> Option<CallSave> {
+        if !self.pushing_fns.contains(sym) {
+            return save;
+        }
+        match save {
+            None => Some(CallSave::Taken(self.call_cb(CB_ARENA_SAVE, &[]))),
+            Some(CallSave::Lazy(slot)) => {
+                // `copy_for_let` も同じ `pushing_fns` を見るのでここへは来ないが、来ても保存点を取れば正しい
+                self.emit_lazy_save(&slot);
+                Some(CallSave::Lazy(slot))
+            }
+            taken => taken,
+        }
+    }
+
+    /// 直接呼び出しの直後に呼ぶ: [`Self::save_before_call`] の保存点まで巻き戻す。`raw` は呼び出しが返したハンドル
+    /// （`int` / `float` を返す呼び出しは `None`・残すハンドルが無い）。戻り値は巻き戻した後の結果のハンドル
+    /// （`raw` が `None` なら `"0"`）。保存点が無ければ何もせず `raw` のまま（呼ばれた側は何も積んでいない・7-12）。
+    /// `CallSave::Lazy` は、保存点を取ったとき（複製しうる道を通ったとき）だけ巻き戻す。
+    pub(super) fn rewind_after_call(&mut self, save: Option<CallSave>, raw: Option<&str>) -> String {
+        let keep = format!("i64 {}", raw.unwrap_or("0"));
+        match save {
+            None => raw.unwrap_or("0").to_string(),
+            Some(CallSave::Taken(s)) => {
+                let h = self.call_cb(CB_ARENA_COMPACT, &[keep, format!("i64 {s}")]);
+                if raw.is_some() { h } else { "0".to_string() }
+            }
+            // 到達しないコード（ブロックが終端した後）にはブロックを作らない（`copy_for_let` と同じ）
+            Some(CallSave::Lazy(_)) if self.terminated => raw.unwrap_or("0").to_string(),
+            Some(CallSave::Lazy(slot)) => {
+                let s = self.fresh_reg();
+                self.ec(&format!("{s} = load i64, ptr {slot}"));
+                let taken = self.fresh_reg();
+                self.ec(&format!("{taken} = icmp ne i64 {s}, -1"));
+                let (bc, bs, bd) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+                self.br_cond(&taken, &bc, &bs);
+                self.start_block(&bc);
+                let h = self.call_cb(CB_ARENA_COMPACT, &[keep, format!("i64 {s}")]);
+                self.br(&bd);
+                self.start_block(&bs);
+                self.br(&bd);
+                self.start_block(&bd);
+                match raw {
+                    Some(r) => {
+                        let p = self.fresh_reg();
+                        self.ec(&format!("{p} = phi i64 [ {h}, %{bc} ], [ {r}, %{bs} ]"));
+                        p
+                    }
+                    None => "0".to_string(),
+                }
+            }
+        }
     }
 
     /// 宣言（`let` / `mut`）で束縛する値を VM と同じ規則で複製する（§0.3 ⑥・1-6）。
@@ -485,6 +724,631 @@ impl<'a> GenCtx<'a> {
         }
     }
 
+    /// クラスの表（`DirectClassDesc` ＋ フィールドごとの `DirectFieldDesc`）を DLL の定数として出し、`ptr @名前` を返す
+    /// （copy_alloc_speed_plan.md 8-3）。クラスごとに 1 回だけ出す。番地を返すコールバックが、実行時のクラスと照合する。
+    /// クラスの `__init__` が合成したものなら、その格納の順（slot の `i64` の並び）も `@名前_ord` として出す（7-11・
+    /// `CB_NEW_INSTANCE` が実行時の計画と照合する。使わなければ LLVM が消す）。
+    pub(super) fn direct_class_desc(&mut self, class: &str) -> Option<String> {
+        if let Some(g) = self.direct_descs.get(class) {
+            return Some(format!("ptr @{g}"));
+        }
+        let rc = self.raw_classes.get(class)?.clone();
+        let n = rc.fields.len();
+        let cname = self.str_const(class.as_bytes());
+        let mut items = Vec::with_capacity(n);
+        for ((fname, mutable), desc) in rc.fields.iter().zip(&rc.layout.fields) {
+            let fp = self.str_const(fname.as_bytes());
+            let info = crate::interpreter::value::direct_field_info(*desc, *mutable);
+            items.push(format!("{{ ptr, i64, i64 }} {{ {fp}, i64 {}, i64 {info} }}", fname.len()));
+        }
+        let g = format!("_dcd{}", self.direct_descs.len());
+        self.str_globals.push_str(&format!(
+            "@{g} = private constant {{ ptr, i64, i64, [{n} x {{ ptr, i64, i64 }}] }} {{ {cname}, i64 {}, i64 {n}, [{n} x {{ ptr, i64, i64 }}] [{}] }}, align 8\n",
+            class.len(),
+            items.join(", ")
+        ));
+        if let Some(order) = rc.auto_init.as_ref().filter(|o| !o.is_empty()) {
+            let k = order.len();
+            let slots: Vec<String> = order.iter().map(|i| format!("i64 {i}")).collect();
+            self.str_globals.push_str(&format!("@{g}_ord = private constant [{k} x i64] [{}], align 8\n", slots.join(", ")));
+        }
+        self.direct_descs.insert(class.to_string(), g.clone());
+        Some(format!("ptr @{g}"))
+    }
+
+    /// 数値のフィールド `class.attr` を型 `ty` として番地から直接読めるか（読めるなら slot・位置と幅・読む型と広げ方）。
+    /// 読めるのは: 到達するコードで、`class` がこのモジュールの raw レイアウトのクラスで全フィールドが public、フィールドの
+    /// 幅が `ty` に合う（整数の幅 → `Int`・`float32` / `float` → `Float`。合わなければ今までの道が変換する）。
+    /// ⚠ コードを出す前の判定にも使う（[`Self::emit_direct_read`] はこれが `Some` なら必ず出す）。
+    #[allow(clippy::type_complexity)]
+    pub(super) fn direct_read_plan(
+        &self,
+        class: &str,
+        attr: &str,
+        ty: Ty,
+    ) -> Option<(usize, crate::interpreter::value::RawFieldDesc, (&'static str, Option<&'static str>))> {
+        use crate::interpreter::value::RawWidth;
+        // 終わったブロックの後（到達しないコード）には分岐を出さない
+        if self.terminated {
+            return None;
+        }
+        let rc = self.raw_classes.get(class).filter(|rc| rc.all_public)?;
+        let idx = rc.fields.iter().position(|(n, _)| n == attr)?;
+        let desc = rc.layout.fields[idx];
+        // (読む型, 広げ方)。`None` はそのまま
+        let conv = match (desc.width, ty) {
+            (RawWidth::I64 | RawWidth::U64, Ty::Int) => ("i64", None),
+            (RawWidth::I32, Ty::Int) => ("i32", Some("sext")),
+            (RawWidth::U32, Ty::Int) => ("i32", Some("zext")),
+            (RawWidth::I16, Ty::Int) => ("i16", Some("sext")),
+            (RawWidth::U16, Ty::Int) => ("i16", Some("zext")),
+            (RawWidth::I8, Ty::Int) => ("i8", Some("sext")),
+            (RawWidth::U8, Ty::Int) => ("i8", Some("zext")),
+            (RawWidth::F64, Ty::Float) => ("double", None),
+            (RawWidth::F32, Ty::Float) => ("float", Some("fpext")),
+            _ => return None,
+        };
+        Some((idx, desc, conv))
+    }
+
+    /// `class.attr` が、番地から直接書けるフィールドか（値の型を見る前の判定）: raw レイアウトのクラスで全フィールドが
+    /// public、フィールドが `mut`。
+    pub(super) fn direct_write_field(&self, class: &str, attr: &str) -> bool {
+        !self.terminated
+            && self
+                .raw_classes
+                .get(class)
+                .filter(|rc| rc.all_public)
+                .is_some_and(|rc| rc.fields.iter().any(|(n, m)| n == attr && *m))
+    }
+
+    /// 型 `vt` の値を `class.attr` へ番地から直接書けるか（書けるなら slot・位置と幅・格納する型と値の変換）。
+    /// [`Self::direct_write_field`] に加えて、値の型がフィールドに入ること（`InstanceData::store_field` と同じ規則）。
+    #[allow(clippy::type_complexity)]
+    pub(super) fn direct_write_plan(
+        &self,
+        class: &str,
+        attr: &str,
+        vt: Ty,
+    ) -> Option<(usize, crate::interpreter::value::RawFieldDesc, (&'static str, Option<&'static str>))> {
+        use crate::interpreter::value::RawWidth;
+        if !self.direct_write_field(class, attr) {
+            return None; // `let` のフィールド・private のフィールドを持つクラスなど
+        }
+        let rc = self.raw_classes.get(class)?;
+        let idx = rc.fields.iter().position(|(n, _)| n == attr)?;
+        let desc = rc.layout.fields[idx];
+        let conv = match (desc.width, vt) {
+            // `int` → `float` のフィールドの昇格（代入は `InstanceData::store_field` が `int` を直接その幅へ変換する）
+            (RawWidth::F64, Ty::Int) => ("double", Some("sitofp i64")),
+            (RawWidth::F32, Ty::Int) => ("float", Some("sitofp i64")),
+            _ => raw_store_conv(desc.width, vt)?,
+        };
+        Some((idx, desc, conv))
+    }
+
+    /// ハンドル `h` の先頭の塊の番地を 1 回だけ取るコードを出す（変数ごとの置き場は使わない）。同じ受け手のフィールドを
+    /// 続けて読む所（関数の入口の先読み・8-9）が、返った番地を [`BlockSrc::Block`] で使い回す。`class` が直接読める
+    /// クラス（このモジュールの raw レイアウトのクラスで全フィールドが public）でなければ何も出さずに `None`。
+    /// ⚠ 番地を使い回してよいのは、その間 `h` の欄が同じインスタンスを持っているときだけ（仮引数のハンドルは呼ぶ側の欄で、
+    ///   関数の入口では動かない）。
+    pub(super) fn emit_inst_block_once(&mut self, class: &str, h: &str) -> Option<String> {
+        if self.terminated || !self.raw_classes.get(class).is_some_and(|rc| rc.all_public) {
+            return None;
+        }
+        let table = self.direct_class_desc(class)?;
+        let cell = self.ic_cell();
+        Some(self.call_cb(CB_INST_BLOCK, &[format!("i64 {h}"), table, cell]))
+    }
+
+    /// 受け手 `src` の先頭の塊の番地を得るコードを出す。戻り値は (番地, 入れ子の受け手なら親の読み出しの IC のセル)。
+    /// 入れ子の受け手（[`BlockSrc::Field`]・8-7）は `CB_ATTR_BLOCK` の 1 回で、子をアリーナに積まない。
+    /// 親がローカル変数から読んだばかりの値なら、子の番地を（変数, 属性）ごとに覚えて使い回す（7-13・[`Self::cacheable_field`]）。
+    /// そうでなければ番地は直後の読み書きにだけ使う（子を生かしているのは親のフィールドなので、間にコールバックを挟まない）。
+    pub(super) fn emit_block_src(&mut self, class: &str, src: BlockSrc<'_>) -> Option<(String, Option<String>)> {
+        match src {
+            BlockSrc::Handle(h) => Some((self.emit_block_ptr(class, h)?, None)),
+            BlockSrc::Block { p, .. } => Some((p.to_string(), None)),
+            BlockSrc::Field { parent_h, attr } => {
+                let table = self.direct_class_desc(class)?;
+                let class_cell = self.ic_cell();
+                let ic = self.ic_cell();
+                let name = self.str_const(attr.as_bytes());
+                let args = [
+                    format!("i64 {parent_h}"), name, format!("i32 {}", attr.len()), ic.clone(), table, class_cell,
+                ];
+                let p = match self.cacheable_field(parent_h, attr, class) {
+                    Some(slot) => self.load_or_fetch_block(&slot, CB_ATTR_BLOCK, &args),
+                    None => self.call_cb(CB_ATTR_BLOCK, &args),
+                };
+                Some((p, Some(ic)))
+            }
+        }
+    }
+
+    /// 受け手の番地を並べて取る（[`Self::emit_block_src`] の複数版・copy_alloc_speed_plan.md 7-18）。`items` は
+    /// (クラス, 親か変数のハンドル, 入れ子なら親の属性)。戻り値は `items` と同じ並びの (番地, 入れ子なら IC のセル)。
+    /// どれかのクラスが直接読めるクラスでなければ何も出さずに `None`。
+    ///
+    /// 同じ親の変数から読んだばかりの入れ子の受け手（`self.pos` と `self.vel`）が 2 つ以上あり、どれも番地を覚えてよい
+    /// （[`Self::cacheable_field`]）なら、置き場のどれかが空のとき `CB_ATTR_BLOCKS` の 1 回で全部の置き場を埋める（親を 1 回
+    /// たどる。1 件ごとの結果は `CB_ATTR_BLOCK` と同じ）。ほかは 1 つずつ。番地を取るコールバックは利用者のコードを走らせない
+    /// ので、まとめて取る順の違いは見分けられない。
+    pub(super) fn emit_block_srcs(&mut self, items: &[(String, String, Option<String>)]) -> Option<Vec<(String, Option<String>)>> {
+        if items.iter().any(|(c, _, _)| !self.raw_classes.contains_key(c)) {
+            return None;
+        }
+        // 親の変数ごとの組: (変数の置き場, items の位置)。同じ (変数, 属性) は 2 つ目から 1 つずつの側（埋まった置き場を読む）
+        let mut groups: Vec<(String, Vec<usize>)> = Vec::new();
+        for (i, (class, h, a)) in items.iter().enumerate() {
+            let Some(a) = a else { continue };
+            let Some(al) = self.fresh_var_of(h) else { continue };
+            if self.ap_vars.get(&(al.clone(), a.clone())).is_some_and(|(_, c)| c != class) {
+                continue; // 同じ (変数, 属性) を別のクラスとして覚えている: 覚えない（1 つずつ・毎回呼ぶ）
+            }
+            match groups.iter_mut().find(|(g, _)| *g == al) {
+                Some((_, v)) if v.iter().any(|&j| items[j].2.as_deref() == Some(a.as_str())) => {}
+                Some((_, v)) => v.push(i),
+                None => groups.push((al, vec![i])),
+            }
+        }
+        let mut out: Vec<Option<(String, Option<String>)>> = vec![None; items.len()];
+        for (_, idxs) in groups.iter().filter(|(_, v)| v.len() >= 2) {
+            let got = self.emit_grouped_field_blocks(items, idxs);
+            for (&i, g) in idxs.iter().zip(got) {
+                out[i] = Some(g);
+            }
+        }
+        for (i, (class, h, a)) in items.iter().enumerate() {
+            if out[i].is_some() {
+                continue;
+            }
+            let src = match a {
+                Some(a) => BlockSrc::Field { parent_h: h, attr: a },
+                None => BlockSrc::Handle(h),
+            };
+            out[i] = Some(self.emit_block_src(class, src)?);
+        }
+        Some(out.into_iter().map(|g| g.expect("every item has a block")).collect())
+    }
+
+    /// [`Self::emit_block_srcs`] の 1 つの組（同じ親の変数の、属性の違う入れ子の受け手 `idxs`）のコード: 置き場のどれかが空
+    /// なら `CB_ATTR_BLOCKS` で全部埋め、置き場から番地を読む。件ごとの表（名前・IC のセル・クラスの表・クラスのセル）は DLL の
+    /// 定数（`@_abN`）。外れた件は空のまま置くので、次の箇所が 1 つずつ取り直す（`load_or_fetch_block` と同じ）。
+    fn emit_grouped_field_blocks(&mut self, items: &[(String, String, Option<String>)], idxs: &[usize]) -> Vec<(String, Option<String>)> {
+        let n = idxs.len();
+        let mut elems = Vec::with_capacity(n);
+        let mut cells = Vec::with_capacity(n);
+        let mut slots = Vec::with_capacity(n);
+        for &i in idxs {
+            let (class, h, a) = &items[i];
+            let a = a.as_deref().expect("grouped items are nested receivers");
+            let table = self.direct_class_desc(class).expect("checked by emit_block_srcs");
+            let class_cell = self.ic_cell();
+            let ic = self.ic_cell();
+            let name = self.str_const(a.as_bytes());
+            elems.push(format!("{{ ptr, i64, ptr, ptr, ptr }} {{ {name}, i64 {}, {ic}, {table}, {class_cell} }}", a.len()));
+            slots.push(self.cacheable_field(h, a, class).expect("checked by emit_block_srcs"));
+            cells.push(ic);
+        }
+        let table = format!("@_ab{}", self.ic_ctr);
+        self.ic_ctr += 1;
+        self.str_globals.push_str(&format!(
+            "{table} = private constant [{n} x {{ ptr, i64, ptr, ptr, ptr }}] [{}], align 8\n",
+            elems.join(", ")
+        ));
+        let outp = format!("%_abo{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{outp} = alloca [{n} x ptr], align 8"));
+        let mut any: Option<String> = None;
+        for slot in &slots {
+            let p0 = self.fresh_reg();
+            self.ec(&format!("{p0} = load ptr, ptr {slot}"));
+            let empty = self.fresh_reg();
+            self.ec(&format!("{empty} = icmp eq ptr {p0}, null"));
+            any = Some(match any {
+                None => empty,
+                Some(prev) => {
+                    let o = self.fresh_reg();
+                    self.ec(&format!("{o} = or i1 {prev}, {empty}"));
+                    o
+                }
+            });
+        }
+        let (bfetch, bhave) = (self.fresh_blk(), self.fresh_blk());
+        self.br_cond(&any.expect("a group has two items or more"), &bfetch, &bhave);
+        self.start_block(&bfetch);
+        let parent_h = items[idxs[0]].1.clone();
+        self.call_cb(CB_ATTR_BLOCKS, &[
+            format!("i64 {parent_h}"), format!("i32 {n}"), format!("ptr {table}"), format!("ptr {outp}"),
+        ]);
+        for (k, slot) in slots.iter().enumerate() {
+            let at = self.fresh_reg();
+            self.ec(&format!("{at} = getelementptr inbounds [{n} x ptr], ptr {outp}, i32 0, i32 {k}"));
+            let p = self.fresh_reg();
+            self.ec(&format!("{p} = load ptr, ptr {at}"));
+            self.ec(&format!("store ptr {p}, ptr {slot}"));
+        }
+        self.br(&bhave);
+        self.start_block(&bhave);
+        slots
+            .iter()
+            .zip(cells)
+            .map(|(slot, ic)| {
+                let p = self.fresh_reg();
+                self.ec(&format!("{p} = load ptr, ptr {slot}"));
+                (p, Some(ic))
+            })
+            .collect()
+    }
+
+    /// 番地の置き場 `slot` が空のときだけ `cb`（`CB_INST_BLOCK` / `CB_ATTR_BLOCK`）を呼んで埋め、置き場の番地を返すコードを出す
+    /// （8-5・7-13）。空（クラスが表のとおりでない・先に積まれた誤りがある）を返されたら空のまま置くので、次の箇所でまた呼ぶ。
+    fn load_or_fetch_block(&mut self, slot: &str, cb: usize, args: &[String]) -> String {
+        let p0 = self.fresh_reg();
+        self.ec(&format!("{p0} = load ptr, ptr {slot}"));
+        let empty = self.fresh_reg();
+        self.ec(&format!("{empty} = icmp eq ptr {p0}, null"));
+        let (bfetch, bhave) = (self.fresh_blk(), self.fresh_blk());
+        self.br_cond(&empty, &bfetch, &bhave);
+        self.start_block(&bfetch);
+        let p1 = self.call_cb(cb, args);
+        self.ec(&format!("store ptr {p1}, ptr {slot}"));
+        self.br(&bhave);
+        self.start_block(&bhave);
+        let p = self.fresh_reg();
+        self.ec(&format!("{p} = load ptr, ptr {slot}"));
+        p
+    }
+
+    /// 入れ子の受け手 `a.b`（親のハンドル `h`・属性 `attr`・子のクラス `class`）の番地を覚えてよいなら、その置き場（初めてなら
+    /// 関数の入口で空にした置き場を作る）。覚えてよいのは、`h` が親の変数の今の値（[`Self::fresh_var_of`]）で、同じ
+    /// （変数, 属性）を別のクラスとして覚えていないとき（copy_alloc_speed_plan.md 7-13）。
+    ///
+    /// 覚えた番地が正しい条件と、その守り方（どちらも [`Self::finish_block_cache`] が捨てる命令を差し込む）:
+    /// - **親の変数が同じインスタンスを指している間だけ使う。** 変数へ書いたら捨てる（8-5 と同じ）。
+    /// - **親のフィールドが同じ子を持っている間だけ使う。** フィールドを差し替えるのはコールバック（代入・名前による呼び出し・
+    ///   利用者のコード）と直接呼び出しだけで、番地を取るコールバックのほかの呼び出しの後で捨てる（#26 と同じ規則）。
+    ///   番地への直接の読み書きは数値のフィールドだけで、インスタンスを持つ slot（raw レイアウトでないクラスの slot）は変えない。
+    /// - **子が生きていること。** 親のフィールドが持っている間は捨てられない。親は変数の欄が生かしている。
+    fn cacheable_field(&mut self, h: &str, attr: &str, class: &str) -> Option<String> {
+        let al = self.fresh_var_of(h)?;
+        let key = (al, attr.to_string());
+        if let Some((slot, c)) = self.ap_vars.get(&key) {
+            return (c == class).then(|| slot.clone());
+        }
+        let slot = format!("%_ap{}", self.reg);
+        self.reg += 1;
+        self.ea(&format!("{slot} = alloca ptr, align 8"));
+        self.ea(&format!("store ptr null, ptr {slot}"));
+        self.ap_vars.insert(key, (slot.clone(), class.to_string()));
+        Some(slot)
+    }
+
+    /// 直接の道から外れたときに使う受け手のハンドル。入れ子の受け手は、ここで初めて今までの読み出し（`CB_GET_ATTR_IC`）を
+    /// 呼んでアリーナに積む（`CB_ATTR_BLOCK` と**同じ IC のセル**を渡す。外れた最初の 1 回でセルが埋まり、次から当たる）。
+    pub(super) fn block_src_handle(&mut self, src: BlockSrc<'_>, ic: Option<String>) -> String {
+        match src {
+            BlockSrc::Handle(h) | BlockSrc::Block { h, .. } => h.to_string(),
+            BlockSrc::Field { parent_h, attr } => {
+                let cell = ic.unwrap_or_else(|| self.ic_cell());
+                let name = self.str_const(attr.as_bytes());
+                self.call_cb(CB_GET_ATTR_IC, &[format!("i64 {parent_h}"), name, format!("i32 {}", attr.len()), cell])
+            }
+        }
+    }
+
+    /// ハンドル `h` の指すインスタンスの先頭の塊の番地（クラスが `class` の表のとおりでなければ空）を得るコードを出す
+    /// （copy_alloc_speed_plan.md 8-3・8-5）。
+    ///
+    /// `h` がローカル変数から読んだばかりの値なら、**番地を変数ごとに覚えて使い回す**（8-5・D-13 ⑤）: 変数の隣に番地の
+    /// 置き場（関数の入口で空）を持ち、空のときだけ `CB_INST_BLOCK` を呼ぶ。そうでなければ毎回呼ぶ。
+    ///
+    /// 覚えた番地が正しい条件と、その守り方:
+    /// - **変数が同じ値を指している間だけ使う。** 変数へ書いたら捨てる。書き込みは 1 つ残らず変数の置き場への `store` なので、
+    ///   関数を出力するときに本体の文面を走査し、その `store` の直後へ「番地を捨てる」命令を差し込む
+    ///   （[`Self::finish_block_cache`]。書き込みを出す側の関数に印を足す方式だと、足し忘れた 1 か所が解放済みの番地を読む）。
+    /// - **`h` が変数の今の値であること。** `h` を読んだ `load` の後に、その変数への `store` が 1 つも出ていないときだけ覚える
+    ///   （`x.f = block: x = other ..` のように、受け手を読んだ後で値の評価が変数を差し替える式は覚えない）。
+    /// - **番地の指す塊が生きていること。** 変数の欄（アリーナ）がインスタンスを持っている間、塊は動かず解放されない。
+    ///   周の巻き戻しは残す変数の欄を積み直して変数へ書き戻す（= `store` なので捨てる）。残さない変数は次に使う前に代入される。
+    ///   外部言語の `T*` の書き戻しは、インタープリタが作った別の欄へ書き、結果は値として呼ぶ側へ返る
+    ///   （生成コードの変数の欄は差し替えられない・`eval/native.rs`）。
+    /// - **1 つの変数に 1 つのクラス。** 同じ変数を別のクラスとして読む箇所は覚えない（毎回呼ぶ）。
+    /// - **取ってから、番地を取るコールバックのほかに何も呼んでいないこと**（known_bugs.md #26）。ほかの呼び出しはエラーを
+    ///   積みうるので、その直後で捨てる（これも [`Self::finish_block_cache`]）。番地を取り直すコールバックが、先に積まれた
+    ///   エラーを見て空を返し、今までの道（エラーがあれば何もしない）へ回す。
+    fn emit_block_ptr(&mut self, class: &str, h: &str) -> Option<String> {
+        let table = self.direct_class_desc(class)?;
+        let cell = self.ic_cell();
+        let args = [format!("i64 {h}"), table, cell];
+        let Some(al) = self.cacheable_var(h, class) else {
+            return Some(self.call_cb(CB_INST_BLOCK, &args));
+        };
+        let ip = format!("%_ip_{}", &al["%_al_".len()..]);
+        if !self.ip_vars.contains_key(&al) {
+            self.ea(&format!("{ip} = alloca ptr, align 8"));
+            self.ea(&format!("store ptr null, ptr {ip}"));
+            self.ip_vars.insert(al, (ip.clone(), class.to_string()));
+        }
+        Some(self.load_or_fetch_block(&ip, CB_INST_BLOCK, &args))
+    }
+
+    /// `h` が「ローカル変数の置き場から読んだばかりで、その後その変数へ書いていない値」なら、その置き場（`%_al_x`）。
+    /// 別のクラスで覚えた変数は `None`（[`Self::emit_block_ptr`] の 2 つ目と 4 つ目の条件）。
+    fn cacheable_var(&self, h: &str, class: &str) -> Option<String> {
+        let al = self.fresh_var_of(h)?;
+        match self.ip_vars.get(&al) {
+            Some((_, c)) if c != class => None,
+            _ => Some(al),
+        }
+    }
+
+    /// `h` が「ローカル変数の置き場から読んだばかりで、その後その変数へ書いていない値」なら、その置き場（`%_al_x`）。
+    /// 生成済みの本体の文面から決める（`h` を定義した `load` の後に、その置き場への `store` が無いこと）。
+    pub(super) fn fresh_var_of(&self, h: &str) -> Option<String> {
+        let def = format!("  {h} = load i64, ptr ");
+        let at = self.code_buf.rfind(&def)?;
+        let rest = &self.code_buf[at + def.len()..];
+        let (al, after) = rest.split_once('\n')?;
+        if !al.starts_with("%_al_") {
+            return None;
+        }
+        let store_tail = format!(", ptr {al}");
+        if after.lines().any(|l| l.trim_start().starts_with("store ") && l.ends_with(&store_tail)) {
+            return None;
+        }
+        Some(al.to_string())
+    }
+
+    /// 関数の本体を出力する直前に呼ぶ（8-5）: 番地を覚えた変数の置き場への `store` の直後に、番地の置き場を空にする
+    /// 命令を差し込む。変数の置き場が `load` / `store` 以外（呼び出しの引数など）に出てきた行の後にも差し込む
+    /// （置き場の番地を外へ渡す所は今は無いが、できたときに古い番地を読まないように）。
+    ///
+    /// **番地を取るコールバック（`CB_INST_BLOCK` / `CB_ATTR_BLOCK`）と LLVM の組み込み以外の `call` の直後でも、覚えた
+    /// 番地を全部捨てる**（known_bugs.md #26）。覚えた番地を使い回してよいのは、取ってからほかのコールバックを 1 つも
+    /// 呼んでいない間だけ: ほかのコールバック（と直接呼び出し）はエラーを積みうる。番地を取るコールバックは先に積まれた
+    /// エラーがあれば空を返し、生成コードを今までの道（エラーがあれば何もしない）へ回すが、覚えた番地を使うと、その守りを
+    /// 通らずに書いてしまう。⚠ 以前は変数へ書いたときだけ捨てていたので、`self.y = self.x + s`（`self.x` がまだ書かれて
+    /// いない）が `self.x` の読み出しの誤りを積んだ後で `self.y` を書いた（VM は書く前に例外を投げる）。
+    /// どのコールバックかは文面から引く（`getelementptr inbounds %ArCallbacks, .., i32 N` → `load` → `call`・
+    /// [`cb_field_of_call`]）。引けない呼び出し（関数の値・トランポリン・直接呼び出し）は捨てる側に倒す。
+    ///
+    /// 入れ子の受け手の番地（`ap_vars`・7-13）も同じ規則で捨てる: 親の変数へ書いたとき（親が別のインスタンスになる）と、
+    /// ほかの呼び出しの後（親のフィールドが差し替えられうる）。
+    pub(super) fn finish_block_cache(&mut self) {
+        if self.ip_vars.is_empty() && self.ap_vars.is_empty() {
+            return;
+        }
+        // (変数の置き場, 番地の置き場)。入れ子の受け手は親の変数の置き場で並べる。差し込む順を決めるために並べ替える
+        // （表から取り出す順は実行ごとに変わり、生成 IR が毎回違ってしまう）
+        let mut vars: Vec<(String, String)> = self.ip_vars.drain().map(|(al, (ip, _))| (al, ip)).collect();
+        vars.extend(self.ap_vars.drain().map(|((al, _), (ap, _))| (al, ap)));
+        vars.sort();
+        let mut out = String::with_capacity(self.code_buf.len() + 64);
+        let mut cb_regs: HashMap<String, usize> = HashMap::new();
+        for line in self.code_buf.lines() {
+            out.push_str(line);
+            out.push('\n');
+            let body = line.trim_start();
+            if let Some(callee) = cb_field_of_call(body, &mut cb_regs) {
+                if !matches!(callee, CallKind::KeepsBlocks) {
+                    for (_, ip) in &vars {
+                        out.push_str(&format!("  store ptr null, ptr {ip}\n"));
+                    }
+                    continue;
+                }
+            }
+            for (al, ip) in &vars {
+                let writes = if body.starts_with("store ") {
+                    line.ends_with(&format!(", ptr {al}"))
+                } else if body.contains(" = load ") {
+                    false
+                } else {
+                    // 置き場の名前そのもの（`%_al_x` の後に名前の続きが無い）が出てくる行
+                    line.match_indices(al.as_str()).any(|(i, _)| {
+                        !line[i + al.len()..].starts_with(|c: char| c.is_alphanumeric() || c == '_' || c == '.')
+                    })
+                };
+                if writes {
+                    out.push_str(&format!("  store ptr null, ptr {ip}\n"));
+                }
+            }
+        }
+        self.code_buf = out;
+    }
+
+    /// 確かめ済みの番地 `p`（クラスが `class` の表のとおりで、全フィールドが初期化済み）から `attr` を検査なしで読む
+    /// （番地で呼ぶ変種・7-14）。読めない型・幅なら何も出さずに `None`。
+    pub(super) fn emit_trusted_read(&mut self, class: &str, p: &str, attr: &str, ty: Ty) -> Option<(String, Ty)> {
+        use crate::interpreter::value::block;
+        let (_, desc, (ity, ext)) = self.direct_read_plan(class, attr, ty)?;
+        let offset = block::field_offset(desc.byte_offset);
+        let fp = self.fresh_reg();
+        self.ec(&format!("{fp} = getelementptr inbounds i8, ptr {p}, i64 {offset}"));
+        let rawv = self.fresh_reg();
+        self.ec(&format!("{rawv} = load {ity}, ptr {fp}, align {}", desc.width.byte_width()));
+        Some(match ext {
+            None => (rawv, ty),
+            Some(op) => {
+                let w = self.fresh_reg();
+                self.ec(&format!("{w} = {op} {ity} {rawv} to {}", llvm_ty(ty)));
+                (w, ty)
+            }
+        })
+    }
+
+    /// 確かめ済みの番地 `p`（全フィールドが初期化済みで、不変でない）へ `attr` を検査なしで書く（7-14）。書けない
+    /// （`let` のフィールド・値の型が入らない）なら何も出さずに `false`。初期化の印は立っているので触らない。
+    pub(super) fn emit_trusted_write(&mut self, class: &str, p: &str, attr: &str, v: &str, vt: Ty) -> bool {
+        use crate::interpreter::value::block;
+        let Some((_, desc, (ity, conv))) = self.direct_write_plan(class, attr, vt) else { return false };
+        let offset = block::field_offset(desc.byte_offset);
+        let stored = match conv {
+            None => v.to_string(),
+            Some(op) => {
+                let c = self.fresh_reg();
+                self.ec(&format!("{c} = {op} {v} to {ity}"));
+                c
+            }
+        };
+        let fp = self.fresh_reg();
+        self.ec(&format!("{fp} = getelementptr inbounds i8, ptr {p}, i64 {offset}"));
+        self.ec(&format!("store {ity} {stored}, ptr {fp}, align {}", desc.width.byte_width()));
+        true
+    }
+
+    /// 番地で呼ぶ変種の本体の `self.attr`（`mut self` を番地で受けた・7-14）。読めなければ変種を捨てる（`blk_failed`）。
+    pub(super) fn emit_blk_self_read(&mut self, attr: &str) -> (String, Ty) {
+        let p = self.blk_self.clone().expect("only inside a `_blk` body with a `mut self` block");
+        let class = self.current_class.clone();
+        let ty = class.as_ref().and_then(|c| self.class_fields.get(c)).and_then(|f| f.get(attr)).copied();
+        if let (Some(c), Some(t)) = (class, ty) {
+            if let Some(r) = self.emit_trusted_read(&c, &p, attr, t) {
+                return r;
+            }
+        }
+        self.blk_failed = true;
+        ("0".to_string(), Ty::Int)
+    }
+
+    /// 番地で呼ぶ変種の本体の `self.attr = v`（7-14）。書けなければ変種を捨てる（`blk_failed`）。
+    pub(super) fn emit_blk_self_write(&mut self, attr: &str, v: &str, vt: Ty) {
+        let p = self.blk_self.clone().expect("only inside a `_blk` body with a `mut self` block");
+        let ok = match self.current_class.clone() {
+            Some(c) if matches!(vt, Ty::Int | Ty::Float) => self.emit_trusted_write(&c, &p, attr, v, vt),
+            _ => false,
+        };
+        if !ok {
+            self.blk_failed = true;
+        }
+    }
+
+    /// `obj.attr`（数値のフィールド）を**番地から直接読む**（copy_alloc_speed_plan.md 8-3・D-9・D-13）。出せなければ
+    /// 何も出さずに `None`（呼ぶ側が [`Self::emit_attr_read`] を使う）。
+    ///
+    /// 出せるのは、受け手のクラス `class` がこのモジュールの raw レイアウトのクラスで、フィールドの幅が読む型 `ty` に合うとき
+    /// （整数の幅 → `Int`・`float32` / `float` → `Float`）。出すコード:
+    /// 1. 先頭の塊の番地を得る（[`Self::emit_block_ptr`]: `CB_INST_BLOCK`。受け手がローカル変数なら覚えた番地を使い回す）。
+    ///    インスタンスのクラスが表のとおりでなければ空（注釈が外れた・private のフィールドがある・別のモジュールの同じ名前のクラス）
+    /// 2. 先頭の語の初期化の印を見る
+    /// 3. 立っていれば、塊の先頭から静的に決めた位置を、幅どおりに読んで広げる（`InstanceData::field_value` と同じ変換）
+    /// 4. 番地が空・未初期化なら今までのコールバック（[`Self::emit_attr_read`]。結果もエラーの文面も今までと同じ）
+    ///
+    /// ⚠ 位置・幅・印の bit は `interpreter::value::block` と `RawLayout` から取る（並びの定義は 1 か所・8-2）。
+    pub(super) fn emit_direct_read(&mut self, class: &str, src: BlockSrc<'_>, attr: &str, ty: Ty) -> Option<(String, Ty)> {
+        use crate::interpreter::value::block;
+        let (idx, desc, (ity, ext)) = self.direct_read_plan(class, attr, ty)?;
+        let offset = block::field_offset(desc.byte_offset);
+        let init_bit = block::init_bit(idx);
+        let t = llvm_ty(ty);
+
+        let (p, ic) = self.emit_block_src(class, src)?;
+        let (bchk, bfast, bslow, bdone) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        let isnull = self.fresh_reg();
+        self.ec(&format!("{isnull} = icmp eq ptr {p}, null"));
+        self.br_cond(&isnull, &bslow, &bchk);
+
+        self.start_block(&bchk);
+        let head = self.fresh_reg();
+        self.ec(&format!("{head} = load i64, ptr {p}, align 8"));
+        let bit = self.fresh_reg();
+        self.ec(&format!("{bit} = and i64 {head}, {init_bit}"));
+        let inited = self.fresh_reg();
+        self.ec(&format!("{inited} = icmp ne i64 {bit}, 0"));
+        self.br_cond(&inited, &bfast, &bslow);
+
+        self.start_block(&bfast);
+        let fp = self.fresh_reg();
+        self.ec(&format!("{fp} = getelementptr inbounds i8, ptr {p}, i64 {offset}"));
+        let rawv = self.fresh_reg();
+        self.ec(&format!("{rawv} = load {ity}, ptr {fp}, align {}", desc.width.byte_width()));
+        let fast = match ext {
+            None => rawv,
+            Some(op) => {
+                let w = self.fresh_reg();
+                self.ec(&format!("{w} = {op} {ity} {rawv} to {t}"));
+                w
+            }
+        };
+        self.br(&bdone);
+
+        self.start_block(&bslow);
+        // 入れ子の受け手の外れは `a.b` を積むが、結果は生の数なので道の中で巻き戻す（積む箇所に数えない・7-17）
+        let region = matches!(src, BlockSrc::Field { .. }).then(|| self.begin_fallback_region()).flatten();
+        let h = self.block_src_handle(src, ic);
+        let (slow, _) = self.emit_attr_read(&h, attr, Some(ty));
+        self.end_fallback_region(region);
+        self.br(&bdone);
+
+        self.start_block(&bdone);
+        let r = self.fresh_reg();
+        self.ec(&format!("{r} = phi {t} [ {fast}, %{bfast} ], [ {slow}, %{bslow} ]"));
+        Some((r, ty))
+    }
+
+    /// `obj.attr = v`（数値のフィールド・`v` は `int` / `float` の生値）を**番地へ直接書く**（copy_alloc_speed_plan.md 8-4・
+    /// D-13 ③）。出せなければ何も出さずに `false`（呼ぶ側が [`Self::emit_attr_assign_typed`] を使う）。
+    ///
+    /// 出せるのは、受け手のクラス `class` がこのモジュールの raw レイアウトのクラスで、フィールドが `mut`、値の型がフィールドに
+    /// 入るとき（`int` → 整数の幅・`float` → 小数の幅・`int` → 小数の幅は変換する。`InstanceData::store_field` と同じ規則）。
+    /// `let` のフィールドと、入らない型（`float` を整数のフィールドへ）は静的に分かるので直接の道を出さない（今までの
+    /// コールバックがエラーにする）。出すコード:
+    /// 1. `CB_INST_BLOCK` で先頭の塊の番地を得る（クラスが表のとおりでなければ空。表は `mut` かどうかも照合する）
+    /// 2. 先頭の語の不変の印を見る。立っていれば今までのコールバック（エラーの文面を保つ）
+    /// 3. 値を幅に合わせて（切り詰め・変換）書き、初期化の印を立てる
+    /// ⚠ 書き込みの IC が当たったときに省いている検査（定数のクラス変数・`static mut`・setter・アクセスの検査）は、
+    ///   クラスが表のとおり（全フィールドが public のふつうのフィールド）と確かめてあるので要らない。
+    pub(super) fn emit_direct_write(&mut self, class: &str, src: BlockSrc<'_>, attr: &str, v: &str, vt: Ty) -> bool {
+        use crate::interpreter::value::block;
+        let Some((idx, desc, (ity, conv))) = self.direct_write_plan(class, attr, vt) else { return false };
+        let offset = block::field_offset(desc.byte_offset);
+        let init_bit = block::init_bit(idx);
+        let Some((p, ic)) = self.emit_block_src(class, src) else { return false };
+        let (bchk, bfast, bslow, bdone) = (self.fresh_blk(), self.fresh_blk(), self.fresh_blk(), self.fresh_blk());
+        let isnull = self.fresh_reg();
+        self.ec(&format!("{isnull} = icmp eq ptr {p}, null"));
+        self.br_cond(&isnull, &bslow, &bchk);
+
+        self.start_block(&bchk);
+        let head = self.fresh_reg();
+        self.ec(&format!("{head} = load i64, ptr {p}, align 8"));
+        let imm = self.fresh_reg();
+        // LLVM の整数の定数は符号つきの 10 進で書く
+        self.ec(&format!("{imm} = and i64 {head}, {}", block::IMMUTABLE as i64));
+        let frozen = self.fresh_reg();
+        self.ec(&format!("{frozen} = icmp ne i64 {imm}, 0"));
+        self.br_cond(&frozen, &bslow, &bfast);
+
+        self.start_block(&bfast);
+        let stored = match conv {
+            None => v.to_string(),
+            Some(op) => {
+                let c = self.fresh_reg();
+                self.ec(&format!("{c} = {op} {v} to {ity}"));
+                c
+            }
+        };
+        let fp = self.fresh_reg();
+        self.ec(&format!("{fp} = getelementptr inbounds i8, ptr {p}, i64 {offset}"));
+        self.ec(&format!("store {ity} {stored}, ptr {fp}, align {}", desc.width.byte_width()));
+        let head2 = self.fresh_reg();
+        self.ec(&format!("{head2} = or i64 {head}, {init_bit}"));
+        self.ec(&format!("store i64 {head2}, ptr {p}, align 8"));
+        self.br(&bdone);
+
+        self.start_block(&bslow);
+        // 入れ子の受け手の外れは `a.b` を積むが、結果は無いので道の中で巻き戻す（7-17）
+        let region = matches!(src, BlockSrc::Field { .. }).then(|| self.begin_fallback_region()).flatten();
+        let h = self.block_src_handle(src, ic);
+        self.emit_attr_assign_typed(&h, attr, v, vt);
+        self.end_fallback_region(region);
+        self.br(&bdone);
+
+        self.start_block(&bdone);
+        true
+    }
+
     /// `obj.attr = v` を**箇所ごとの書き込みの IC 付きで**行う（2-3・VM の `SetAttr` と同じ `attr_assign_ic`）。
     /// セルは読み出しとは別（`attr_assign_ic` の doc）。
     pub(super) fn emit_attr_assign(&mut self, oh: &str, attr: &str, vh: &str) {
@@ -525,6 +1389,10 @@ impl<'a> GenCtx<'a> {
         // （typed エントリは TLS・アリーナに一切触れないことが保証されるため）
         if self.typed_mode {
             self.typed_failed = true;
+        }
+        // 番地で呼ぶ変種（7-14）もコールバックを持たない（呼ぶ側が確かめた番地を、確かめずに使う）
+        if self.blk_mode {
+            self.blk_failed = true;
         }
         let (ret_ty, param_tys) = cb_sig(field);
         // アリーナへ積みうるか（9-1）: ハンドルを返すもの。生の整数・保存点・トークンを返すものは積まない
@@ -616,4 +1484,81 @@ impl<'a> GenCtx<'a> {
 
     // ── Expression generation ─────────────────────────────────────────────────
 
+}
+
+/// 型 `vt` の値を幅 `w` のフィールドへ番地から直接書くときの (格納する型, 値の変換)（変換が `None` ならそのまま）。
+/// 値の型とフィールドの幅が同じ種類（整数 / 小数）のときだけ: `InstanceData::store_field` と同じく、整数は幅に切り詰め、
+/// `float32` は丸める。代入（8-4・[`GenCtx::direct_write_plan`]）と、合成した `__init__` の生成（7-11）が共有する。
+/// ⚠ `int` を小数のフィールドへ書く変換はここに無い（代入と生成で規則が違う: 代入は `int` を直接その幅へ、生成は束縛で
+///   いったん `float` にしてから。生成のほうは型検査が止めるので出さない）。入らない型は `None`（今までの道がエラーにする）。
+pub(super) fn raw_store_conv(
+    w: crate::interpreter::value::RawWidth,
+    vt: Ty,
+) -> Option<(&'static str, Option<&'static str>)> {
+    use crate::interpreter::value::RawWidth;
+    Some(match (w, vt) {
+        (RawWidth::I64 | RawWidth::U64, Ty::Int) => ("i64", None),
+        (RawWidth::I32 | RawWidth::U32, Ty::Int) => ("i32", Some("trunc i64")),
+        (RawWidth::I16 | RawWidth::U16, Ty::Int) => ("i16", Some("trunc i64")),
+        (RawWidth::I8 | RawWidth::U8, Ty::Int) => ("i8", Some("trunc i64")),
+        (RawWidth::F64, Ty::Float) => ("double", None),
+        (RawWidth::F32, Ty::Float) => ("float", Some("fptrunc double")),
+        // 入らない型（`float` を整数のフィールドへ・`bool`・ハンドル）
+        _ => return None,
+    })
+}
+
+
+/// 本体の `call` の、覚えた番地（8-5）にとっての分類（[`GenCtx::finish_block_cache`]・known_bugs.md #26）。
+#[derive(Debug, PartialEq)]
+pub(super) enum CallKind {
+    /// 番地を取るコールバック（`CB_INST_BLOCK` / `CB_ATTR_BLOCK` / `CB_ATTR_BLOCKS`）・保存点を取るだけの `CB_ARENA_SAVE`・
+    /// 番地で呼ぶ変種（`@X_blk`）・LLVM の組み込み: インスタンスを持つフィールドを書き換えず、エラーも積まない（7-19）
+    KeepsBlocks,
+    /// ほかの呼び出し（ほかのコールバック・直接呼び出し・関数の値・引けなかったもの）
+    Other,
+}
+
+/// 本体の 1 行（字下げを除いたもの）が `call` ならその分類を返す（`call` でなければ `None`）。コールバックの番号は、同じ
+/// 関数の前の行の `%a = getelementptr inbounds %ArCallbacks, ptr .., i32 0, i32 N` と `%f = load ptr, ptr %a` から
+/// `regs` に覚える（[`GenCtx::call_cb`] の出す形）。⚠ 読めない形は [`CallKind::Other`]（覚えた番地を捨てる側）に倒す。
+pub(super) fn cb_field_of_call(body: &str, regs: &mut HashMap<String, usize>) -> Option<CallKind> {
+    if let Some((dst, rest)) = body.split_once(" = ") {
+        if let Some(gep) = rest.strip_prefix("getelementptr inbounds %ArCallbacks, ptr ") {
+            if let Some(n) = gep.rsplit_once(", i32 ").and_then(|(_, n)| n.trim().parse::<usize>().ok()) {
+                regs.insert(dst.to_string(), n);
+            }
+            return None;
+        }
+        if let Some(src) = rest.strip_prefix("load ptr, ptr ") {
+            if let Some(&n) = regs.get(src.trim()) {
+                regs.insert(dst.to_string(), n);
+            }
+            return None;
+        }
+    }
+    let at = if body.starts_with("call ") { 0 } else { body.find(" call ")? + 1 };
+    let rest = &body[at + "call ".len()..];
+    // 呼ぶ先は `call` の後の最初の `%` / `@` の名前（戻り値の型と関数の型は名前を含まない）
+    let callee = rest
+        .find(['%', '@'])
+        .and_then(|s| rest[s..].split_once('(').map(|(name, _)| name));
+    Some(match callee {
+        Some(name) if name.starts_with("@llvm.") => CallKind::KeepsBlocks,
+        Some(name) if matches!(regs.get(name), Some(&(CB_INST_BLOCK | CB_ATTR_BLOCK | CB_ATTR_BLOCKS | CB_ARENA_SAVE))) => CallKind::KeepsBlocks,
+        // 番地で呼ぶ変種（7-14）: 本体は何も呼ばず、渡された塊の数値のフィールドだけを読み書きする（子を差し替えず、誤りも
+        // 積まない・作れなかった変種は呼ぶ側ごと作り直すので、呼び出しが残るのは作れた変種だけ）。覚えた番地はそのまま使える（7-19）
+        Some(name) if name.starts_with('@') && name.ends_with("_blk") => CallKind::KeepsBlocks,
+        _ => CallKind::Other,
+    })
+}
+
+/// 遅い道の巻き戻しの区切り（copy_alloc_speed_plan.md 7-17・[`GenCtx::begin_fallback_region`]）。
+pub(super) struct FallbackRegion {
+    /// 道の始まりの保存点（`CB_ARENA_SAVE` の結果のレジスタ）
+    save: String,
+    /// 道の始まりまでに数えた積む箇所の数
+    pushes: usize,
+    /// 道の始まりの `handle_store_log` の長さ
+    log_len: usize,
 }

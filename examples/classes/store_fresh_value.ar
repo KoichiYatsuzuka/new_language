@@ -1,0 +1,158 @@
+# store_fresh_value.ar — 格納する値の複製（copy_alloc_speed_plan.md 2-1）
+#
+# 格納（`append`・フィールド・添字・辞書）は値を複製する。誰とも共有していない作りたての値は写さずに
+# そのまま格納してよいが、**ほかに持ち主がいる値は必ず複製する**。ここでは「複製を省くと値が変わる」形を
+# 並べ、期待と違えば `raise` する（最上位と関数の中の両方で同じ操作をする）。
+
+class P:
+    mut x: int
+
+class Holder:
+    mut p: P
+    mut ps: list[P]
+
+class Reg:
+    static mut all: list[Reg] = []
+    mut n: int
+
+    fn __init__(mut self, let n: int) -> None:
+        self.n = n
+        Reg.all.append(self)
+
+fn expect(let name: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError("store_fresh_value: " + name + " = " + str(got) + ", expected " + str(want))
+
+fn ident(mut p: P) -> P:
+    return p
+
+fn first(mut h: Holder) -> P:
+    return h.p
+
+fn make(let x: int) -> P:
+    return P(x)
+
+fn frozen_made(let x: int) -> P:
+    let p = P(x)
+    return p
+
+fn in_function() -> int:
+    mut xs: list[P] = []
+    # 作りたての値を 2 回格納する: 2 つは別の値
+    xs.append(P(1))
+    xs.append(P(1))
+    xs[0].x = 5
+    expect("fn fresh twice", xs[1].x, 1)
+
+    # 名前で持っている値: 格納した側を書き換えても元は変わらない
+    mut p = P(1)
+    xs.append(p)
+    xs[2].x = 9
+    expect("fn held by a name", p.x, 1)
+
+    # 引数をそのまま返す関数の結果: 呼び出しの結果でも持ち主がいる
+    xs.append(ident(p))
+    xs[3].x = 7
+    expect("fn returned argument", p.x, 1)
+
+    # フィールドをそのまま返す関数の結果
+    mut h = Holder(P(2), [P(3)])
+    xs.append(first(h))
+    xs[4].x = 8
+    expect("fn returned field", h.p.x, 2)
+
+    # 作りたての容れ物の中に、持ち主のいる値がある
+    mut ys: list[list[P]] = []
+    ys.append([p])
+    ys[0][0].x = 6
+    expect("fn fresh list holding a named value", p.x, 1)
+
+    # フィールド・添字への格納
+    h.p = p
+    h.p.x = 4
+    expect("fn field store of a named value", p.x, 1)
+    h.p = make(11)
+    h.p.x = 12
+    expect("fn field store of a fresh value", h.p.x, 12)
+    xs[0] = p
+    xs[0].x = 3
+    expect("fn index store of a named value", p.x, 1)
+
+    # 辞書
+    mut d: dict[str, P] = {}
+    d["a"] = p
+    d["a"].x = 2
+    expect("fn dict store of a named value", p.x, 1)
+    d["b"] = P(20)
+    d["c"] = P(20)
+    d["b"].x = 21
+    expect("fn dict fresh twice", d["c"].x, 20)
+    return len(xs)
+
+# ── 最上位で同じ操作 ──
+mut xs: list[P] = []
+xs.append(P(1))
+xs.append(P(1))
+xs[0].x = 5
+expect("fresh twice", xs[1].x, 1)
+
+mut p = P(1)
+xs.append(p)
+xs[2].x = 9
+expect("held by a name", p.x, 1)
+
+# `let` の値を格納する: 写しは不変の印を持ったまま（書き換えは TypeError）。元は変わらない
+let q = P(2)
+xs.append(q)
+mut frozen_copy = 0
+try:
+    xs[3].x = 9
+except TypeError:
+    frozen_copy = 1
+expect("copy of a let value stays frozen", frozen_copy, 1)
+expect("held by a let name", q.x, 2)
+
+xs.append(ident(p))
+xs[4].x = 7
+expect("returned argument", p.x, 1)
+
+mut h = Holder(P(2), [P(3)])
+xs.append(first(h))
+xs[5].x = 8
+expect("returned field", h.p.x, 2)
+
+# 要素を取り出して格納する（リストが持っている）
+xs.append(h.ps[0])
+xs[6].x = 30
+expect("element of a list", h.ps[0].x, 3)
+
+mut ys: list[list[P]] = []
+ys.append([p])
+ys[0][0].x = 6
+expect("fresh list holding a named value", p.x, 1)
+
+# `__init__` が self をほかへ入れたクラス: 表に入っているのは写しなので、生成した値は誰とも共有していない
+mut rs: list[Reg] = []
+rs.append(Reg(1))
+rs[0].n = 100
+expect("registry copy is independent", Reg.all[0].n, 1)
+
+# `let` で作って返した値（不変の印が付いている）を格納する: 格納した値は書き換えられない印のまま
+mut fs: list[P] = []
+fs.append(frozen_made(4))
+expect("frozen value stored", fs[0].x, 4)
+mut frozen_fresh = 0
+try:
+    fs[0].x = 5
+except TypeError:
+    frozen_fresh = 1
+expect("a frozen fresh value stays frozen", frozen_fresh, 1)
+
+# 自分自身の要素を格納する
+mut a: list[list[int]] = [[1]]
+a.append(a[0])
+a[1].append(9)
+expect("self element", len(a[0]), 1)
+
+expect("in_function", in_function(), 5)
+print("store_fresh_value: ok")

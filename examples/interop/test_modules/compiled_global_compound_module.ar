@@ -1,0 +1,30 @@
+# compiled_global_compound_module.ar — compiled_global_assign.ar のコンパイル済みの側・大域への複合代入（known_bugs.md #23）
+#
+# モジュールの大域へ複合代入する関数（メソッドも）はコンパイルしない（VM が動かす）。ほかの関数はコンパイルする。
+# ⚠ 以前は複合代入の IR が未定義の値を読み、clang が落ちてこのモジュールの DLL が作られなかった
+#   （`check_native_ir_abi.ps1` が「DLL が埋め込まれなかった」で失敗にする）。
+
+mut counter = 0
+mut total = 0.0
+
+fn bump() -> None:
+    counter += 1
+
+fn add_total(let x: float) -> None:
+    total += x
+
+fn get_counter() -> int:
+    return counter
+
+fn get_total() -> float:
+    return total
+
+class Acc:
+    mut n: int
+
+    fn record(mut self, let v: float) -> None:
+        total += v
+        self.n += 1
+
+fn twice(let v: int) -> int:
+    return v * 2

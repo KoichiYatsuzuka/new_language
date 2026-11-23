@@ -75,6 +75,9 @@ pub mod type_check;
 //   同じ構成。FFI・Python 相互運用・別プロセスブリッジは同名スタブに差し替わる。
 //   この crate は `native` feature を持たないので、常にスタブ側が選ばれる。
 //   作業分割は implementation_logs/eval_core_extraction_plan.md を参照。
+// 「読むだけの関数」の解析（copy_alloc_speed_plan.md 4-1）。インタープリタが結果の型を持つので要る
+#[path = "../../../src/readonly_fns.rs"]
+pub mod readonly_fns;
 #[path = "../../../src/vm/mod.rs"]
 pub mod vm;
 #[path = "../../../src/interpreter.rs"]

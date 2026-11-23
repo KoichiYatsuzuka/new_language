@@ -1,0 +1,107 @@
+# fresh_args.ar — コンパイル済みコードで、作りたての値を格納・生成の引数・`let` 仮引数に渡す
+# （copy_alloc_speed_plan.md 2-4）
+#
+# 誰とも共有していない作りたての値は複製せずに渡すが、ほかに持ち主がいる値は必ず複製する。
+# 同じ関数を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/fresh_args_module.ar
+#   2. cargo run --release -- examples/interop/fresh_args.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.fresh_args_module as m
+
+class P:
+    mut x: int
+
+class Pair:
+    mut a: P
+    mut b: P
+
+class Holder:
+    mut p: P
+    mut ps: list[P]
+
+fn ident(mut p: P) -> P:
+    return p
+
+fn first(mut h: Holder) -> P:
+    return h.p
+
+fn read(let v: P) -> int:
+    return v.x
+
+fn read_after_write(let v: P, mut src: P) -> int:
+    src.x = 50
+    return v.x
+
+fn store_cases() -> int:
+    mut xs: list[P] = []
+    xs.append(P(1))
+    xs.append(P(1))
+    xs[0].x = 5
+    mut p = P(1)
+    xs.append(p)
+    xs[2].x = 9
+    xs.append(ident(p))
+    xs[3].x = 7
+    mut h = Holder(P(2), [P(3)])
+    xs.append(first(h))
+    xs[4].x = 8
+    return xs[1].x * 100 + p.x * 10 + h.p.x
+
+fn nested_cases() -> int:
+    mut p = P(1)
+    mut ys: list[list[P]] = []
+    ys.append([p])
+    ys[0][0].x = 6
+    return p.x
+
+fn construct_cases() -> int:
+    mut v = P(1)
+    mut a = Pair(P(10), P(20))
+    a.a.x = 11
+    mut b = Pair(v, v)
+    b.a.x = 5
+    mut c = Pair(ident(v), P(3))
+    c.a.x = 6
+    return a.b.x * 100 + b.b.x * 10 + v.x
+
+fn param_cases() -> int:
+    mut p = P(1)
+    let r1 = read(P(3))
+    let r2 = read_after_write(p, p)
+    p.x = 1
+    let r3 = read_after_write(ident(p), p)
+    return r1 * 100 + r2 * 10 + r3
+
+fn field_cases() -> int:
+    mut p = P(1)
+    mut h = Holder(P(2), [P(3)])
+    h.p = p
+    h.p.x = 4
+    h.ps[0] = p
+    h.ps[0].x = 5
+    h.p = P(7)
+    return p.x * 10 + h.p.x
+
+fn expect(let name: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError("fresh_args: " + name + " = " + str(got) + ", expected " + str(want))
+
+expect("vm store", store_cases(), 112)
+expect("vm nested", nested_cases(), 1)
+expect("vm construct", construct_cases(), 2011)
+expect("vm param", param_cases(), 311)
+expect("vm field", field_cases(), 17)
+
+expect("compiled store", m.store_cases(), 112)
+expect("compiled nested", m.nested_cases(), 1)
+expect("compiled construct", m.construct_cases(), 2011)
+expect("compiled param", m.param_cases(), 311)
+expect("compiled field", m.field_cases(), 17)
+
+# コンパイル済みの関数に、本体から作りたての値と名前の値を渡す
+mut q = m.P(1)
+expect("boundary fresh", m.read(m.P(3)), 3)
+expect("boundary named", m.read_after_write(q, q), 1)
+print("fresh_args: ok")

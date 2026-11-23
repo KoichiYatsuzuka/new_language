@@ -87,6 +87,12 @@ SipHash より ~5 倍速い)。Index 0 is global; the tail is the innermost loca
 fixed_list). `exec_freeze` writes the frozen copy back and demotes the variable;
 a function local (VM slot) compiles to `LoadLocal` + `StoreLocalCopyFreeze`.
 
+Whether a class has `__copy__` / `__freeze__` is answered by `ClassValue::has_copy_method` /
+`has_freeze_method`, a per-class cache (`hook_bits`) filled from `methods` on the first question
+(copy_alloc_speed_plan.md 7-1). Only a class that has the hook is looked up by name; don't reintroduce
+`methods.get("__copy__")` / `contains_key` on the copy / bind paths (it was ~10% of a compiled
+`let v = Vec3(..)` loop).
+
 ---
 
 ## Statement Execution (`exec.rs`)

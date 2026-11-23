@@ -1,0 +1,19 @@
+# p_k6.ar — プロファイル用のドライバ（scripts/prof_stacks.ps1）: インタープリタのループからコンパイル済みのメソッドを呼ぶ境界
+# bench.ar の同じ区間を、同じ状態で AR_PROF_M 倍だけ繰り返す。sim_core は隣に写したもの（コンパイル済みなら .arc）を読む。
+
+import[py] time
+from sim_core import World, make_world, run_step, run_energy, run_record, run_labels, run_spawn
+
+let M = int(getenv("AR_PROF_M", "1"))
+let t0 = time.perf_counter()
+fn drive_steps(mut w: World, let ticks: int, let dt: float, let lim: float) -> int:
+    mut t = 0
+    while t < ticks:
+        for b in w.bodies:
+            b.step(dt, lim)
+        t += 1
+    return w.total_hits()
+
+mut w = make_world(256)
+let r = drive_steps(w, 1000 * M, 0.01, 10.0)
+print("PROF p_k6 " + str(time.perf_counter() - t0) + " " + str(r))

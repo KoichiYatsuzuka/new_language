@@ -101,7 +101,9 @@ impl Interpreter {
             //   `let` の辞書の中のリストを写しの側から書き換えさせない）。
             "copy" => {
                 Self::dict_no_args(&evaled, "copy")?;
-                Ok(Self::deep_copy_unfrozen(Value::Dict(d)))
+                let v = Value::Dict(d);
+                crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::Explicit, &v, false);
+                Ok(Self::deep_copy_unfrozen(v))
             }
             _ => Err(format!("AttributeError: 'dict' object has no method '{method_name}'")),
         }

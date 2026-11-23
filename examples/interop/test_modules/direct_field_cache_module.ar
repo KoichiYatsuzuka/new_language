@@ -1,0 +1,105 @@
+# direct_field_cache_module.ar — direct_field_cache.ar のコンパイル済みの側（copy_alloc_speed_plan.md 8-5）
+#
+# 受け手がローカル変数・仮引数のとき、コンパイル済みコードはインスタンスの番地を変数ごとに覚えて使い回す。
+# 変数を別のインスタンスへ差し替えたら、覚えた番地を使ってはいけない（前のインスタンスは解放されていることがある）。
+
+class P:
+    mut x: float
+    mut n: int
+
+    fn scale(mut self, let k: float) -> None:
+        self.x = self.x * k
+        self.n = self.n + 1
+        self.x = self.x + float(self.n)
+
+class Q:
+    mut x: float
+    mut n: int
+
+class Holder:
+    mut p: P
+    mut q: P
+
+fn make(let i: int) -> P:
+    return P(float(i), i)
+
+# ループの中で変数を差し替える（前のインスタンスはその周で捨てられる）
+fn swap_in_loop(let n: int) -> float:
+    mut p = P(0.0, 0)
+    mut s = 0.0
+    mut i = 0
+    while i < n:
+        s += p.x + float(p.n)
+        p = make(i + 1)
+        s += p.x * 2.0
+        p.n = p.n + 100
+        s += float(p.n)
+        i += 1
+    return s
+
+# ループの前に取った値を、周をまたいで読み書きする
+fn keep_across_loop(mut p: P, let n: int) -> float:
+    mut s = 0.0
+    mut i = 0
+    while i < n:
+        p.x = p.x + 1.0
+        p.n += 2
+        s += p.x + float(p.n)
+        i += 1
+    return s
+
+# 片方の枝でだけ差し替える（合流の後は、差し替えた方の値を読む）
+fn swap_in_branch(mut p: P, let other: bool) -> float:
+    mut s = p.x
+    if other:
+        p = P(50.0, 5)
+    else:
+        s += p.x
+    return s + p.x + float(p.n)
+
+# 呼び出しの戻り値のフィールドをすぐ読む（変数に置かない）
+fn read_result(let i: int) -> float:
+    return make(i).x + float(make(i + 1).n)
+
+# 呼ばれた側がフィールドを書き換える（番地は同じ・値は読み直す）
+fn callee_writes(mut p: P) -> float:
+    let before = p.x
+    p.scale(3.0)
+    return before + p.x + float(p.n)
+
+# ループ変数（周ごとに別のインスタンス）
+fn loop_var(mut ps: list[P]) -> float:
+    mut s = 0.0
+    for p in ps:
+        p.x = p.x + 0.5
+        s += p.x + float(p.n)
+    return s
+
+# 同じ名前を、並んだ 2 つのブロックで別のクラスとして宣言する（置き場は同じ・クラスが違う）
+fn shadow(let c: bool) -> float:
+    mut s = 0.0
+    if c:
+        mut t = P(1.0, 1)
+        t.x = t.x + 1.0
+        s += t.x
+    if c:
+        mut t = Q(7.0, 7)
+        t.x = t.x + 1.0
+        s += t.x + float(t.n)
+    return s
+
+# 受け手を読んだ後で、値の評価が変数を差し替える（書く先は差し替える前のインスタンス）
+fn reassign_in_value(mut h: Holder) -> float:
+    mut p = h.p
+    mut keep = p
+    p.x = block->float:
+        p = h.q
+        block_return 9.0
+    return p.x * 100.0 + keep.x
+
+# 2 つの変数が別のインスタンスを指す
+fn two_vars(mut a: P, mut b: P) -> float:
+    a.x = b.x + 1.0
+    b.x = a.x + 1.0
+    a.n = b.n + 1
+    return a.x * 100.0 + b.x * 10.0 + float(a.n)

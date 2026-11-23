@@ -1,0 +1,31 @@
+# method_ctx_public_module.ar — method_ctx_skip.ar のコンパイル済みの側（copy_alloc_speed_plan.md 7-3）
+#
+# private / protected のメンバーを持たないクラスどうしの直接呼び出し。プログラムに private / protected のメンバーを
+# 持つクラスが 1 つも無い間、コンパイル済みコードは呼び出しの前後のクラスの文脈の切り替えを省く。
+
+class Counter:
+    mut n: int
+    mut tag: str
+
+    fn bump(mut self, let k: int) -> int:
+        self.n = self.n + k
+        return self.n
+
+class Pair:
+    mut a: Counter
+    mut b: Counter
+
+    # 別のクラスのメソッドを直接呼ぶ（文脈の切り替えが出る形）
+    fn step(mut self) -> int:
+        let x = self.a.bump(1)
+        let y = self.b.bump(x)
+        return x * 100 + y
+
+fn run_pairs(mut ps: list[Pair], let n: int) -> int:
+    mut s = 0
+    mut i = 0
+    while i < n:
+        for p in ps:
+            s += p.step()
+        i += 1
+    return s

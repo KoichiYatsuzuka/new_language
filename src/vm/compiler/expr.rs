@@ -383,7 +383,7 @@ impl Compiler {
                     if let Some(slot) = fuse_slot {
                         // 超命令融合（#16 段階(b)(i)）: レシーバが局所変数なら push せず frame 直読み。
                         let (mask, _) = self.compile_call_args(args, Some(*node_id))?;
-                        let mask = mask | recv_bit;
+                        let mask = mask | recv_bit | self.disjoint_info_bit(args.len(), *node_id);
                         let ni = self.add_name(attr);
                         self.emit(Op::CallMethodLocal(slot, ni, args.len() as u16, mask, *node_id));
                     } else {
@@ -393,6 +393,7 @@ impl Compiler {
                         let ni = self.add_name(attr);
                         match kw {
                             None => {
+                                let mask = mask | self.disjoint_info_bit(args.len(), *node_id);
                                 self.emit(Op::CallMethod(ni, args.len() as u16, mask, *node_id));
                             }
                             // 名前付き／可変長引数（#27-c）。dispatcher は同じで、

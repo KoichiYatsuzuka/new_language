@@ -1,0 +1,101 @@
+# direct_field_read_module.ar — direct_field_read.ar のコンパイル済みの側（copy_alloc_speed_plan.md 8-3）
+#
+# 全フィールドが数値のクラス（trait を実装しない・24 個以下）の数値のフィールドは、コンパイル済みコードが
+# インスタンスの番地から直接読む。番地が取れない・未初期化のときは今までのコールバックへ回る。
+
+class P:
+    mut x: float
+    mut n: int
+
+    # `mut self` の受け手（`let self` は入口で先読みするので、こちらが直接の読み出しになる）
+    fn total(mut self) -> float:
+        return self.x + float(self.n)
+
+class Holder:
+    mut p: P
+    mut tag: str
+
+# 整数・小数の幅ごと（符号つきは符号を広げ、符号なしは 0 で広げ、float32 は float へ広げる）
+class Widths:
+    mut a: int8
+    mut b: uint8
+    mut c: int16
+    mut d: uint16
+    mut e: int32
+    mut f: uint32
+    mut g: int64
+    mut h: float32
+    mut i: float
+
+# private のフィールドを持つクラス: 並びは同じでも直接の道に入らない（アクセスの検査は今までの道で行う）
+class Secret:
+    mut shown: int
+    private:
+    mut hidden: int
+    public:
+    fn reveal(mut self) -> int:
+        return self.hidden + self.shown
+
+# `__init__` の中で、まだ書いていないフィールドを読む（未初期化）
+class Early:
+    mut x: float
+    mut y: float
+
+    fn __init__(mut self, let v: float) -> None:
+        self.x = v
+        self.y = self.x * 2.0
+
+class Broken:
+    mut x: float
+    mut y: float
+
+    fn __init__(mut self, let v: float) -> None:
+        self.y = peek_x(self) + v
+        self.x = v
+
+# 途中まで初期化したインスタンスを受け取り、まだ書いていないフィールドを読む
+fn peek_x(mut b: Broken) -> float:
+    return b.x
+
+fn var_read(mut p: P) -> float:
+    return p.x * 10.0 + float(p.n)
+
+fn nested_read(mut h: Holder) -> float:
+    return h.p.x + float(h.p.n)
+
+fn loop_read(mut ps: list[P]) -> float:
+    mut s = 0.0
+    for p in ps:
+        s += p.x + float(p.n)
+    return s
+
+fn compound(mut p: P) -> float:
+    p.x += 1.5
+    p.n += 2
+    return p.x + float(p.n)
+
+fn widths_sum(mut w: Widths) -> int:
+    return w.a + w.b + w.c + w.d + w.e + w.f + w.g
+
+fn widths_float(mut w: Widths) -> float:
+    return w.h + w.i
+
+fn method_read(mut p: P) -> float:
+    return p.total()
+
+fn secret_read(mut s: Secret) -> int:
+    return s.reveal() * 100 + s.shown
+
+fn early_read(let v: float) -> float:
+    mut e = Early(v)
+    return e.x + e.y
+
+fn broken_read(let v: float) -> str:
+    try:
+        mut b = Broken(v)
+        return "no error: " + str(b.y)
+    except Exception as e:
+        return str(e)
+
+fn frozen_read(let p: P) -> float:
+    return p.x + float(p.n)

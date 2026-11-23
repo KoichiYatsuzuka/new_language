@@ -1,0 +1,55 @@
+# disjoint_args_module.ar — disjoint_args.ar のコンパイル済みの側（copy_alloc_speed_plan.md 4-6）
+#
+# 自分の `mut` 仮引数だけを書き換える関数の `let` 仮引数へは、渡す値が受け手・ほかの引数と重ならない
+# （同じ変数の別のフィールド）と分かるとき、複製せずに渡す。重なりうるときは今までどおり複製する。
+
+class V2:
+    mut x: int
+    mut y: int
+
+    # 自分（`mut self`）だけを書き換える。`o` が `self` と同じ物だと、2 行目が書き換えた後の x を読んでしまう
+    fn mix(mut self, let o: V2) -> None:
+        self.x = self.x + o.y
+        self.y = self.y + o.x
+
+class Body:
+    mut pos: V2
+    mut vel: V2
+    mut n: int
+
+    # 受け手と引数が、同じ変数の別のフィールド（重ならない）
+    fn step(mut self) -> None:
+        self.pos.mix(self.vel)
+
+    # `p` が自分の中身（`self.pos`）だと、書き換えた後の値を読んでしまう
+    fn absorb(mut self, let p: V2) -> None:
+        self.pos.x = self.pos.x + 100
+        self.n = p.x
+
+fn two(mut a: Body, mut b: Body) -> None:
+    # 別の変数どうし: 同じ物を指しうるので複製する
+    a.pos.mix(b.pos)
+
+fn disjoint_cases() -> int:
+    mut b = Body(V2(1, 2), V2(10, 20), 0)
+    b.step()
+    # pos = (1 + 20, 2 + 10) = (21, 12)・vel はそのまま
+    return b.pos.x * 10000 + b.pos.y * 100 + b.vel.x
+
+fn same_value_cases() -> int:
+    mut v = V2(1, 10)
+    v.mix(v)
+    # 写しを読む: (1 + 10, 10 + 1) = (11, 11)
+    return v.x * 100 + v.y
+
+fn inside_cases() -> int:
+    mut b = Body(V2(1, 2), V2(10, 20), 0)
+    b.absorb(b.pos)
+    # p は書き換える前の写し: n = 1・pos.x = 101
+    return b.n * 1000 + b.pos.x
+
+fn two_names_cases() -> int:
+    mut b = Body(V2(1, 10), V2(0, 0), 0)
+    two(b, b)
+    # 同じ物を 2 つの名前で渡した: (1 + 10, 10 + 1) = (11, 11)
+    return b.pos.x * 100 + b.pos.y

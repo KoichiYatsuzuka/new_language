@@ -137,6 +137,9 @@ mod templates;
 /// 診断フック `AR_TW_STATS=1`（#10 のスコープ計測）。既定では完全に無効。
 #[path = "interpreter/tw_stats.rs"]
 pub(crate) mod tw_stats;
+// 診断フック `AR_COPY_STATS=1`（値の複製の入口ごとの回数・copy_alloc_speed_plan.md 1-2）。
+#[path = "interpreter/copy_stats.rs"]
+pub(crate) mod copy_stats;
 /// 最上位文の VM 実行経路（#10-b）。**`functions/execution.rs` へ移してはいけない**（同ファイル冒頭参照）。
 #[path = "interpreter/vm_toplevel.rs"]
 mod vm_toplevel;
@@ -201,7 +204,7 @@ thread_local! {
 /// std デフォルトの SipHash より大幅に速い（~10ns → ~2ns）。
 /// スコープのキーは攻撃者制御の入力ではないため DoS 耐性（SipHash の目的）は不要。
 #[derive(Default, Clone, Copy)]
- struct FxHasher {
+pub(crate) struct FxHasher {
     hash: u64,
 }
 
@@ -225,9 +228,9 @@ impl std::hash::Hasher for FxHasher {
     }
 }
 
-/// `FxHasher` の BuildHasher。`ScopeMap::default()` で使用する。
+/// `FxHasher` の BuildHasher。`ScopeMap::default()` と [`ClassIdMap`] で使用する。
 #[derive(Default, Clone, Copy)]
- struct FxBuildHasher;
+pub(crate) struct FxBuildHasher;
 
 impl std::hash::BuildHasher for FxBuildHasher {
     type Hasher = FxHasher;
@@ -236,6 +239,12 @@ impl std::hash::BuildHasher for FxBuildHasher {
         FxHasher::default()
     }
 }
+
+/// クラスの番号（`value::alloc_class_id`）で引く表（copy_alloc_speed_plan.md 7-10）。キーは処理系が振る番号で
+/// 利用者の入力ではないので、既定の SipHash の代わりに FxHash を使う。以前は生成のたびに 2 つの表（合成した
+/// `__init__` の計画・コンパイル済みコードが作るクラス）をこの番号で SipHash で引いていて、ハッシュの計算が
+/// コンパイル済みの `Vec3` の生成の 5% だった。
+pub(crate) type ClassIdMap<V> = HashMap<u32, V, FxBuildHasher>;
 
 /// スコープ1段分の変数ストレージ（Phase R / R0）。
 ///
@@ -530,6 +539,11 @@ pub struct Interpreter {
     /// `call_stack` 自体の型と `len()` の意味は変えないので、深さを見ている
     /// デバッガ（`debugger.rs`）や例外フレーム生成には影響しない。
     pub(self) call_name_pool: Vec<String>,
+    /// VM の呼び出し命令が引数の並び（`evaled`）に使う `Vec` の置き場（copy_alloc_speed_plan.md 6-3）。
+    /// 呼び出しのたびに確保して捨てていた並びを、呼び終えたら空にして戻し、次の呼び出しが使い回す。
+    /// ⚠ 戻すのは呼び出しを抜けた後だけ（`note_disjoint_args` は並びの番地で呼び出しを見分ける。使っている間の並びは
+    ///   置き場に無いので、ほかの呼び出しが同じ番地を使うことは無い）。
+    pub(crate) evaled_pool: Vec<Vec<(Option<String>, Value, bool)>>,
     /// `except` ブロック内で処理中の例外（裸の `raise` で再 raise するために保持）。
     pub(self) current_exception: Option<RaisedError>,
     /// 生存している**中断可能な**ジェネレータ（bug_fix.md B13 段階 D）。
@@ -638,10 +652,17 @@ pub struct Interpreter {
     /// 1 つ）には `class_id` だけを入れ、クラスはインタープリタごとのこの表から引く（native_object_access_plan.md 10-2）。
     /// ⚠ セルに表の添字を入れないのは、非同期タスクのワーカーが別のインタープリタで同じ DLL を使うため（`class_id` は
     ///   プロセス全体で一意で、ワーカーへの複製も同じ番号を保つ）。ワーカーの表は空から始まり、最初は名前で引いて埋める。
-    pub(self) native_classes: HashMap<u32, Rc<ClassValue>>,
+    pub(self) native_classes: ClassIdMap<Rc<ClassValue>>,
+    /// 読むだけの関数の名前（`crate::readonly_fns`・copy_alloc_speed_plan.md 4-1）。型検査のあとで `main` が入れる。
+    /// 入れていなければ空（どの関数も読むだけとみなさない＝今までどおり複製する）。
+    pub(crate) readonly_fns: Rc<crate::readonly_fns::ReadonlyFns>,
+    /// 今の呼び出しの「受け手・ほかの引数と重ならない引数」の印（評価済みの引数の並びの番地, bit i = 引数 i・
+    /// copy_alloc_speed_plan.md 4-6）。VM の呼び出し命令が置き、束縛（`try_fast_bind`）が**並びの番地が同じときだけ**使う。
+    /// 呼び出しを抜けると (0, 0) に戻る。
+    pub(crate) pending_disjoint: (usize, u32),
     /// クラスの番号ごとの、パーサが合成した `__init__` を呼ばずに格納する計画（native_object_access_plan.md 10-3・D-11）。
     /// 初めて生成するときに作る（`None` = 直接格納しない）。`classes/instantiate.rs` の `auto_init_plan`。
-    pub(self) auto_inits: HashMap<u32, Option<Rc<[crate::interpreter::classes::AutoInitSlot]>>>,
+    pub(self) auto_inits: ClassIdMap<Option<Rc<[crate::interpreter::classes::AutoInitSlot]>>>,
     /// デバッガの状態 2 本（#67 で `debugger::DebugState` へ束ねた）。
     pub(self) dbg: debugger::DebugState,
     /// イベントループの状態 4 本（#67 で `event_loop::EventState` へ束ねた）。
@@ -727,6 +748,7 @@ impl Interpreter {
             source_map: HashMap::new(),
             call_stack: Vec::new(),
             call_name_pool: Vec::new(),
+            evaled_pool: Vec::new(),
             current_exception: None,
             live_generators: Vec::new(),
             module_cache: HashMap::new(),
@@ -760,8 +782,10 @@ impl Interpreter {
             meta_decls: std::collections::HashMap::new(),
             meta_prefix: Rc::new(RefCell::new(Vec::new())),
             native_libs: HashMap::new(),
-            native_classes: HashMap::new(),
-            auto_inits: HashMap::new(),
+            native_classes: ClassIdMap::default(),
+            readonly_fns: Rc::new(crate::readonly_fns::ReadonlyFns::default()),
+            pending_disjoint: (0, 0),
+            auto_inits: ClassIdMap::default(),
             dbg: debugger::DebugState::default(),
             events: event_loop::EventState::new(el_data),
         }

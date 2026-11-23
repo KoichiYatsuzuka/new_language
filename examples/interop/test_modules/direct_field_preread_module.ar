@@ -1,0 +1,94 @@
+# direct_field_preread_module.ar — direct_field_preread.ar のコンパイル済みの側（copy_alloc_speed_plan.md 8-9）
+#
+# `let self` / `let` 仮引数で、本体が書き換えない受け手は、関数の入口でフィールドをまとめて読む（先読み）。
+# 受け手が全フィールド数値のクラスなら、番地を 1 回だけ取って生成コードが読む。
+
+class V:
+    mut x: float
+    mut y: float
+    mut k: int
+
+    fn dot(let self, let o: V) -> float:
+        return self.x * o.x + self.y * o.y + float(self.k * o.k)
+
+    fn norm1(let self) -> float:
+        return self.x + self.y + float(self.k)
+
+    # 使うフィールドが 1 つだけ（読むのはその 1 つ）
+    fn only_y(let self) -> float:
+        return self.y * 2.0
+
+class Widths:
+    mut a: int8
+    mut b: uint8
+    mut c: int32
+    mut d: uint32
+    mut e: float32
+    mut f: float
+
+    fn total(let self) -> float:
+        return float(self.a + self.b + self.c + self.d) + self.e + self.f
+
+# private のフィールドを持つクラス（直接の道に入らない・今までのコールバックで読む）
+class Secret:
+    mut shown: int
+    private:
+    mut hidden: int
+    public:
+    fn peek(let self) -> int:
+        return self.shown + self.hidden
+
+# 数値でないフィールドも持つクラス（raw レイアウトでない・今までのコールバック）
+class Mixed:
+    mut name: str
+    mut w: float
+
+    fn weight(let self) -> float:
+        return self.w * 3.0
+
+# まだ書いていないフィールドを持つ値を、先読みする関数へ渡す
+class Late:
+    mut x: float
+    mut y: float
+
+    fn __init__(mut self, let v: float) -> None:
+        self.y = v
+        self.x = sum_xy(self) + v
+
+fn sum_xy(let l: Late) -> float:
+    return l.x + l.y
+
+fn late_text(let v: float) -> str:
+    try:
+        mut l = Late(v)
+        return "no error: " + str(l.x)
+    except Exception as e:
+        return str(e)
+
+fn free_dot(let a: V, let b: V) -> float:
+    return a.x * b.x + a.y * b.y
+
+fn same_twice(mut v: V) -> float:
+    return v.dot(v) + free_dot(v, v)
+
+fn loop_dot(mut vs: list[V], let w: V) -> float:
+    mut s = 0.0
+    for v in vs:
+        s += v.dot(w) + v.norm1() + v.only_y()
+    return s
+
+# 受け手を書き換えた後で呼ぶと、入口で読み直した値になる
+fn after_write(mut v: V) -> float:
+    let before = v.norm1()
+    v.x = v.x + 10.0
+    v.k = v.k + 1
+    return before * 1000.0 + v.norm1()
+
+fn widths_total(mut w: Widths) -> float:
+    return w.total()
+
+fn secret_peek(mut s: Secret) -> int:
+    return s.peek()
+
+fn mixed_weight(mut m: Mixed) -> float:
+    return m.weight()

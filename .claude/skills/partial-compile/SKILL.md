@@ -38,6 +38,9 @@ cargo run --release -- examples/interop/importation.ar
 
 When a `.ar` file imports a module, the parser prefers `.arc` over `.ar`.
 If the `.arc` is v1, the embedded DLL is extracted to a temp file at runtime and loaded via `libloading`.
+The file is `%TEMP%\{stem}_tl_{content hash}.dll` and is **not rewritten when an identical one exists**
+(`materialize_native_lib`, copy_alloc_speed_plan.md 7-8): loading a freshly written DLL costs 0.6–0.8 s (antivirus scan).
+One process never gets the same path twice (a second identical module gets its own copy, so DLL globals are not shared).
 Eligible functions are dispatched natively; all other functions tree-walk as usual.
 
 ```
@@ -183,6 +186,7 @@ The eligibility check recurses into nested `if`, `while`, `for`, `match`, and `b
 | `async` assignment (`target <- async->T: body`) | Thread-spawning semantics require the interpreter |
 | Tuple-unpacking `let` / `mut` (`let x, y = expr`) | Not implemented in codegen |
 | Multi-target `for` (`for x, y in iter`) | Only single-target `for` is lowered; `targets.len() > 1` fails the check |
+| `x = ..` / `x += ..` whose target is not a local (a module global) | The codegen only writes locals (`GenCtx::locals`). The check walks the body in order and allows a target only if it is a parameter or was declared earlier (`let` / `mut` / `const` / `for` target) — `EligScope` (known_bugs.md #23: the global write used to be silently dropped, and `+=` made clang fail for the whole module) |
 
 ### Ineligible expressions — any occurrence in the body skips the whole function
 
@@ -309,7 +313,9 @@ Each field is a function pointer; the index is used in `getelementptr` instructi
 
 ### Generated Function Variants
 
-For each eligible function `f`, the codegen emits up to four LLVM functions:
+For each eligible function `f`, the codegen emits up to six LLVM functions (`@f_pre` — the body of a `mut self`
+method that receives remembered nested-receiver blocks, with `@f_impl` as its null-passing wrapper — is described
+under "Remembered Block Addresses", copy_alloc_speed_plan.md 7-19):
 
 #### `@f_impl` (internal)
 
@@ -346,6 +352,23 @@ Receives class instance fields as raw scalars instead of arena handles. This eli
 A `_fast` variant is only emitted if:
 - At least one parameter is a class instance with typed (`int`/`float`) fields
 - That parameter is never written in the function body (purity analysis via `body_writes_param`)
+
+#### `@f_blk` (internal — block-pointer variant of a raw-layout class's method, copy_alloc_speed_plan.md 7-14)
+
+`mut self` arrives as the instance's block address (`ptr %_bp_self`) and its fields are read/written with plain
+`load` / `store` (no init/immutable checks); `let self` and `let` class params of raw-layout classes arrive flattened
+like `_fast` (a snapshot at the call); `let int/float` params raw. Candidates: `blk_sig_of` (methods of this module's
+raw-layout, all-public classes; no defaults; ret `None`/`int`/`float`). The variant is dropped (and the symbol evicted
+from `blk_ok`, which `generate_llvm_module` re-generates around) if the body needs any callback (`blk_failed` via
+`call_cb`), calls anything but `@llvm.*` (`calls_only_intrinsics`), or uses `self` / a flattened param as a value.
+
+Call sites (`emit_blk_method_call`): receiver and class args must be locals or `local.attr`; numeric args must be
+`numeric_leaf`. The code fetches each block (remembered `%_ip_x` / `%_apN`), then checks: non-null; all init bits set;
+for `mut self` the IMMUTABLE bit clear; for a guarded receiver the head's `class_id` equals the guard cell (the desc
+match alone cannot tell the main program's `V` from a module's `V` with the same fields); if a flattened non-receiver
+arg is a `mut` value, no `__copy__` class exists (`CB_COPY_HOOKS`). Pass → `call @X_blk`; fail → the normal path
+(`gen_method_call_expr`), which first fills the IC cells of null nested blocks and the empty guard cell so later
+calls pass. `scripts/native_ir_abi_check.py` checks `_blk` calls too.
 
 #### `@f_typed` (public — 統一 typed ABI、zero-TLS)
 
@@ -479,7 +502,106 @@ When one eligible function calls another eligible function in the same module, t
 
 For `let` (immutable) parameters, the codegen emits a `CB_DEEP_COPY` before the call, matching the interpreter's immutable-argument semantics.
 
-For method calls, the codegen additionally wraps the call with `CB_ARENA_SAVE` / `CB_ARENA_COMPACT` to safely reclaim temporaries created inside the callee.
+Direct calls (functions and methods, every return type) are wrapped with `CB_ARENA_SAVE` / `CB_ARENA_COMPACT`
+to reclaim temporaries created inside the callee **only when the callee can push** (`pushing_fns`, a fixpoint
+over the module — native_object_access_plan.md 9-2, copy_alloc_speed_plan.md 7-12) or an operand was copied for
+a `let` parameter. A callee that pushes nothing (pure-numeric `int` functions, methods that only write numeric
+fields and return `None`, functions returning an argument) gets a bare `call`; a returned handle is then a
+pre-existing slot. When the callee pushes nothing but an operand *may* be copied, the save point is taken lazily
+inside the copying slow path (`CallSave::Lazy`) and the rewind after the call runs only if it was taken — the
+read-only fast path (7-7) pays nothing. A nested native call (compiled code → callback → user code → compiled
+function) cuts the arena back to its own entry when it returns (`leave_native_call`, known_bugs.md #25), so
+callbacks not counted as pushes cannot leak through a skipped rewind.
+
+**Fallback regions (copy_alloc_speed_plan.md 7-17).** A slow path whose pushes are temporaries rewinds them itself
+and does not count as a push site, so a function that pushes only on slow paths stays out of `pushing_fns`
+(`begin_fallback_region` / `end_fallback_region`: `CB_ARENA_SAVE` at the start, `CB_ARENA_COMPACT(0, save)` at the
+end, `push_sites` restored). Used for: the miss of a nested receiver's direct read/write (`BlockSrc::Field`), the miss
+of a `_blk` call whose result is a raw `int`/`float` or unused, the by-name branch of a guarded call when the result
+is a raw number (`emit_guarded_method_call_typed`) or unused (a statement expression — `discarded_func` marks the
+outermost call's `func` node), and the miss of a checked nested assignment (below). A region that stored a handle
+into a local (`handle_store_log` grew) is not rewound and counts as before. A handle result that is used is never
+inside a region.
+
+**Checked nested assignment (7-17 ②).** `a.b.x = <expr>` where `a` is a local, `a.b` a raw-layout class and `<expr>`
+only literals, numeric locals and reads `L.f` / `L.c.f` of raw-layout numeric fields combined with `+ - *`
+(`checked_num_ty`): the target's and every read receiver's block is fetched first (`CB_ATTR_BLOCK` /
+`CB_INST_BLOCK`, remembered addresses reused), then one check per block — non-null and `(head & mask) == init bits`
+with the read fields' init bits plus `IMMUTABLE` for the target — then the fast path reads, computes and writes with
+no call (setting the target's init bit). Miss → fill the empty nested IC cells, then the old path (`a.b` pushed →
+value → `emit_field_assign`) inside a fallback region. The fetch callbacks run no user code, so fetching before the
+value is not observable. (`emit_nested_field_assign`, 8-7, still covers values that read no field.)
+
+### Loop Rewinds (native_object_access_plan.md 9-1 / copy_alloc_speed_plan.md 7-15)
+
+A loop whose body can push to the arena (`push_sites` grew) takes a save point just before the loop (inserted at
+`loop_pre_pos`) and rewinds to it every round (`gen_loop_body`). Locals that the body stored handles into
+(`handle_store_log`) are kept: the latch calls `CB_COMPACT_MANY`, which re-pushes them and writes the new handles back.
+When nothing is kept, a `for` over an iterator merges the rewind into the next round's fetch: the header calls
+`CB_ITER_NEXT_AT` (field 84) with a per-loop slot that is reset to -1 on entry and set to the save point only when the
+loop rewinds (`new_loop_fuse_slot` / `loop_fuse_slot`), so one callback per round instead of two. `break` skips the
+header, so the last round's values stay until the enclosing rewind (as before). The fetch moves the element out of the
+iterator's snapshot (`NativeIter::Items`) instead of cloning it.
+
+**Handle runs (copy_alloc_speed_plan.md 7-20).** A `for` (statement or expression) starts with `CB_ITER_BEGIN`
+(field 87, `emit_for_begin`) instead of `iter_from`. For the types that are copied when the loop starts (list / tuple /
+str / dict keys / fixed_list — the VM also iterates over that copy) it pushes **every element to the arena** at once
+(`push_run`: `fixed_handle` gives `None` / bools / small ints their fixed handles, the rest are written straight into
+the arena's spare capacity — list elements by `write_clone`, which clones instances / strs / numbers in place, 7-21)
+and writes the address and count of the handle
+array (`NativeIter::Run`, alive until `iter_drop`) into a `[2 x i64]` scratch; the header (`emit_for_next`) then reads
+`run[i]` per round with no callback. Only when the slot holds a save point (body pushes, nothing kept) does the run path
+call `CB_ARENA_COMPACT(0, save)` first. Other iterables (set, generators, `__iter__`) return count -1 and keep the
+`CB_ITER_NEXT_AT` path. ⚠ The loop's save point is taken after `CB_ITER_BEGIN`, so the run's slots sit below it and
+survive every per-round rewind; they go with the enclosing rewind. ⚠ With no callback at the header, a remembered block
+of the loop variable is dropped only because the header's `store i64 %h, ptr %_al_x` matches `finish_block_cache`'s
+store pattern — keep that store in that exact form. ⚠ Like `range` loops and `while`, the run path does not look at a
+pending error per round: after an error the remaining rounds run, but every callback is a no-op and block fetches
+return null, so nothing is written.
+
+### Compound Assignment of Numeric Fields (copy_alloc_speed_plan.md 7-16)
+
+`x.f op= v` on a numeric field of a class *without* raw layout (raw layouts read/write the block directly, 8-3/8-4)
+uses `CB_NUM_FIELD_PTR` (field 85): after the right-hand side is evaluated, one callback returns the address of the
+`i64` / `f64` inside the slot's `Value::Int` / `Value::Float` — only on an IC hit (public field), for an initialized
+slot whose mutable flag is set (a `let` field or a frozen instance has it cleared) and whose value matches the field
+kind. The generated code loads, applies the op and stores with no call in between. Null → the old path (typed read
+with the *same* IC cell, so a miss fills it, then `emit_field_assign`). Only when the receiver is a name (the VM
+evaluates a non-name receiver twice) and the op keeps the field's type (`int`: `+ - *` with an `int` rhs; `float`:
+`+ - * /`) — `fused_compound_ok` / `emit_fused_num_compound`.
+
+### Remembered Block Addresses (copy_alloc_speed_plan.md 8-5 / 7-13)
+
+Numeric fields of this module's raw-layout classes are read and written at the instance's block address
+(`CB_INST_BLOCK` field 78 for a handle, `CB_ATTR_BLOCK` field 79 for a nested receiver `a.b` without pushing `a.b`).
+The address is remembered per function in an alloca and fetched only when the alloca is null:
+`%_ip_x` per local variable (8-5) and `%_apN` per (parent variable, attribute) for nested receivers (7-13,
+`cacheable_field`). Only a value freshly loaded from the variable's alloca is remembered (`fresh_var_of`).
+Sites that need several nested receivers of the same parent variable at once — a `_blk` call's receiver and
+arguments (`self.pos.add_scaled(self.vel, dt)`) and a checked nested assignment's target and reads — go through
+`emit_block_srcs` (7-18): when any of the group's slots is null, one `CB_ATTR_BLOCKS` call (field 86,
+`void(i64 parent, i32 n, ptr reqs, ptr out)`) walks the parent once and fills every slot; `reqs` is a DLL constant
+`@_abN = [n x { ptr name, i64 len, ptr ic_cell, ptr desc, ptr class_cell }]`, and each entry's result equals
+`CB_ATTR_BLOCK` with the same arguments (a miss stays null, so the next site fetches it alone). The same attribute
+twice, different parents, or a slot remembered under another class are fetched one by one.
+`finish_block_cache` scans the finished body and inserts `store ptr null` after (1) every store to the variable
+and (2) **every `call` except `CB_INST_BLOCK` / `CB_ATTR_BLOCK` / `CB_ATTR_BLOCKS` / `CB_ARENA_SAVE` / `@X_blk` /
+`@llvm.*`** (`cb_field_of_call`, which reads the callback index from the `getelementptr inbounds %ArCallbacks` line;
+unknown callees count as "other"). (2) keeps the nested child alive and current (only calls can replace a parent's
+field) and keeps the error guard: the fetch callbacks return null when an error is pending, which sends the code to
+the slow path that does nothing — a remembered address used after another call would skip that guard (known_bugs.md
+#26). `CB_ARENA_SAVE` only reads the arena length, and a `_blk` body calls nothing and writes only numeric fields of
+the blocks it was given (7-19).
+
+**Handing blocks to a callee (7-19).** A `mut self` method whose body remembers `self.<attr>` blocks is emitted as
+`@X_pre(<params>, ptr %_pb0, ..)`: the slots for those `(attr, class)` pairs start from the parameters instead of
+null (a `; @pre-blocks` marker after the parameter stores is replaced once the slots are known), and `@X_impl`
+becomes a one-line wrapper that calls `@X_pre` with null pointers (so `_tl` and every other caller are unchanged).
+The list per method (`pre_lists`) is what the previous round of the `generate_llvm_module` fixpoint found
+(`pre_found` — it depends only on the callee's own body, so it settles one round later). A direct call `self.m(..)`
+— the receiver is the fresh value of `%_al_self` and `m` takes `mut self` (no copy) — loads the caller's slots for
+the same pairs right before the call (`call_impl`; an intervening call has already nulled them) and calls `@m_pre`.
+Other receivers use `@m_impl`. `native_ir_abi_check.py` checks `_pre` calls too.
 
 ### Short-circuit Operators
 

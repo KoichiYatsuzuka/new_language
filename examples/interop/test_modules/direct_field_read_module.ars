@@ -1,0 +1,95 @@
+class P:
+    mut x: float
+    mut n: int
+    fn total(mut self) -> float:
+        ...
+    fn __init__(mut self, x: float, n: int) -> None:
+        ...
+
+
+class Holder:
+    mut p: P
+    mut tag: str
+    fn __init__(mut self, p: P, tag: str) -> None:
+        ...
+
+
+class Widths:
+    mut a: int8
+    mut b: uint8
+    mut c: int16
+    mut d: uint16
+    mut e: int32
+    mut f: uint32
+    mut g: int64
+    mut h: float32
+    mut i: float
+    fn __init__(mut self, a: int8, b: uint8, c: int16, d: uint16, e: int32, f: uint32, g: int64, h: float32, i: float) -> None:
+        ...
+
+
+class Secret:
+public:
+    mut shown: int
+private:
+    mut hidden: int
+public:
+    fn reveal(mut self) -> int:
+        ...
+    fn __init__(mut self, shown: int, hidden: int) -> None:
+        ...
+
+
+class Early:
+    mut x: float
+    mut y: float
+    fn __init__(mut self, v: float) -> None:
+        ...
+    fn __init__(mut self, x: float, y: float) -> None:
+        ...
+
+
+class Broken:
+    mut x: float
+    mut y: float
+    fn __init__(mut self, v: float) -> None:
+        ...
+    fn __init__(mut self, x: float, y: float) -> None:
+        ...
+
+
+fn peek_x(mut b: Broken) -> float:
+    ...
+
+fn var_read(mut p: P) -> float:
+    ...
+
+fn nested_read(mut h: Holder) -> float:
+    ...
+
+fn loop_read(mut ps: list[P]) -> float:
+    ...
+
+fn compound(mut p: P) -> float:
+    ...
+
+fn widths_sum(mut w: Widths) -> int:
+    ...
+
+fn widths_float(mut w: Widths) -> float:
+    ...
+
+fn method_read(mut p: P) -> float:
+    ...
+
+fn secret_read(mut s: Secret) -> int:
+    ...
+
+fn early_read(v: float) -> float:
+    ...
+
+fn broken_read(v: float) -> str:
+    ...
+
+fn frozen_read(p: P) -> float:
+    ...

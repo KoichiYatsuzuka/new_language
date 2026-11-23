@@ -992,6 +992,44 @@ fn load_global_ref(
     }
 }
 
+/// 呼び出しに「重ならない引数」の印があれば（[`crate::vm::op::MASK_DISJOINT_INFO`]）、束縛が見られるように
+/// インタープリタへ置く（copy_alloc_speed_plan.md 4-6）。返すガードが落ちるとき（呼び出しの終わり・エラーでも）に消す。
+/// ⚠ 印は**この呼び出しの評価済みの引数の並び**（番地）と対で置く。束縛は並びの番地が同じときだけ使うので、
+///   途中で走るほかの呼び出し（特殊メソッド・組み込みが呼ぶ関数）には当たらない。
+/// ⚠ `exec_op` は `#[inline(always)]` なので、ここは判定 1 つだけにして本体を外に出す。
+#[inline(always)]
+fn note_disjoint_args(
+    interp: &mut Interpreter,
+    mut_mask: u32,
+    evaled: &[(Option<String>, Value, bool)],
+    node_id: u32,
+) -> Option<DisjointArgsGuard> {
+    if mut_mask & crate::vm::op::MASK_DISJOINT_INFO == 0 {
+        return None;
+    }
+    Some(note_disjoint_args_slow(interp, evaled, node_id))
+}
+
+#[inline(never)]
+fn note_disjoint_args_slow(
+    interp: &mut Interpreter,
+    evaled: &[(Option<String>, Value, bool)],
+    node_id: u32,
+) -> DisjointArgsGuard {
+    interp.pending_disjoint = (evaled.as_ptr() as usize, interp.annotations.disjoint_args(node_id));
+    DisjointArgsGuard(interp as *mut Interpreter)
+}
+
+/// [`note_disjoint_args`] が置いた印を、呼び出しを抜けるときに消す。
+struct DisjointArgsGuard(*mut Interpreter);
+
+impl Drop for DisjointArgsGuard {
+    fn drop(&mut self) {
+        // SAFETY: ガードは `exec_op` の 1 つの命令の中だけで生き、その間 `interp` は生きている
+        unsafe { (*self.0).pending_disjoint = (0, 0) };
+    }
+}
+
 #[inline(always)]
 fn exec_op(
     interp: &mut Interpreter,
@@ -1475,13 +1513,12 @@ fn exec_op(
         Op::Call(argc, mut_mask, name_idx, span_idx, node_id) => {
             let n = *argc as usize;
             let split = buf.len() - n;
-            let arg_vals = buf.split_off(split); // arg0..argN-1（順序保持）
+            // ⚠ `split_off` で一度 `Vec` に出すと、`evaled` と合わせて呼び出しのたびに 2 回確保する
+            //   （`CallMethodLocal` と同じ・copy_alloc_speed_plan.md 6-3）。引数を取り出してから呼ぶ物を取る
+            let mut evaled = interp.take_evaled_buf();
+            evaled.extend(buf.drain(split..).enumerate().map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1)));
             let callee = buf.pop().unwrap();
-            let evaled: Vec<(Option<String>, Value, bool)> = arg_vals
-                .into_iter()
-                .enumerate()
-                .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
-                .collect();
+            let _disjoint = note_disjoint_args(interp, *mut_mask, &evaled, *node_id);
             // native の `mut` ポインタ書き戻し（#48）。
             //
             // ⚠⚠ ここに置いてよいのは **discriminant 1 個の判定だけ**。`exec_op` は
@@ -1518,11 +1555,10 @@ fn exec_op(
             let n = *argc as usize;
             let split = buf.len() - n;
             // ⚠ `split_off` で一度 `Vec` に出すと、`evaled` と合わせて呼び出しのたびに 2 回確保する（pandas_import_plan.md の 4-2）
-            let evaled: Vec<(Option<String>, Value, bool)> = buf
-                .drain(split..)
-                .enumerate()
-                .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
-                .collect();
+            // 並びは置き場から取る（6-3）
+            let mut evaled = interp.take_evaled_buf();
+            evaled.extend(buf.drain(split..).enumerate().map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1)));
+            let _disjoint = note_disjoint_args(interp, *mut_mask, &evaled, *node_id);
             // レシーバは呼び先の `self` として所有権が要るので clone は避けられないが、
             // `LoadLocal` の op ディスパッチと push/pop は省ける。
             let obj = buf[base + *slot as usize].clone();
@@ -1552,11 +1588,9 @@ fn exec_op(
         Op::CallMethod(name_idx, argc, mut_mask, node_id) => {
             let n = *argc as usize;
             let split = buf.len() - n;
-            let evaled: Vec<(Option<String>, Value, bool)> = buf
-                .drain(split..)
-                .enumerate()
-                .map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1))
-                .collect();
+            let mut evaled = interp.take_evaled_buf();
+            evaled.extend(buf.drain(split..).enumerate().map(|(i, v)| (None, v, (mut_mask >> i) & 1 == 1)));
+            let _disjoint = note_disjoint_args(interp, *mut_mask, &evaled, *node_id);
             let obj = buf.pop().unwrap();
             // メソッドはツリーウォークと同じく call_span=None（degraded フレームで一致）。
             let name = &chunk.names[*name_idx as usize];

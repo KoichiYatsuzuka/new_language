@@ -23,6 +23,45 @@ pub const INST_IS_EXCEPTION: u32 = 0x20000000;
 /// `new_type` ラッパーのインスタンス（高速 new_type 判定用）。
 pub const INST_IS_NEW_TYPE: u32 = 0x10000000;
 
+// ---------------------------------------------------------------------------
+// 先頭の塊の並び（copy_alloc_speed_plan.md 8-2・D-9・D-13）
+// ---------------------------------------------------------------------------
+
+/// インスタンスの先頭の塊（[`InstanceData::raw`]）の並びの**唯一の定義**。
+///
+/// [`InstanceData`] の読み書きと、コンパイル済みコードが番地から直接読み書きする道（フェーズ 8・
+/// `partial_compiler/llvm_codegen`）の両方がこの定数を使う。⚠ 並びを変えるときはここだけを変えること
+/// （単体テスト `direct_access_matches_field_value` が、生成コードと同じ手順の読み書きと `field_value` /
+/// `store_field` の一致を見ている）。
+///
+/// ```text
+/// 語 0:  bit 0〜31 = class_id ・ bit 32〜63 = flags
+///        flags: bit 31 不変 ・ bit 30 raw レイアウト ・ bit 29 例外 ・ bit 28 new_type ・ bit 0〜23 初期化の印
+/// 語 1〜: raw レイアウトのクラスのフィールド（C の並び・宣言順）
+/// ```
+pub mod block {
+    /// 先頭の語のうち `flags` が始まる bit。
+    pub const FLAGS_SHIFT: u32 = 32;
+    /// 先頭の語のうち `class_id` の部分。
+    pub const CLASS_ID_MASK: u64 = 0xFFFF_FFFF;
+    /// フィールドの領域が始まる位置（塊の先頭からのバイト数）。
+    pub const FIELDS_OFFSET: usize = 8;
+    /// 先頭の語の「不変のインスタンス」の bit（`INST_IMMUTABLE`）。語を符号つきで読むと負になる。
+    pub const IMMUTABLE: u64 = (super::INST_IMMUTABLE as u64) << FLAGS_SHIFT;
+
+    /// 先頭の語の、フィールド `idx` の初期化の印。
+    #[inline]
+    pub const fn init_bit(idx: usize) -> u64 {
+        1u64 << (FLAGS_SHIFT as usize + idx)
+    }
+
+    /// フィールドの位置（塊の先頭からのバイト数）。`byte_offset` は [`super::RawFieldDesc::byte_offset`]。
+    #[inline]
+    pub const fn field_offset(byte_offset: usize) -> usize {
+        FIELDS_OFFSET + byte_offset
+    }
+}
+
 
 // ---------------------------------------------------------------------------
 // Raw field layout (C ABI 準拠のフラット格納 — .claude/skills/c-abi-interop/SKILL.md P1)
@@ -46,6 +85,22 @@ pub enum RawWidth {
 
 
 impl RawWidth {
+    /// 幅の番号（[`direct_field_info`] に入れる。生成コードの表と番地を返すコールバックの照合に使う・8-2）。
+    pub fn code(self) -> u64 {
+        match self {
+            RawWidth::I8 => 1,
+            RawWidth::I16 => 2,
+            RawWidth::I32 => 3,
+            RawWidth::I64 => 4,
+            RawWidth::U8 => 5,
+            RawWidth::U16 => 6,
+            RawWidth::U32 => 7,
+            RawWidth::U64 => 8,
+            RawWidth::F32 => 9,
+            RawWidth::F64 => 10,
+        }
+    }
+
     pub fn byte_width(self) -> usize {
         match self {
             RawWidth::I8 | RawWidth::U8 => 1,
@@ -115,6 +170,17 @@ impl RawLayout {
         }
         let total_bytes = offset.div_ceil(8) * 8;
         Some(RawLayout { fields: descs, total_bytes })
+    }
+
+    /// クラスの raw レイアウト（**持つかどうかの唯一の判定**・8-2）: trait を実装せず（`no_bases`）、インスタンスの
+    /// フィールドが全部このクラスのもので（`field_count` が `own_fields` の数と同じ）、全部が数値（[`RawWidth::from_ann`]）、
+    /// 24 個以下。実行時のクラスの定義（`exec/definitions.rs`）と、コンパイル済みコードの静的な並び
+    /// （[`static_class_layout`]）が同じこの関数を通る。
+    pub fn for_class(no_bases: bool, own_fields: &[(String, String)], field_count: usize) -> Option<RawLayout> {
+        if !no_bases || own_fields.len() != field_count {
+            return None;
+        }
+        RawLayout::from_fields(own_fields)
     }
 
     /// C の sizeof（最後のフィールドの終わりを、いちばん大きいフィールドの幅に切り上げたもの・4-6）。配列の要素の間隔。
@@ -207,18 +273,18 @@ impl InstanceData {
     #[inline]
     pub fn make_raw_block(class_id: u32, flags: u32, extra_bytes: usize) -> Box<[u64]> {
         let mut v = vec![0u64; 1 + extra_bytes.div_ceil(8)];
-        v[0] = (class_id as u64) | ((flags as u64) << 32);
+        v[0] = (class_id as u64) | ((flags as u64) << block::FLAGS_SHIFT);
         v.into_boxed_slice()
     }
 
     #[inline]
     pub fn flags(&self) -> u32 {
-        (self.raw[0] >> 32) as u32
+        (self.raw[0] >> block::FLAGS_SHIFT) as u32
     }
 
     #[inline]
     pub fn set_flags(&mut self, f: u32) {
-        self.raw[0] = (self.raw[0] & 0xFFFF_FFFF) | ((f as u64) << 32);
+        self.raw[0] = (self.raw[0] & block::CLASS_ID_MASK) | ((f as u64) << block::FLAGS_SHIFT);
     }
 
     #[inline]
@@ -236,20 +302,20 @@ impl InstanceData {
     #[inline]
     pub(crate) fn raw_bytes(&self) -> &[u8] {
         let ptr = self.raw.as_ptr() as *const u8;
-        unsafe { std::slice::from_raw_parts(ptr.add(8), (self.raw.len() - 1) * 8) }
+        unsafe { std::slice::from_raw_parts(ptr.add(block::FIELDS_OFFSET), (self.raw.len() - 1) * 8) }
     }
 
     #[inline]
     pub(crate) fn raw_bytes_mut(&mut self) -> &mut [u8] {
         let ptr = self.raw.as_mut_ptr() as *mut u8;
-        unsafe { std::slice::from_raw_parts_mut(ptr.add(8), (self.raw.len() - 1) * 8) }
+        unsafe { std::slice::from_raw_parts_mut(ptr.add(block::FIELDS_OFFSET), (self.raw.len() - 1) * 8) }
     }
 
     /// スロット `idx` が初期化済みかどうか（raw クラスは init ビットマップ、boxed は Some 判定）。
     #[inline]
     pub fn slot_initialized(&self, idx: usize) -> bool {
         if self.has_raw_layout() {
-            self.flags() & (1u32 << idx) != 0
+            self.raw[0] & block::init_bit(idx) != 0
         } else {
             matches!(self.boxed_fields.get(idx), Some(Some(_)))
         }
@@ -333,8 +399,8 @@ impl InstanceData {
     /// raw クラスで値の型がスロット形式に合わない場合は `false` を返す。
     pub fn store_field(&mut self, idx: usize, val: Value, mutable: bool) -> bool {
         if self.has_raw_layout() {
-            let Some(layout) = self.class.raw_layout.clone() else { return false };
-            let Some(desc) = layout.fields.get(idx).copied() else { return false };
+            // 記述子（`Copy`）だけを写す（並びの `Rc` を写さない・copy_alloc_speed_plan.md 7-10）
+            let Some(desc) = self.class.raw_layout.as_ref().and_then(|l| l.fields.get(idx).copied()) else { return false };
             let o = desc.byte_offset;
             {
                 let bytes = self.raw_bytes_mut();
@@ -365,7 +431,7 @@ impl InstanceData {
                     _ => return false,
                 }
             }
-            self.flags_or(1u32 << idx); // init ビットマップ
+            self.raw[0] |= block::init_bit(idx); // 初期化の印
             true
         } else {
             if idx >= self.boxed_fields.len() {
@@ -465,6 +531,137 @@ impl InstanceData {
     #[inline]
     pub fn field_count(&self) -> usize {
         self.class.field_count
+    }
+}
+
+
+// ---------------------------------------------------------------------------
+// コンパイル済みコードが番地から直接読み書きするクラス（copy_alloc_speed_plan.md 8-2・D-13）
+// ---------------------------------------------------------------------------
+
+/// クラスの宣言から静的に求めた raw レイアウト（コンパイル済みコードが位置と幅を決めるのに使う・D-13 ②）。
+#[derive(Debug, Clone)]
+pub struct StaticRawClass {
+    pub layout: RawLayout,
+    /// インスタンスのフィールド（宣言順 = slot 順）: (名前, `mut` か)。
+    pub fields: Vec<(String, bool)>,
+    /// インスタンスのフィールドが全部 public か。そうでないクラスは番地を返すコールバックが必ず空を返すので
+    /// （[`ClassValue::matches_direct_desc`]）、生成コードは直接の道を出さない（無駄なコールバックを呼ばない・8-7）。
+    pub all_public: bool,
+    /// `__init__` がパーサの合成したもの（[`synthesized_init_fields`]）なら、仮引数の順に格納するフィールドの slot。
+    /// 生成コードが数値の引数を番地へ直接書いて作るのに使う（copy_alloc_speed_plan.md 7-11）。⚠ ヒントであり、実行時の
+    /// 計画と同じ順かは生成のコールバック（`ar_new_instance`）が確かめる。
+    pub auto_init: Option<Vec<usize>>,
+}
+
+/// `__init__`（仮引数 `params`・本体 `body`）がパーサの合成したもの（`parser::classes::generate_auto_init_if_needed`）なら、
+/// 仮引数（`self` を除く）の順に、格納するフィールドの名前（`self.f = f` の `f`）。合成したものでなければ `None`。
+/// 実行時の直接格納の計画（`Interpreter::build_auto_init_plan`）と、コンパイル済みコードの直接の生成（copy_alloc_speed_plan.md
+/// 7-11・[`static_class_layout`]）が同じ判定を使う。
+/// ⚠ 合成したものに限る（native_object_access_plan.md U-4 案 1）: 利用者が書いた同じ形の `__init__` は今までどおり呼ぶ
+///   （トレースバック・デバッガに出る）。目印は文の位置: 合成した文はすべて `Span::unknown()`（行 0）で、パーサが読んだ文は
+///   必ず位置を持つ。トレイトのフィールドへの格納（`self::T.f = f`）を含むものは `None`。
+pub fn synthesized_init_fields<'p>(params: &'p [crate::ast::Param], body: &[crate::ast::Stmt]) -> Option<Vec<&'p str>> {
+    use crate::ast::{Expr, Stmt};
+    if !params.first().is_some_and(|p| p.name == "self") {
+        return None;
+    }
+    let params = &params[1..];
+    if params.iter().any(|p| p.variadic || p.default.is_some()) || body.len() != params.len() {
+        return None;
+    }
+    body.iter()
+        .zip(params)
+        .map(|(st, p)| {
+            let Stmt::AttrAssign { target: Expr::Attr { object, attr, .. }, value: Expr::Ident { name, .. }, span } = st else {
+                return None;
+            };
+            let self_obj = matches!(object.as_ref(), Expr::Ident { name: s, .. } if s == "self");
+            (self_obj && span.line == 0 && attr == &p.name && name == &p.name).then_some(p.name.as_str())
+        })
+        .collect()
+}
+
+/// クラスの宣言（`Stmt::ClassDef` の `bases` と `body`）から raw レイアウトを求める。持たないクラスは `None`。
+///
+/// 実行時（`exec_class_def`）と同じ規則: インスタンスのフィールドは `const` / `static mut` 以外の `Stmt::Field` で、
+/// 判定は [`RawLayout::for_class`]。⚠ 静的な答えは**ヒント**で、実行時のクラスと合っているかは番地を返すコールバックが
+/// 確かめる（[`ClassValue::matches_direct_desc`]。合わなければ直接の道を使わない）。
+pub fn static_class_layout(bases: &[String], body: &[crate::ast::Stmt]) -> Option<StaticRawClass> {
+    use crate::ast::{FieldKind, Stmt};
+    let mut own: Vec<(String, String)> = Vec::new();
+    let mut fields: Vec<(String, bool)> = Vec::new();
+    let mut all_public = true;
+    for st in body {
+        if let Stmt::Field { name, kind, type_ann, access, .. } = st {
+            if matches!(kind, FieldKind::Const | FieldKind::StaticMut) {
+                continue;
+            }
+            all_public &= *access == crate::ast::Accessibility::Public;
+            own.push((name.clone(), type_ann.clone()));
+            fields.push((name.clone(), *kind == FieldKind::Mut));
+        }
+    }
+    let layout = RawLayout::for_class(bases.is_empty(), &own, own.len())?;
+    // 合成した `__init__` の格納の順（7-11）。`__init__` が 1 つだけで、格納先がどれもインスタンスのフィールドのとき
+    // （`const` / `static mut` への格納は格納ではない・実行時の計画と同じ）
+    let mut inits = body.iter().filter_map(|st| match st {
+        Stmt::FnDef { name, params, body, .. } if name == "__init__" => Some((params, body)),
+        _ => None,
+    });
+    let auto_init = match (inits.next(), inits.next()) {
+        (Some((params, fbody)), None) => synthesized_init_fields(params, fbody).and_then(|names| {
+            names.iter().map(|n| fields.iter().position(|(f, _)| f == n)).collect::<Option<Vec<usize>>>()
+        }),
+        _ => None,
+    };
+    Some(StaticRawClass { layout, fields, all_public, auto_init })
+}
+
+/// 生成コードが DLL の中に持つ「このクラスだと思って読み書きする」表の先頭（8-2・D-13 ②）。
+/// 直後に `n_fields` 個の [`DirectFieldDesc`] が続く（生成コードは 1 つの定数として出す）。
+#[repr(C)]
+pub struct DirectClassDesc {
+    pub name: *const u8,
+    pub name_len: i64,
+    pub n_fields: i64,
+}
+
+/// [`DirectClassDesc`] に続くフィールド 1 つ分。
+#[repr(C)]
+pub struct DirectFieldDesc {
+    pub name: *const u8,
+    pub name_len: i64,
+    /// [`direct_field_info`] の形。
+    pub info: u64,
+}
+
+/// [`DirectFieldDesc::info`] の詰め方（**唯一の定義**）: bit 0〜15 = 塊の先頭からの位置・bit 16〜19 = 幅の番号
+/// （[`RawWidth::code`]）・bit 20 = `mut` のフィールド。
+pub fn direct_field_info(desc: RawFieldDesc, mutable: bool) -> u64 {
+    block::field_offset(desc.byte_offset) as u64 | (desc.width.code() << 16) | (u64::from(mutable) << 20)
+}
+
+impl ClassValue {
+    /// このクラスが、生成コードの表（`name` と `fields` = (名前, [`direct_field_info`])）のとおりか（8-2・D-13 ②）。
+    ///
+    /// 番地を返すコールバックが、箇所ごとのセルに覚える前に 1 回だけ確かめる。確かめること: クラスの名前・raw レイアウトを
+    /// 持つこと・フィールドの数・フィールドごとの名前と slot・位置・幅・`mut` か・public であること。1 つでも違えば `false`
+    /// （生成コードは今までのコールバックの道を使う）。
+    /// ⚠ 名前だけで照合しない: 別のモジュールの同じ名前のクラスが来ても、並びが 1 つでも違えば直接の道には入らない。
+    pub fn matches_direct_desc(&self, name: &str, fields: &[(&str, u64)]) -> bool {
+        let Some(layout) = self.raw_layout.as_ref() else { return false };
+        if self.name.as_str() != name || layout.fields.len() != fields.len() || self.field_count != fields.len() {
+            return false;
+        }
+        fields.iter().enumerate().all(|(idx, (fname, info))| {
+            self.field_index.get(*fname) == Some(&idx)
+                && !self.field_access.contains_key(*fname)
+                && self
+                    .field_mutability_vec
+                    .get(idx)
+                    .is_some_and(|m| direct_field_info(layout.fields[idx], *m) == *info)
+        })
     }
 }
 
@@ -579,5 +776,147 @@ mod c_size_tests {
         assert_eq!((rgba.c_size(), rgba.total_bytes), (4, 8));
         let pair = RawLayout::from_fields(&[("x".into(), "int32".into()), ("y".into(), "float64".into())]).unwrap();
         assert_eq!(pair.c_size(), 16);
+    }
+}
+
+
+#[cfg(test)]
+mod direct_access_tests {
+    use super::*;
+
+    /// 生成コードが出すのと同じ手順の読み出し（8-3 の IR はこの順）: 先頭の語の初期化の印を見て、立っていれば
+    /// 塊の先頭から `info` の位置を幅どおりに読む。立っていなければ `None`（生成コードは今までのコールバックへ回す）。
+    fn direct_read(blk: *const u64, idx: usize, info: u64) -> Option<Value> {
+        let head = unsafe { *blk };
+        if head & block::init_bit(idx) == 0 {
+            return None;
+        }
+        let at = unsafe { (blk as *const u8).add((info & 0xFFFF) as usize) };
+        macro_rules! rd {
+            ($t:ty) => {
+                unsafe { at.cast::<$t>().read_unaligned() }
+            };
+        }
+        Some(match (info >> 16) & 0xF {
+            1 => Value::Int(rd!(i8) as i64),
+            2 => Value::Int(rd!(i16) as i64),
+            3 => Value::Int(rd!(i32) as i64),
+            4 => Value::Int(rd!(i64)),
+            5 => Value::Int(rd!(u8) as i64),
+            6 => Value::Int(rd!(u16) as i64),
+            7 => Value::Int(rd!(u32) as i64),
+            8 => Value::Int(rd!(u64) as i64),
+            9 => Value::Float(rd!(f32) as f64),
+            10 => Value::Float(rd!(f64)),
+            other => panic!("unknown width code {other}"),
+        })
+    }
+
+    /// 同じく書き込み: 不変の印が立っているか `mut` のフィールドでなければ書かない（`false`・今までのコールバックへ）。
+    /// 書いたら初期化の印を立てる。`int` の値を `float` のフィールドへ書くときは変換する。
+    fn direct_write(blk: *mut u64, idx: usize, info: u64, val: &Value) -> bool {
+        let head = unsafe { *blk };
+        if head & block::IMMUTABLE != 0 || info & (1 << 20) == 0 {
+            return false;
+        }
+        let at = unsafe { (blk as *mut u8).add((info & 0xFFFF) as usize) };
+        macro_rules! wr {
+            ($t:ty, $v:expr) => {
+                unsafe { at.cast::<$t>().write_unaligned($v) }
+            };
+        }
+        match ((info >> 16) & 0xF, val) {
+            (1 | 5, Value::Int(n)) => wr!(u8, *n as u8),
+            (2 | 6, Value::Int(n)) => wr!(u16, *n as u16),
+            (3 | 7, Value::Int(n)) => wr!(u32, *n as u32),
+            (4 | 8, Value::Int(n)) => wr!(i64, *n),
+            (9, Value::Float(f)) => wr!(f32, *f as f32),
+            (9, Value::Int(n)) => wr!(f32, *n as f32),
+            (10, Value::Float(f)) => wr!(f64, *f),
+            (10, Value::Int(n)) => wr!(f64, *n as f64),
+            _ => return false,
+        }
+        unsafe { *blk = head | block::init_bit(idx) };
+        true
+    }
+
+    fn same(a: &Option<Value>, b: &Option<Value>) -> bool {
+        match (a, b) {
+            (None, None) => true,
+            (Some(Value::Int(x)), Some(Value::Int(y))) => x == y,
+            (Some(Value::Float(x)), Some(Value::Float(y))) => x.to_bits() == y.to_bits(),
+            _ => false,
+        }
+    }
+
+    const ANNS: [&str; 12] = [
+        "int8", "uint8", "int16", "uint16", "int32", "uint32", "int64", "uint64", "float32", "float64", "int", "float",
+    ];
+
+    fn all_widths_class() -> Rc<ClassValue> {
+        let own: Vec<(String, String)> = ANNS.iter().enumerate().map(|(i, a)| (format!("f{i}"), a.to_string())).collect();
+        Rc::new(ClassValue {
+            field_index: own.iter().enumerate().map(|(i, (n, _))| (n.clone(), i)).collect(),
+            field_count: own.len(),
+            field_mutability_vec: vec![true; own.len()],
+            raw_layout: RawLayout::for_class(true, &own, own.len()).map(Rc::new),
+            ..ClassValue::synthetic("AllWidths", alloc_class_id())
+        })
+    }
+
+    /// 生成コードと同じ手順（塊の番地・`block` の定数・`direct_field_info`）の読み書きが、`field_value` / `store_field` と
+    /// 同じ値になる（8-2）: 幅ごと・未初期化・不変のインスタンス。⚠ 塊の並びか詰め方を変えるとここが落ちる。
+    #[test]
+    fn direct_access_matches_field_value() {
+        let cls = all_widths_class();
+        let layout = cls.raw_layout.clone().expect("all fields are numeric");
+        let infos: Vec<u64> = layout.fields.iter().map(|d| direct_field_info(*d, true)).collect();
+        // 幅ごとの値（符号・切り詰め・丸めが出るもの）
+        let samples = [
+            Value::Int(-1),
+            Value::Int(0x1_23),
+            Value::Int(i64::MIN + 5),
+            Value::Int(0x7FFF_FFFF_FFFF),
+            Value::Float(-2.75),
+            Value::Float(1.0e-3),
+        ];
+
+        // 1. `store_field` で書いたものを直接読む
+        for v in &samples {
+            let mut inst = InstanceData::new_empty(cls.clone(), 0);
+            for idx in 0..ANNS.len() {
+                assert!(same(&direct_read(inst.raw.as_ptr(), idx, infos[idx]), &None), "{} starts uninitialized", ANNS[idx]);
+                if !inst.store_field(idx, v.clone(), true) {
+                    continue; // `float` の値は整数のフィールドに入らない
+                }
+                let direct = direct_read(inst.raw.as_ptr(), idx, infos[idx]);
+                assert!(same(&direct, &inst.field_value(idx)), "{} <- {v:?}: direct {direct:?}", ANNS[idx]);
+            }
+        }
+
+        // 2. 直接書いたものを `field_value` で読む（`store_field` で書いたインスタンスと同じ値・同じ可否）
+        for v in &samples {
+            let mut a = InstanceData::new_empty(cls.clone(), 0);
+            let mut b = InstanceData::new_empty(cls.clone(), 0);
+            for idx in 0..ANNS.len() {
+                let wrote = direct_write(a.raw.as_mut_ptr(), idx, infos[idx], v);
+                assert_eq!(wrote, b.store_field(idx, v.clone(), true), "{} <- {v:?}", ANNS[idx]);
+                assert!(same(&a.field_value(idx), &b.field_value(idx)), "{} <- {v:?}", ANNS[idx]);
+                assert_eq!(a.slot_initialized(idx), wrote);
+            }
+            assert_eq!(a.raw, b.raw, "the whole block agrees after writing {v:?}");
+        }
+
+        // 3. 不変のインスタンス・`let` のフィールドへは直接書かない（今までのコールバックがエラーにする）
+        let mut frozen = InstanceData::new_empty(cls.clone(), INST_IMMUTABLE);
+        assert!(!direct_write(frozen.raw.as_mut_ptr(), 0, infos[0], &Value::Int(1)));
+        assert!(!frozen.slot_initialized(0));
+        let mut inst = InstanceData::new_empty(cls.clone(), 0);
+        let let_info = direct_field_info(layout.fields[0], false);
+        assert!(!direct_write(inst.raw.as_mut_ptr(), 0, let_info, &Value::Int(1)));
+        // 不変でも読み出しは直接できる
+        assert!(inst.store_field(3, Value::Int(9), true));
+        inst.flags_or(INST_IMMUTABLE);
+        assert!(same(&direct_read(inst.raw.as_ptr(), 3, infos[3]), &Some(Value::Int(9))));
     }
 }

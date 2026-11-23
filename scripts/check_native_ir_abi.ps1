@@ -1,7 +1,7 @@
 ﻿# check_native_ir_abi.ps1 — ネイティブ codegen の内部 ABI の検査（native_object_access_plan.md 4-1）
 #
 # 例題の .arc の元（.ar）を全部いまの exe でコンパイルし直し（作業ツリーは触らない・%TEMP% の写しで行う）、
-# 生成 LLVM IR の**直接呼び出し（@X_impl / @X_fast）が定義と一致するか**（戻り値の型・引数の型）を見る。
+# 生成 LLVM IR の**直接呼び出し（@X_impl / @X_fast / @X_blk〔番地で呼ぶ変種・copy_alloc_speed_plan.md 7-14〕）が定義と一致するか**（戻り値の型・引数の型）を見る。
 #
 # ⚠⚠ なぜ要るのか: LLVM は opaque pointer 越しの型の違う直接呼び出しを通すので、codegen が `call i64` で
 #   `double` を返す関数を呼んでも clang は落ちず、**実行時にごみを読む**（3-2 で `float * None` になった）。

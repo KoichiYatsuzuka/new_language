@@ -1,0 +1,83 @@
+# blk_method_call.ar — コンパイル済みコードが raw レイアウトのクラスのメソッドを番地で呼ぶ（copy_alloc_speed_plan.md 7-14）
+#
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/blk_method_call_module.ar
+#   2. cargo run --release -- examples/interop/blk_method_call.ar
+#
+# 受け手（`h.v` など）と `let` のクラスの引数を番地から取り、コールバックを持たない変種（`@X_blk`）で呼ぶ。呼ぶ前に
+# 生成コードが確かめること（外れたら今までの呼び出し）:
+#   - 受け手のクラス: 本体の同じ名前・同じ並びのクラス（`V`）が入っていたら、本体のメソッドが走る
+#   - 全フィールドの初期化: 未初期化のフィールドを読むメソッドは、今までどおりのエラーになる
+#   - `__copy__` を持つクラスが無いこと: `mut` の値を `let` で受ける写しは `__copy__` を呼ぶ
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.blk_method_call_module as m
+
+# 本体の `V`: モジュールの `V` と名前もフィールドの並びも同じで、メソッドの中身だけ違う
+class V:
+    mut x: float
+    mut y: float
+
+    fn tag(let self) -> float:
+        return self.x + 2000.0
+
+    fn bump(mut self, let k: float) -> None:
+        self.x = self.x + k * 10.0
+
+fn check(let label: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError(label + ": expected " + str(want) + ", got " + str(got))
+    print(label + " OK")
+
+fn fresh() -> m.H:
+    return m.H(m.V(1.0, 2.0), m.V(0.5, 0.25), m.N(3), m.P(4.0), m.C(1.0), "h")
+
+# 3 周する（関数の中のループと合わせて、2 周目からは IC とガードのセルが埋まっている）
+for r in range(3):
+    print("round " + str(r))
+    mut h = fresh()
+    check("tags", m.tags(h, 4), 4004.0)
+    h = fresh()
+    check("bumps", m.bumps(h, 4), 7.0)
+    check("bumps leaves the field", h.v.x, 7.0)
+    h = fresh()
+    check("adds", m.adds(h, 4), 3003.0)
+    check("adds leaves the argument", h.w.x * 1000.0 + h.w.y, 500.25)
+    h = fresh()
+    check("self_adds (the argument is a copy taken at the call)", m.self_adds(h, 3), 8016.0)
+    h = fresh()
+    check("dots", m.dots(h, 4), 4.0)
+    h = fresh()
+    check("twices", float(m.twices(h, 4)), 44.0)
+    check("twices leaves the field", float(h.n.n), 7.0)
+    h = fresh()
+    check("shouts (not compiled to the block variant)", m.shouts(h, 2), 2.0)
+    check("locals", m.locals(3), 5506.1875)
+
+    # 未初期化のフィールドを読むメソッド: 今までどおりのエラー
+    h = fresh()
+    mut msg = ""
+    try:
+        let t = m.totals(h, 4)
+    except AttributeError as e:
+        msg = str(e)
+    if msg != "'P' object has no attribute 'y'":
+        raise ValueError("totals: expected the uninitialized-field error, got '" + msg + "'")
+    print("totals raised: " + msg)
+
+    # `__copy__` を持つクラス: 格納の写しで 101、`let` で受ける写しでもう 1 回呼ぶ
+    h = fresh()
+    check("copy_gets", m.copy_gets(h, 4), 804.0)
+
+    # 本体の `V` を入れる: 受け手のクラスがモジュールの `V` でないので、本体のメソッドが走る
+    h = fresh()
+    mut put_ok = True
+    try:
+        m.put(h, V(5.0, 6.0))
+    except TypeError as e:
+        # `mustbe` がモジュールの型を区別するようになったら、この形は作れない（ガードの照合はほかで確かめる）
+        put_ok = False
+        print("put refused: " + str(e))
+    if put_ok:
+        check("tags of the main program's V", m.tags(h, 4), 8020.0)
+        check("bumps of the main program's V", m.bumps(h, 4), 65.0)

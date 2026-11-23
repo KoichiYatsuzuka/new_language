@@ -1,0 +1,157 @@
+# direct_field_preread.ar — 関数の入口の先読みを番地から読む（copy_alloc_speed_plan.md 8-9）
+#
+# `let self` / `let` 仮引数で、本体が書き換えない受け手のフィールドは、関数の入口でまとめて読む。受け手が全フィールド数値の
+# クラスなら、コンパイル済みコードは番地を 1 回だけ取って読む（以前はフィールド 1 つにつきコールバック 1 回）。
+# 次の場合も今までと同じ値・同じエラーになること:
+#   - 幅の違う整数・float32・使うフィールドが一部だけ・受け手と引数が同じ値
+#   - 受け手を書き換えた後でもう一度呼ぶ（入口で読み直す）
+#   - まだ書いていないフィールドを持つ値を渡す・private のフィールドを持つクラス・数値でないフィールドも持つクラス
+# 同じ定義を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/direct_field_preread_module.ar
+#   2. cargo run --release -- examples/interop/direct_field_preread.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.direct_field_preread_module as m
+
+class V:
+    mut x: float
+    mut y: float
+    mut k: int
+
+    fn dot(let self, let o: V) -> float:
+        return self.x * o.x + self.y * o.y + float(self.k * o.k)
+
+    fn norm1(let self) -> float:
+        return self.x + self.y + float(self.k)
+
+    # 使うフィールドが 1 つだけ（読むのはその 1 つ）
+    fn only_y(let self) -> float:
+        return self.y * 2.0
+
+class Widths:
+    mut a: int8
+    mut b: uint8
+    mut c: int32
+    mut d: uint32
+    mut e: float32
+    mut f: float
+
+    fn total(let self) -> float:
+        return float(self.a + self.b + self.c + self.d) + self.e + self.f
+
+# private のフィールドを持つクラス（直接の道に入らない・今までのコールバックで読む）
+class Secret:
+    mut shown: int
+    private:
+    mut hidden: int
+    public:
+    fn peek(let self) -> int:
+        return self.shown + self.hidden
+
+# 数値でないフィールドも持つクラス（raw レイアウトでない・今までのコールバック）
+class Mixed:
+    mut name: str
+    mut w: float
+
+    fn weight(let self) -> float:
+        return self.w * 3.0
+
+# まだ書いていないフィールドを持つ値を、先読みする関数へ渡す
+class Late:
+    mut x: float
+    mut y: float
+
+    fn __init__(mut self, let v: float) -> None:
+        self.y = v
+        self.x = sum_xy(self) + v
+
+fn sum_xy(let l: Late) -> float:
+    return l.x + l.y
+
+fn late_text(let v: float) -> str:
+    try:
+        mut l = Late(v)
+        return "no error: " + str(l.x)
+    except Exception as e:
+        return str(e)
+
+fn free_dot(let a: V, let b: V) -> float:
+    return a.x * b.x + a.y * b.y
+
+fn same_twice(mut v: V) -> float:
+    return v.dot(v) + free_dot(v, v)
+
+fn loop_dot(mut vs: list[V], let w: V) -> float:
+    mut s = 0.0
+    for v in vs:
+        s += v.dot(w) + v.norm1() + v.only_y()
+    return s
+
+# 受け手を書き換えた後で呼ぶと、入口で読み直した値になる
+fn after_write(mut v: V) -> float:
+    let before = v.norm1()
+    v.x = v.x + 10.0
+    v.k = v.k + 1
+    return before * 1000.0 + v.norm1()
+
+fn widths_total(mut w: Widths) -> float:
+    return w.total()
+
+fn secret_peek(mut s: Secret) -> int:
+    return s.peek()
+
+fn mixed_weight(mut m: Mixed) -> float:
+    return m.weight()
+
+fn expect_f(let name: str, let got: float, let want: float) -> None:
+    if got != want:
+        raise ValueError("direct_field_preread: " + name + " = " + str(got) + ", expected " + str(want))
+
+fn expect_s(let name: str, let got: str, let want: str) -> None:
+    if got != want:
+        raise ValueError("direct_field_preread: " + name + " = " + got + ", expected " + want)
+
+# ── VM（この本体の定義） ──────────────────────────────────────────────────────
+mut v = V(1.5, 2.0, 3)
+expect_f("vm same twice", same_twice(v), 2.25 + 4.0 + 9.0 + 2.25 + 4.0)
+mut vs: list[V] = [V(1.0, 0.0, 1), V(0.0, 2.0, 2)]
+let w = V(2.0, 3.0, 4)
+expect_f("vm loop", loop_dot(vs, w), (2.0 + 4.0 + 2.0 + 0.0) + (6.0 + 8.0 + 4.0 + 4.0))
+expect_f("vm after write", after_write(v), 6500.0 + 17.5)
+mut wd = Widths(-3, 250, -70000, 4000000000, 0.5, 0.25)
+let v_widths = widths_total(wd)
+expect_f("vm widths", v_widths, float(-3 + 250 - 70000 + 4000000000) + 0.75)
+mut sc = Secret(4, 5)
+if secret_peek(sc) != 9:
+    raise ValueError("direct_field_preread: vm private")
+mut mx = Mixed("m", 1.5)
+expect_f("vm mixed", mixed_weight(mx), 4.5)
+let v_late = late_text(1.0)
+
+# ── コンパイル済み（モジュール） ──────────────────────────────────────────────
+mut mv = m.V(1.5, 2.0, 3)
+expect_f("compiled same twice", m.same_twice(mv), 21.5)
+expect_f("compiled same twice again", m.same_twice(mv), 21.5)
+mut mvs: list[m.V] = [m.V(1.0, 0.0, 1), m.V(0.0, 2.0, 2)]
+let mw = m.V(2.0, 3.0, 4)
+expect_f("compiled loop", m.loop_dot(mvs, mw), 30.0)
+expect_f("compiled after write", m.after_write(mv), 6517.5)
+# 境界（VM からコンパイル済みのメソッドを直接呼ぶ）
+expect_f("boundary dot", mv.dot(mw), 23.0 + 6.0 + 16.0)
+expect_f("boundary norm1", mv.norm1(), 17.5)
+mut mwd = m.Widths(-3, 250, -70000, 4000000000, 0.5, 0.25)
+expect_f("compiled widths", m.widths_total(mwd), v_widths)
+mut msc = m.Secret(4, 5)
+if m.secret_peek(msc) != 9:
+    raise ValueError("direct_field_preread: compiled private")
+mut mmx = m.Mixed("m", 1.5)
+expect_f("compiled mixed", m.mixed_weight(mmx), 4.5)
+# まだ書いていないフィールドを持つ値: 両方とも同じエラー
+expect_s("unset field error", m.late_text(1.0), v_late)
+if v_late.startswith("no error"):
+    raise ValueError("direct_field_preread: reading an unset field did not fail: " + v_late)
+# 不変の値を渡す
+let fv = m.V(1.0, 1.0, 1)
+expect_f("compiled frozen", fv.dot(fv) + m.free_dot(fv, fv), 5.0)
+print("direct_field_preread: ok")

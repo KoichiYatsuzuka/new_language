@@ -1,0 +1,45 @@
+# direct_field_after_error_module.ar — examples/interop/direct_field_after_error.ar が読むモジュール（known_bugs.md #26）
+#
+# どの関数も、受け手の番地を覚えてから（最初の書き込み）、誤りになる読み出しをして、同じ受け手へもう一度書く。
+# 誤りの後の書き込みは走らないこと（VM は誤りで例外を投げ、その後の文を実行しない）。
+
+class P:
+    mut x: float
+    mut y: float
+
+    fn __init__(mut self, let y: float) -> None:
+        self.y = y
+
+    # `self.x` はまだ書かれていない: 2 つ目の文の読み出しが誤りになる
+    fn bump(mut self, let s: float) -> None:
+        self.y = self.y + s
+        self.y = self.x + s
+
+# 誤りの前に覚えた番地へは、誤りの後で書かない（仮引数の受け手）
+fn after_read(mut p: P) -> None:
+    p.y = 1.0
+    let v = p.x
+    p.y = 4.0
+
+# 誤りがフィールドの読み出しでなくても同じ（添字の範囲の外）
+fn after_index(mut p: P, let xs: list[int]) -> None:
+    p.y = 1.0
+    let k = xs[5]
+    p.y = 3.0
+
+# 誤りの後に番地を取り直す読み出しを挟んでも書かない
+fn after_index_read(mut p: P, let xs: list[int]) -> float:
+    p.y = 1.0
+    let k = xs[5]
+    let w = p.y
+    p.y = 5.0
+    return w
+
+# 誤りが無ければ、覚えた番地への書き込みは今までどおり（コールバックを挟んでも）
+fn no_error(mut p: P, let xs: list[int]) -> float:
+    p.y = 1.0
+    let k = xs[1]
+    p.y = p.y + float(k)
+    p.x = 0.5
+    p.y = p.y + p.x
+    return p.y

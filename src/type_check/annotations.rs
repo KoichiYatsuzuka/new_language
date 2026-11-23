@@ -107,6 +107,17 @@ pub struct AstAnnotations {
     py_reads: HashMap<u32, TypeId>,
     /// `py_reads` の反復の側（`for x in pl` の `pl` の node → 要素の型）。
     py_iters: HashMap<u32, TypeId>,
+    /// **不変と証明できた経路**の式（呼び出しの受け手・引数・copy_alloc_speed_plan.md 3-1・D-4 / D-10）。
+    /// `let` が根の名前・属性・添字の経路で、全部の段を Arrow のクラスのフィールドか組み込みのコンテナの要素と
+    /// 解決できたもの。VM のコンパイラと生成コードは、ここに載っている式を `let self` / `let` 仮引数へ渡すとき
+    /// 複製しない（`let` の値は誰からも書き換わらないので、共有しても観測できない）。
+    /// ⚠ **載っていない式は今までどおり複製する**（合成した AST・未採番は遅いが正しい側へ倒れる）。
+    immutable_paths: std::collections::HashSet<u32>,
+    /// 呼び出しごとの「**受け手・ほかの引数と重ならない引数**」の印（Call の node_id → bit i = 位置引数 i・
+    /// copy_alloc_speed_plan.md 4-6）。同じ変数を根にした属性だけの経路で、途中で別のフィールドへ分かれるもの
+    /// （`self.pos.mix(self.vel)` の `self.vel`）。呼ばれた関数が自分の `mut` 仮引数だけを書き換えるなら、
+    /// こういう引数は `let` 仮引数で受けても複製しなくてよい。⚠ 載っていない呼び出しは今までどおり複製する。
+    disjoint_args: HashMap<u32, u32>,
 }
 
 /// `binop_kind` が付かなかった二項演算の理由別件数（診断用）。
@@ -213,6 +224,33 @@ impl AstAnnotations {
         self.calls.get(&node_id)
     }
 
+    /// 呼び出しの「重ならない引数」の印を記録する（node_id==0・印が 0 なら載せない・4-6）。
+    pub fn set_disjoint_args(&mut self, node_id: u32, mask: u32) {
+        if node_id != 0 && mask != 0 {
+            self.disjoint_args.insert(node_id, mask);
+        }
+    }
+
+    /// 呼び出しの「重ならない引数」の印（bit i = 位置引数 i）。載っていなければ 0（どれも重なりうる）。
+    pub fn disjoint_args(&self, node_id: u32) -> u32 {
+        if node_id == 0 {
+            return 0;
+        }
+        self.disjoint_args.get(&node_id).copied().unwrap_or(0)
+    }
+
+    /// 式を「不変と証明できた経路」として記録する（node_id==0 は無視・3-1）。
+    pub fn set_immutable_path(&mut self, node_id: u32) {
+        if node_id != 0 {
+            self.immutable_paths.insert(node_id);
+        }
+    }
+
+    /// 式が「不変と証明できた経路」か（未採番・載っていない式は `false` ＝ 複製する側）。
+    pub fn is_immutable_path(&self, node_id: u32) -> bool {
+        node_id != 0 && self.immutable_paths.contains(&node_id)
+    }
+
     /// 二項演算のオペランド種別を記録する（node_id==0 は無視）。
     pub fn set_binop_kind(&mut self, node_id: u32, kind: BinOperandKind) {
         if node_id == 0 {
@@ -296,4 +334,40 @@ impl AstAnnotations {
             .count();
         (calls, checked_args)
     }
+}
+
+/// 名前を根にした属性だけの経路（`a.b.c` → (`a`, [`b`, `c`])）。添字・呼び出しを含めば `None`。
+pub fn attr_path(e: &crate::ast::Expr) -> Option<(&str, Vec<&str>)> {
+    use crate::ast::Expr;
+    match e {
+        Expr::Ident { name, .. } => Some((name.as_str(), Vec::new())),
+        Expr::Attr { object, attr, .. } => {
+            let (root, mut path) = attr_path(object)?;
+            path.push(attr.as_str());
+            Some((root, path))
+        }
+        _ => None,
+    }
+}
+
+/// `arg` が、`others`（受け手とほかの引数）のどれとも**重ならない**と言えるか（copy_alloc_speed_plan.md 4-6・
+/// 型検査と生成コードが共有する**唯一の規則**）。言えるのは、`arg` と相手が同じ変数を根にした属性だけの経路で、
+/// 途中で別のフィールドへ分かれるとき（`self.pos` と `self.vel`。格納のたびに複製するので、別のフィールドの中身は
+/// 共有しない）。相手が書き換えられない値（`is_immutable`）なら見なくてよい。それ以外（別の変数・添字・呼び出しの
+/// 結果・片方がもう片方の中）は「重なりうる」。⚠ 迷ったら `false`（複製する側）。
+pub fn arg_is_disjoint(
+    arg: &crate::ast::Expr,
+    others: &[&crate::ast::Expr],
+    is_immutable: &mut dyn FnMut(&crate::ast::Expr) -> bool,
+) -> bool {
+    let Some(a) = attr_path(arg) else { return false };
+    others.iter().all(|o| {
+        if is_immutable(o) {
+            return true;
+        }
+        match attr_path(o) {
+            Some(b) => a.0 == b.0 && a.1.iter().zip(b.1.iter()).any(|(x, y)| x != y),
+            None => false,
+        }
+    })
 }

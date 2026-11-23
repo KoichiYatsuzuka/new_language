@@ -1,0 +1,20 @@
+class Counter:
+    mut n: int
+    mut tag: str
+    fn bump(mut self, k: int) -> int:
+        ...
+    fn __init__(mut self, n: int, tag: str) -> None:
+        ...
+
+
+class Pair:
+    mut a: Counter
+    mut b: Counter
+    fn step(mut self) -> int:
+        ...
+    fn __init__(mut self, a: Counter, b: Counter) -> None:
+        ...
+
+
+fn run_pairs(mut ps: list[Pair], n: int) -> int:
+    ...

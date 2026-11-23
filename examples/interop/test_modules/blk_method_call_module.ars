@@ -1,0 +1,91 @@
+class V:
+    mut x: float
+    mut y: float
+    fn tag(self) -> float:
+        ...
+    fn bump(mut self, k: float) -> None:
+        ...
+    fn add(mut self, o: V) -> None:
+        ...
+    fn dot(self, o: V) -> float:
+        ...
+    fn shout(self) -> float:
+        ...
+    fn __init__(mut self, x: float, y: float) -> None:
+        ...
+
+
+class N:
+    mut n: int
+    fn twice(self) -> int:
+        ...
+    fn inc(mut self, k: int) -> None:
+        ...
+    fn __init__(mut self, n: int) -> None:
+        ...
+
+
+class P:
+    mut x: float
+    mut y: float
+    fn __init__(mut self, x: float) -> None:
+        ...
+    fn total(self) -> float:
+        ...
+    fn __init__(mut self, x: float, y: float) -> None:
+        ...
+
+
+class C:
+    mut x: float
+    fn __copy__(self) -> C:
+        ...
+    fn get(self, o: C) -> float:
+        ...
+    fn __init__(mut self, x: float) -> None:
+        ...
+
+
+class H:
+    mut v: V
+    mut w: V
+    mut n: N
+    mut p: P
+    mut c: C
+    mut name: str
+    fn __init__(mut self, v: V, w: V, n: N, p: P, c: C, name: str) -> None:
+        ...
+
+
+fn put(mut h: H, x: Any) -> None:
+    ...
+
+fn tags(mut h: H, k: int) -> float:
+    ...
+
+fn bumps(mut h: H, k: int) -> float:
+    ...
+
+fn adds(mut h: H, k: int) -> float:
+    ...
+
+fn self_adds(mut h: H, k: int) -> float:
+    ...
+
+fn dots(mut h: H, k: int) -> float:
+    ...
+
+fn twices(mut h: H, k: int) -> int:
+    ...
+
+fn shouts(mut h: H, k: int) -> float:
+    ...
+
+fn totals(mut h: H, k: int) -> float:
+    ...
+
+fn copy_gets(mut h: H, k: int) -> float:
+    ...
+
+fn locals(k: int) -> float:
+    ...

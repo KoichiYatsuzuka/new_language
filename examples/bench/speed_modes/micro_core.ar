@@ -12,6 +12,9 @@ class Vec3:
     fn mget_x(mut self) -> float:
         return self.x
 
+    fn dot(let self, let o: Vec3) -> float:
+        return self.x * o.x + self.y * o.y + self.z * o.z
+
 class Body:
     mut name: str
     mut pos: Vec3
@@ -163,5 +166,112 @@ fn m_list_append(let n: int) -> float:
     while i < n:
         xs.append(1.0)
         acc += 1.0
+        i += 1
+    return acc
+
+# ── kernels for copy_alloc_speed_plan.md (1-3): the copies phases 2-4 remove ─────────────────────
+# A fresh temporary stored / passed (phase 2), a path rooted at a `let` binding and the loop variable
+# of a `let` list received by `let self` / a `let` parameter (phase 3), a `mut` value received by a
+# read-only callee (phase 4; also call_let_self_* above).
+
+fn take_vec(let v: Vec3) -> float:
+    return v.x
+
+fn make_bodies(let count: int, let trail_len: int) -> list[Body]:
+    mut bs: list[Body] = []
+    mut i = 0
+    while i < count:
+        bs.append(make_body(trail_len))
+        i += 1
+    return bs
+
+# phase 2: xs.append(<fresh>) — a new list every 100 appends keeps the memory flat
+fn m_store_temp_append(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        mut xs: list[Vec3] = []
+        mut j = 0
+        while j < 100:
+            xs.append(Vec3(1.0, 2.0, 3.0))
+            j += 1
+        acc += float(len(xs))
+        i += 100
+    return acc
+
+# phase 2: obj.field = <fresh>
+fn m_store_temp_field(mut b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        b.pos = Vec3(1.0, 2.0, 3.0)
+        acc += 1.0
+        i += 1
+    return acc
+
+# phase 2: xs[0] = <fresh>
+fn m_store_temp_index(let n: int) -> float:
+    mut xs: list[Vec3] = [Vec3(0.0, 0.0, 0.0)]
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        xs[0] = Vec3(1.0, 2.0, 3.0)
+        acc += 1.0
+        i += 1
+    return acc
+
+# phase 2: a fresh value passed to a `let` parameter
+fn m_arg_temp(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += take_vec(Vec3(1.0, 2.0, 3.0))
+        i += 1
+    return acc
+
+# phase 2: a fresh value as the receiver of a `let self` method
+fn m_recv_temp(let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += Vec3(1.0, 2.0, 3.0).get_x()
+        i += 1
+    return acc
+
+# phase 3: the receiver is a path rooted at a `let` binding
+fn m_let_path_recv(let b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += b.vel.get_x()
+        i += 1
+    return acc
+
+# phase 3: receiver and argument are both paths rooted at a `let` binding
+fn m_let_path_recv_arg(let b: Body, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += b.pos.dot(b.vel)
+        i += 1
+    return acc
+
+# phase 3: the loop variable of a `let` list as the receiver (n calls in total)
+fn m_let_for_var(let bs: list[Body], let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    let step = len(bs)
+    while i < n:
+        for b in bs:
+            acc += b.get_mass()
+        i += step
+    return acc
+
+# phase 4: a `mut` value passed to a `let` parameter of a function that only reads it
+fn m_arg_mut_let_param(mut v: Vec3, let n: int) -> float:
+    mut acc = 0.0
+    mut i = 0
+    while i < n:
+        acc += take_vec(v)
         i += 1
     return acc

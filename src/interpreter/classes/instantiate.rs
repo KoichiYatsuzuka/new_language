@@ -76,13 +76,7 @@ impl Interpreter {
             }
         }
         let class = self.os_error_subclass_for(class, &evaled);
-        let mut inst = InstanceData::new_empty(class.clone(), 0);
-        for (name, default_val, mutable) in &class.field_defaults {
-            if let Some(&idx) = class.field_index.get(name.as_str()) {
-                inst.store_field(idx, default_val.clone(), *mutable);
-            }
-        }
-        let inst_rc = Rc::new(RefCell::new(inst));
+        let inst_rc = Rc::new(RefCell::new(Self::new_instance_data(&class)));
         // 組み込みの例外の階層は `__init__` より先に `args` と `str(e)` を入れる（CPython の
         // `BaseException.__new__` と同じ・python_builtins_plan.md のタスク 4-2）。`__init__` を書かない
         // Python のクラスも、`super().__init__` を呼ばない `__init__` も、`args` は作るときの位置引数になる。
@@ -147,9 +141,12 @@ impl Interpreter {
             })));
         }
 
+        // ⚠ 引数の並びは使い終えたら置き場へ戻す（copy_alloc_speed_plan.md 7-10。VM の `Call` も `ar_construct_ic` も
+        //   置き場から取った並びを渡すので、戻さないと生成のたびに並びを 1 つ確保していた）
         // パーサが合成した `__init__`（本体が `self.f = f` だけ）は呼ばずに、VM と同じ規則で格納する（10-3・D-11・U-4）
         if let Some(plan) = self.auto_init_plan(&class) {
             if let Some(r) = self.store_auto_init(&plan, &inst_val, &evaled) {
+                self.recycle_evaled(evaled);
                 return r.map(|()| inst_val);
             }
         }
@@ -160,27 +157,27 @@ impl Interpreter {
         if let Some(result) = crate::interpreter::native_api::try_dispatch_native_method_evaled(
             self, inst_val.clone(), "__init__", &evaled, true,
         ) {
+            self.recycle_evaled(evaled);
             result?;
             return Ok(inst_val);
         }
-        if let Some(init_overloads) = self.lookup_method_in_class(&class, "__init__") {
-            if init_overloads.len() == 1 {
-                self.exec_fn_evaled(
-                    init_overloads[0].clone(),
-                    &evaled,
-                    Some(inst_val.clone()),
-                    "__init__",
-                    None,
-                )?;
-            } else {
+        // 候補は借りて、1 つなら関数の値だけを写して呼ぶ（`lookup_method_in_class` は候補の `Vec` を写す・6-3 と同じ）
+        match class.methods.get("__init__").map(Vec::as_slice) {
+            Some([init]) => {
+                let r = self.exec_fn_evaled(init.clone(), &evaled, Some(inst_val.clone()), "__init__", None);
+                self.recycle_evaled(evaled);
+                r?;
+            }
+            Some(init_overloads) => {
                 self.dispatch_overload_evaled(
-                    init_overloads,
+                    init_overloads.to_vec(),
                     evaled,
                     Some(inst_val.clone()),
                     "__init__",
                     None,
                 )?;
             }
+            None => {}
         }
         Ok(inst_val)
     }
@@ -210,38 +207,55 @@ impl Interpreter {
     }
 
     fn build_auto_init_plan(class: &Rc<ClassValue>) -> Option<Rc<[AutoInitSlot]>> {
-        use crate::ast::{Expr, Stmt};
         let ov = class.methods.get("__init__")?;
         let [f] = ov.as_slice() else { return None };
-        if !f.params.first().is_some_and(|p| p.name == "self") {
-            return None;
-        }
         // `import[rs]` の構造体のフィールドは setter を通す（`attr_assign_ic` の外れた道）
         if class.field_index.contains_key("__rs_handle__") {
             return None;
         }
-        let params = &f.params[1..];
-        if params.iter().any(|p| p.variadic || p.default.is_some()) || f.body.len() != params.len() {
-            return None;
-        }
-        let mut slots = Vec::with_capacity(params.len());
-        for (st, p) in f.body.iter().zip(params) {
-            let Stmt::AttrAssign { target: Expr::Attr { object, attr, .. }, value: Expr::Ident { name, .. }, span } = st else {
-                return None;
-            };
-            let self_obj = matches!(object.as_ref(), Expr::Ident { name: s, .. } if s == "self");
-            if !self_obj || span.line != 0 || attr != &p.name || name != &p.name {
-                return None;
-            }
+        // 合成したものかの判定はコンパイル済みコードの直接の生成と同じ関数（copy_alloc_speed_plan.md 7-11）
+        let names = crate::interpreter::value::synthesized_init_fields(&f.params, &f.body)?;
+        let mut slots = Vec::with_capacity(names.len());
+        for (attr, p) in names.into_iter().zip(&f.params[1..]) {
             // `static mut`・クラス変数への代入は格納ではない（外れた道が扱う）
             if class.static_vars.contains_key(attr) || Self::lookup_class_var(class, attr).is_some() {
                 return None;
             }
-            let idx = *class.field_index.get(attr.as_str())?;
-            let is_mutable = class.field_mutability.get(attr.as_str()).copied().unwrap_or(true);
+            let idx = *class.field_index.get(attr)?;
+            let is_mutable = class.field_mutability.get(attr).copied().unwrap_or(true);
             slots.push(AutoInitSlot { param: p.clone(), idx, is_mutable });
         }
         Some(slots.into())
+    }
+
+    /// `class` のインスタンスを、コンパイル済みコードが [`Self::new_instance_data`] で作ってから数値の引数を番地へ直接書いて
+    /// よいか（copy_alloc_speed_plan.md 7-11・field 83 の `ar_new_instance`）。よいのは、[`Self::instantiate_evaled`] が
+    /// `new_instance_data` の後で合成した `__init__` の直接格納だけを行うクラス（ふつうのクラスで、例外の階層でも C# の
+    /// ブリッジでもない）で、その格納の順（フィールドの番号）が `slots`（生成コードが宣言から静的に求めた順）と同じとき。
+    /// ⚠ 答えはクラスと `slots` だけで決まる（コールバックは箇所ごとのセルに覚えて 2 回目から引かない）。
+    pub(crate) fn auto_init_direct_ok(&mut self, class: &Rc<ClassValue>, slots: &[i64]) -> bool {
+        if class.builtin != crate::interpreter::BuiltinClass::Ordinary
+            || Self::in_exception_hierarchy(class)
+            || class.class_vars.contains_key("__cs_bridge_path__")
+            || class.class_vars.contains_key("__cs_proc_path__")
+        {
+            return false;
+        }
+        self.auto_init_plan(class).is_some_and(|plan| {
+            plan.len() == slots.len() && plan.iter().zip(slots).all(|(s, &want)| s.idx as i64 == want)
+        })
+    }
+
+    /// クラスの空のインスタンス（フィールドの既定値は格納済み）。[`Self::instantiate_evaled`] と、合成した `__init__` の
+    /// 直接の生成（`ar_new_instance`・7-11）が共有する。
+    pub(crate) fn new_instance_data(class: &Rc<ClassValue>) -> InstanceData {
+        let mut inst = InstanceData::new_empty(class.clone(), 0);
+        for (name, default_val, mutable) in &class.field_defaults {
+            if let Some(&idx) = class.field_index.get(name.as_str()) {
+                inst.store_field(idx, default_val.clone(), *mutable);
+            }
+        }
+        inst
     }
 
     /// 合成した `__init__` を呼ぶ代わりに、VM と同じ規則で引数をフィールドへ格納する。`None` は今の道（`__init__` を
@@ -267,8 +281,15 @@ impl Interpreter {
         let Value::Instance(rc) = inst_val else { return None };
         Some((|| {
             for (s, (_, v, arg_mut)) in plan.iter().zip(evaled) {
-                let v = self.bind_param_value(&s.param, v.clone(), *arg_mut)?;
-                let v = Self::deep_copy_value(v);
+                let arg = v;
+                let v = self.bind_param_value(&s.param, arg.clone(), *arg_mut)?;
+                // 格納の複製。誰とも共有していない値は写さない（copy_alloc_speed_plan.md 2-3）: 束縛が写した値と、
+                // 束縛が写さずに渡した作りたての値。後者は評価済みの引数の並び（`arg`）が同じ物を 1 個持つので、
+                // **同じ物のときだけ**その 1 個を数えない（`__copy__` が返した値は並びの物と別なので数える）。
+                let held = usize::from(Self::same_heap_value(&v, arg));
+                let unshared = Self::is_unshared(&v, 1 + held);
+                crate::interpreter::copy_stats::record(crate::interpreter::copy_stats::CopyKind::AutoInitStore, &v, unshared);
+                let v = if unshared { v } else { Self::deep_copy_value(v) };
                 let mut inst = rc.borrow_mut();
                 Self::store_field_checked(&mut inst, s.idx, &s.param.name, v, s.is_mutable)?;
             }

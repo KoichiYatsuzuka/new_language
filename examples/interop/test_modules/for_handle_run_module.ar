@@ -1,0 +1,211 @@
+# for_handle_run_module.ar — examples/interop/for_handle_run.ar が読むモジュール（copy_alloc_speed_plan.md 7-20）
+#
+# コンパイル済みコードの `for x in <リストなど>` は、ループに入るときに要素を全部アリーナへ積み、周ごとにハンドルの並びを
+# 読む（1 周に要素を取るコールバックを呼ばない）。写さない型（集合・ジェネレータ）は今までどおり 1 つずつ取る。
+
+class V:
+    mut x: float
+    mut y: float
+
+class Item:
+    mut v: V
+    mut tag: str
+    mut n: int
+
+gen evens(let n: int) -> int:
+    mut i = 0
+    while i < n:
+        yield i * 2
+        i += 1
+
+# 本体が値を積まないループ（周の頭にコールバックが無い）でループ変数から番地で書く: 前の周の要素の番地を使い回さず、
+# 要素ごとに書く。2 つ目のループは番地で読む
+fn shift_all(mut vs: list[V], let d: float) -> float:
+    for v in vs:
+        v.x = v.x + d
+    mut s = 0.0
+    mut w = 1.0
+    for v in vs:
+        s += v.x * w
+        w = w * 10.0
+    return s
+
+# 要素が None・小さい整数・大きい整数のリスト（None と小さい整数は決まったハンドル）
+fn count_kinds(let xs: list[Option[int]]) -> str:
+    mut nones = 0
+    mut out = ""
+    for x in xs:
+        if x is None:
+            nones += 1
+        out = out + str(x) + ","
+    return out + str(nones)
+
+# 文字列・タプル・辞書のキー（どれも入口で要素を写す型）
+fn reversed_chars(let s: str) -> str:
+    mut out = ""
+    for c in s:
+        out = c + out
+    return out
+
+fn tuple_sum(let t: tuple[int, int, int]) -> int:
+    mut s = 0
+    for x in t:
+        s = s * 10 + x
+    return s
+
+fn key_len(let d: dict[str, int]) -> int:
+    mut s = 0
+    for k in d:
+        s += len(k) * d[k]
+    return s
+
+# 1 つずつ取る道（集合・ジェネレータ）
+fn set_sum(let xs: set[int]) -> int:
+    mut s = 0
+    for x in xs:
+        s += x
+    return s
+
+fn evens_sum(let n: int) -> int:
+    mut s = 0
+    for x in evens(n):
+        s = s * 10 + x
+    return s
+
+# 反復はループに入ったときの要素: 途中でリストを空にしても、足しても、変数へ別のリストを入れても、最初の要素を全部回る
+fn clear_while_looping(mut vs: list[V]) -> int:
+    mut n = 0
+    for v in vs:
+        while len(vs) > 0:
+            vs.pop()
+        vs.append(V(9.0, 9.0))
+        n += 1
+    return n * 100 + len(vs)
+
+fn rebind_while_looping(mut vs: list[V]) -> float:
+    mut s = 0.0
+    for v in vs:
+        s += v.x
+        vs = []
+    return s * 10.0 + float(len(vs))
+
+# break / continue / return（入れ子のループの中から）
+fn first_over(let vs: list[V], let lim: float) -> float:
+    for v in vs:
+        if v.x > lim:
+            return v.x
+    return -1.0
+
+fn odd_tags(let items: list[Item]) -> str:
+    mut out = ""
+    for it in items:
+        if it.n % 2 == 0:
+            continue
+        if it.n > 7:
+            break
+        out = out + it.tag
+    return out
+
+fn find_char(let items: list[Item], let ch: str) -> int:
+    mut i = 0
+    for it in items:
+        for c in it.tag:
+            if c == ch:
+                return i * 10 + it.n
+        i += 1
+    return -1
+
+# 入れ子のループ・`for` 式（`loop_yield`）
+fn pair_sum(let vs: list[V], let ws: list[V]) -> float:
+    mut s = 0.0
+    for v in vs:
+        for w in ws:
+            s += v.x * w.y
+    return s
+
+fn doubled(let vs: list[V]) -> list[float]:
+    return for v in vs ->list[float]:
+        loop_yield v.x * 2.0
+
+# ループ変数のハンドルをループの後まで持つ
+fn last_x(let vs: list[V]) -> float:
+    mut kept = V(-1.0, -1.0)
+    for v in vs:
+        kept = v
+    return kept.x
+
+# ループの途中の例外: `int(..)` が ValueError を投げたら、その周の残りと後の周は何も書かない
+fn parse_all(mut items: list[Item]) -> int:
+    mut s = 0
+    for it in items:
+        s += int(it.tag)
+        it.v.x = it.v.x + 1.0
+        it.n = it.n + 1
+    return s
+
+# 空のリスト
+fn empty_loop(let vs: list[V]) -> int:
+    mut n = 0
+    for v in vs:
+        n += 1
+    return n
+
+# 7-21: 積み方の違う種類が並ぶリスト。空き欄へその場で複製を書く種類（インスタンス・文字列・float・整数）、
+# `Value::clone` で写す種類（リスト）、決まったハンドル（None・真偽値・小さい整数）が混ざっても、要素ごとに別の欄へ順に入る
+fn int_kinds(let xs: list[int]) -> str:
+    mut out = ""
+    for x in xs:
+        out = out + str(x) + ","
+    return out
+
+fn float_kinds(let xs: list[float]) -> float:
+    mut s = 0.0
+    mut w = 1.0
+    for x in xs:
+        s += x * w
+        w = w * 10.0
+    return s
+
+fn str_kinds(let xs: list[str]) -> str:
+    mut out = ""
+    for x in xs:
+        out = out + x + "|"
+    return out
+
+fn bool_kinds(let xs: list[bool]) -> str:
+    mut out = ""
+    for x in xs:
+        if x:
+            out = out + "T"
+        else:
+            out = out + "F"
+    return out
+
+fn list_kinds(let xs: list[list[int]]) -> int:
+    mut s = 0
+    for x in xs:
+        s = s * 10 + len(x)
+    return s
+
+fn maybe_v(let xs: list[Option[V]]) -> float:
+    mut s = 0.0
+    for x in xs:
+        s = s * 10.0
+        if x is V:
+            s = s + x.x
+    return s
+
+fn tuple_kinds(let t: tuple[int, int, int]) -> str:
+    mut out = ""
+    for x in t:
+        out = out + str(x) + ","
+    return out
+
+# 要素はループに入ったときに参照を足してある: 1 周目でリストを空にしても、後の周の文字列は残っている
+fn strs_after_clear(mut xs: list[str]) -> str:
+    mut out = ""
+    for x in xs:
+        while len(xs) > 0:
+            xs.pop()
+        out = out + x
+    return out + str(len(xs))

@@ -555,6 +555,15 @@ pub struct ClassValue {
     pub enum_of: Option<String>,
     /// インスタンスを物として扱う組み込みのクラスか（[`BuiltinClass`]・タスク 6-10）。普通のクラスは `Ordinary`。
     pub builtin: BuiltinClass,
+    /// `__copy__` / `__freeze__` を持つかの覚え（[`Self::has_copy_method`] / [`Self::has_freeze_method`]・
+    /// copy_alloc_speed_plan.md 7-1）。`0` は「まだ調べていない」で、初めて聞かれたときに `methods` から求める。
+    ///
+    /// ⚠ 作るときに決めず**遅れて求める**のは、`ClassValue` を作る場所が多く（`..synthetic(..)` で既定を受ける
+    ///   リテラルが十数か所）、`methods` を詰める場所ごとに印も合わせるとずれうるため。`methods` は `Rc` に
+    ///   入れた後は変えない（作る途中のクラスに印を聞く者はいない）ので、一度求めた答えは変わらない。
+    /// ⚠ 以前は複製・束縛のフリーズのたびに名前で引いていた（`methods` の SipHash・コンパイル済みの
+    ///   `let v = Vec3(..)` の繰り返しで約 1 割）。
+    pub hook_bits: std::cell::Cell<u8>,
 }
 
 
@@ -630,7 +639,39 @@ impl ClassValue {
             module_name: None,
             enum_of: None,
             builtin: BuiltinClass::Ordinary,
+            hook_bits: std::cell::Cell::new(0),
         }
+    }
+
+    const HOOKS_KNOWN: u8 = 1;
+    const HOOK_COPY: u8 = 2;
+    const HOOK_FREEZE: u8 = 4;
+
+    /// [`Self::hook_bits`] を（まだなら `methods` から求めて）返す。
+    fn hooks(&self) -> u8 {
+        let bits = self.hook_bits.get();
+        if bits != 0 {
+            return bits;
+        }
+        let mut bits = Self::HOOKS_KNOWN;
+        if self.methods.contains_key("__copy__") {
+            bits |= Self::HOOK_COPY;
+        }
+        if self.methods.contains_key("__freeze__") {
+            bits |= Self::HOOK_FREEZE;
+        }
+        self.hook_bits.set(bits);
+        bits
+    }
+
+    /// `__copy__` を持つか（引数なしで呼べるかは見ない。呼ぶ側が候補を選ぶ・`Interpreter::copy_value_uncounted`）。
+    pub(crate) fn has_copy_method(&self) -> bool {
+        self.hooks() & Self::HOOK_COPY != 0
+    }
+
+    /// `__freeze__` を持つか（`Interpreter::apply_freeze_to_value`）。
+    pub(crate) fn has_freeze_method(&self) -> bool {
+        self.hooks() & Self::HOOK_FREEZE != 0
     }
 
     /// Create a fully independent deep copy of this ClassValue (no shared Rcs).
@@ -731,6 +772,8 @@ impl ClassValue {
             module_name: self.module_name.as_deref().map(Rc::from),
             enum_of: self.enum_of.clone(),
             builtin: self.builtin,
+            // 写しのスレッドで求め直す（`methods` は同じなので写してもよいが、0 なら誰が作っても正しい）
+            hook_bits: std::cell::Cell::new(0),
         }
     }
 }

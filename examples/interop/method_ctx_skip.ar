@@ -1,0 +1,41 @@
+# method_ctx_skip.ar — クラスの文脈の切り替えを省く間と、省かなくなった後（copy_alloc_speed_plan.md 7-3）
+#
+# 実行時のクラスの文脈を読むのは private / protected のメンバーの検査だけ。プログラムにそういうメンバーを持つクラスが
+# 1 つも無い間、コンパイル済みコードは別のクラスのメソッドを直接呼ぶ前後の文脈の切り替えを省く。
+#   1. 前半: private のメンバーを持つクラスがまだ無い（切り替えを省く）
+#   2. 後半: private のメンバーを持つクラスを読み込んだ後（切り替える）。コンパイル済みのメソッドの private の読み書きが通ること
+# ⚠ 外から private を読む形は型検査が止めるので、ここからは作れない
+# モジュールは .arc（コンパイル済み）を読む。非コンパイル（.ar）でも同じ値になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/method_ctx_public_module.ar
+#   2. cargo run --release -- --compile examples/interop/test_modules/native_private_access_module.ar
+#   3. cargo run --release -- examples/interop/method_ctx_skip.ar
+#
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.method_ctx_public_module as pub
+
+fn check(let label: str, let got: int, let want: int) -> None:
+    if got != want:
+        raise ValueError("method_ctx_skip: " + label + ": got " + str(got) + ", want " + str(want))
+
+fn make(let k: int) -> pub.Pair:
+    return pub.Pair(pub.Counter(k, "a"), pub.Counter(0, "b"))
+
+# ── 前半: private のメンバーを持つクラスはまだ無い ──
+mut ps: list[pub.Pair] = [make(0), make(10)]
+# 1 周目: (1, 1) と (11, 11) -> 101 + 1111
+check("before: one round", pub.run_pairs(ps, 1), 101 + 1111)
+# 2〜4 周目: (2, 3) (12, 23) / (3, 6) (13, 36) / (4, 10) (14, 50)
+check("before: three rounds", pub.run_pairs(ps, 3), (203 + 1223) + (306 + 1336) + (410 + 1450))
+check("before: state", ps[0].a.n * 1000 + ps[0].b.n, 4010)
+
+# ── 後半: private のメンバーを持つクラスを読み込む ──
+import test_modules.native_private_access_module as m
+
+mut v = m.Vault(5, 0, 0)
+check("after: private through a direct call", m.rotate_vault(v), 40)
+check("after: private method", v.level_of(), 3)
+# 前半と同じ呼び出しも同じ値のまま
+mut qs: list[pub.Pair] = [make(0), make(10)]
+check("after: public classes", pub.run_pairs(qs, 1), 101 + 1111)
+print("method_ctx_skip: ok")
