@@ -1,4 +1,4 @@
-# sqrt_builtin.ar — 組み込み関数 sqrt（CPU の平方根命令 = f64::sqrt）
+# sqrt_builtin.ar — 組み込み関数 sqrt（CPU の平方根命令 = f64::sqrt）と cbrt（立方根）
 #
 # 対になる誤りの例: sqrt_builtin_error.ar
 #
@@ -13,3 +13,7 @@ try:
     print(sqrt(-1))
 except ValueError as e:
     print(e)                 # math domain error
+
+# cbrt（立方根）: 負の数にも実数で定まるので誤りにならない
+print(cbrt(27))              # 3.0
+print(cbrt(-8))              # -2.0

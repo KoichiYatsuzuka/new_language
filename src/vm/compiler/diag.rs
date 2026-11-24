@@ -96,7 +96,7 @@ pub(crate) const VM_BUILTIN_NAMES: &[&str] = &[
     "list", "tuple",
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）。
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
-    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "sqrt", "round", "divmod", "pow",
+    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "sqrt", "cbrt", "round", "divmod", "pow",
     "exp", "log", "exp2", "exp10", "log2", "log10",
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
     // 書式指定の小言語（タスク 3-4）。f-string の `{x:spec}` はこの呼び出しに脱糖される。

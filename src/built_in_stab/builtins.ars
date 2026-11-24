@@ -397,6 +397,10 @@ fn sqrt(x: Any):
     """The square root of a non-negative number, always a float (ValueError for a negative number)."""
     pass
 
+fn cbrt(x: Any):
+    """The cube root of a number, always a float (a negative number has a real cube root: cbrt(-8) is -2.0)."""
+    pass
+
 fn exp(x: Any, base: Any = None):
     """base ** x as a float; the base defaults to e. A non-positive base is a ValueError, an overflow an OverflowError."""
     pass

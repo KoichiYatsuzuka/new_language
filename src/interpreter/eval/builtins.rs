@@ -24,7 +24,7 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "create_flat_int_list", "flat_get_int", "flat_set_int", "list", "tuple",
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
-    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "sqrt", "round", "divmod", "pow",
+    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "sqrt", "cbrt", "round", "divmod", "pow",
     // 指数・対数（任意の底の汎用関数 `exp` / `log` と、底を 2 / 10 に決めた版）
     "exp", "log", "exp2", "exp10", "log2", "log10",
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
@@ -249,6 +249,7 @@ impl Interpreter {
             "reversed" => Some(self.py_reversed(args)),
             "abs" => Some(self.py_abs(args)),
             "sqrt" => Some(self.py_sqrt(args)),
+            "cbrt" => Some(self.py_cbrt(args)),
             "exp" | "log" => Some(self.py_exp_log(name, args, Vec::new())),
             "exp2" | "exp10" | "log2" | "log10" => Some(self.py_fixed_base_fn(name, args)),
             "round" => Some(self.py_round(args, Vec::new())),

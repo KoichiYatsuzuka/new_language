@@ -1897,7 +1897,7 @@ impl TypeChecker {
                 [(None, T::Float | T::Complex)] => Some(T::Float),
                 _ => None,
             },
-            "sqrt" => match arg_data {
+            "sqrt" | "cbrt" => match arg_data {
                 [(None, T::Int | T::Float | T::Bool)] => Some(T::Float),
                 _ => None,
             },

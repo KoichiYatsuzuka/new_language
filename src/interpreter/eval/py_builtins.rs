@@ -467,6 +467,16 @@ impl Interpreter {
         Ok(Value::Float(f.sqrt()))
     }
 
+    /// `cbrt(x)`。int / uint / bool / float を受け、常に float を返す（`f64::cbrt`）。
+    /// 立方根は負の数にも実数で定まるので、`sqrt` と違い定義域の誤りはない（`cbrt(-8)` は `-2.0`・CPython の `math.cbrt` と同じ）。
+    /// `NaN` / 無限大 / `-0.0` はそのまま返す。
+    pub(crate) fn py_cbrt(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        let [x]: [Value; 1] = args
+            .try_into()
+            .map_err(|a: Vec<Value>| format!("TypeError: cbrt() takes exactly one argument ({} given)", a.len()))?;
+        Ok(Value::Float(self.real_arg(&x)?.cbrt()))
+    }
+
     /// `exp(x, base=e)` / `log(x, base=e)`（任意の底の指数・対数の**汎用関数**）。
     /// - `exp(x, base)` は `base ** x`、`log(x, base)` は底 `base` の対数。底を省くと自然対数の底 e。
     /// - `x` / `base` は int / uint / bool / float（位置でもキーワードでも渡せる）。戻り値は常に float。
