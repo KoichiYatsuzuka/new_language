@@ -32,6 +32,9 @@ impl<'a> GenCtx<'a> {
             push_sites:      0,
             pushing_fns:     HashSet::new(),
             fn_pushes:       HashSet::new(),
+            failing_fns:     HashSet::new(),
+            fn_fails:        HashSet::new(),
+            fail_sites:      0,
             handle_store_log: Vec::new(),
             top_names:       HashSet::new(),
             block_stack:     Vec::new(),
@@ -497,6 +500,49 @@ impl<'a> GenCtx<'a> {
             self.ec(&format!("ret i64 {val}"));
             self.terminated = true;
         }
+    }
+
+    /// 例外が積まれた（`CB_RAISE` の後・直接呼んだ関数が例外を積んだ）ときに、この `_impl` からすぐ戻る
+    /// （known_bugs.md #27 / #28）。例外はスレッドの状態にあり、受け取る側（インタープリタの入口・呼んだ側の
+    /// `check_exc_after_call`）がそれを見るので、戻り値は `_impl` の戻り値の型に合う何かでよい: `float` は `0.0`、
+    /// ほかは `TL_EXCEPTION`（`-2`・`int` を返す関数では値として読まれうるが、読む側が先に状態を見る）。
+    /// ⚠ 以前の `raise` は型を見ずに `ret i64 -2` を出し、`float` を返す関数で clang が落ちてモジュール全体の DLL が
+    ///   作られなかった（#27）。
+    pub(super) fn emit_exception_return(&mut self) {
+        if self.terminated {
+            return;
+        }
+        if self.current_fn_ret == Ty::Float {
+            self.ec("ret double 0.0");
+            self.terminated = true;
+        } else {
+            self.ret_handle("-2");
+        }
+    }
+
+    /// モジュールの関数 `sym` を直接（`@{sym}_impl` / `_pre` / `_fast`）呼んだ直後に置く（known_bugs.md #28）: 呼ばれた側が
+    /// 例外を出しうる（`failing_fns`）なら、例外が積まれているかを `CB_EXC_PENDING` で見て、積まれていればこの関数からも
+    /// すぐ戻る（[`Self::emit_exception_return`]）。⚠ 以前は見ずに続きを走らせ（後の `print` も受け手への書き込みも走る）、
+    /// 呼ぶ側が普通に戻ると、戻り値の印 `-2` を持たない限り例外が消えていた。
+    /// ⚠ アリーナの巻き戻し（`rewind_after_call`）の**後**に置く。巻き戻しの道は `phi` で合流するので、その前で区切ると
+    ///   `phi` の入り口の区画の名前がずれる。
+    /// typed 変種（zero-TLS）は `_impl` を呼ばず、`_typed` どうしの呼び出しが例外を `ErrSlot` の status で伝える
+    /// （`gen_typed_call`）ので何も足さない。番地で呼ぶ変種（`blk_mode`）で出すと、コールバックを使ったのでその変種が
+    /// 捨てられる（`call_cb` の `blk_failed`）。それが正しい: その変種は例外を伝えられない。
+    pub(super) fn check_exc_after_call(&mut self, sym: &str) {
+        if self.typed_mode || self.terminated || !self.failing_fns.contains(sym) {
+            return;
+        }
+        // 確かめて戻る道を持つので、この関数も `raise` しうる関数になる（呼ぶ側も確かめる）
+        self.fail_sites += 1;
+        let pending = self.call_cb(CB_EXC_PENDING, &[]);
+        let is_set = self.fresh_reg();
+        self.ec(&format!("{is_set} = icmp ne i32 {pending}, 0"));
+        let (exc, cont) = (self.fresh_blk(), self.fresh_blk());
+        self.br_cond(&is_set, &exc, &cont);
+        self.start_block(&exc);
+        self.emit_exception_return();
+        self.start_block(&cont);
     }
 
     // ── Typed ABI helpers ─────────────────────────────────────────────────────

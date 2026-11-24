@@ -397,15 +397,43 @@ pub fn clone_value_at(h: i64) -> Value {
     }
 }
 
-/// 直前のネイティブ呼び出しチェーンでセットされたエラーを取り出して返す。
+/// 直前のネイティブ呼び出しチェーンでセットされたエラーを取り出して返す（メソッドの入口 `call_native_method_at`・テスト）。
 pub fn take_error() -> Option<String> {
     with_state(|s| s.borrow_mut().error.take())
 }
 
-/// Take any exception raised by CB_RAISE. Returns (type_name, message) if set.
+/// `CB_RAISE` で積まれた例外を取り出す（`(型の名前, 文)`・メソッドの入口 `call_native_method_at`）。
 pub fn take_pending_raise() -> Option<(String, String)> {
     with_state(|s| s.borrow_mut().pending_raise.take())
 }
+
+/// 呼び出しの後に積まれたもの（誤りか、`raise` した例外）を 1 回の状態の参照で取り出す（known_bugs.md #28）。誤りを先に返す
+/// （以前の `take_error` の後に例外を見ていた順と同じ）。例外は `"<型>: <文>"`。
+/// ⚠ 呼び出しのたびに通る道なので、2 つを別々に引かず、何も積まれていない道（ほとんどの呼び出し）は 2 つを見るだけにする。
+///   取り出し（例外の文の組み立て）は [`take_error_or_raise_slow`] に分ける。以前の 2 回の参照も、文を組み立てる道を
+///   含めた 1 つの関数も、インタープリタからコンパイル済みのメソッドを呼ぶ区間（`scripts/speed_modes.ps1` の k6_boundary）を
+///   3〜6% 遅くした（2026-11-24）。
+#[inline]
+pub fn take_error_or_raise() -> Option<String> {
+    with_state(|s| {
+        let mut st = s.borrow_mut();
+        if st.error.is_none() && st.pending_raise.is_none() {
+            return None;
+        }
+        take_error_or_raise_slow(&mut st)
+    })
+}
+
+/// [`take_error_or_raise`] の、何かが積まれていたときの道。
+#[cold]
+#[inline(never)]
+fn take_error_or_raise_slow(st: &mut NativeCallState) -> Option<String> {
+    match st.error.take() {
+        Some(e) => Some(e),
+        None => st.pending_raise.take().map(|(t, m)| format!("{t}: {m}")),
+    }
+}
+
 
 /// Register a natively compiled class method so `ar_call_method` can dispatch to it.
 /// `class_id` はモジュールが定義したクラスの番号（同じ名前の別のクラスと混ざらない・11-4）。
@@ -477,6 +505,9 @@ fn call_native_method_at(
     };
     interp.leave_native_method(prev);
 
+    // ⚠ ここは元から誤りと `raise` した例外の両方を見ていた（known_bugs.md #28 の ① はこの入口では起きない）。
+    //   `take_error_or_raise` の 1 回の参照に替えると、この入口を通る区間（`scripts/speed_modes.ps1` の k6_boundary）が 2〜3% 遅くなった
+    //   （2026-11-24・理由は未確定）ので、元の 2 つの取り出しのままにする。
     if let Some(err) = take_error() {
         abort_native_call(is_outermost);
         return Err(err);
@@ -871,6 +902,12 @@ pub struct ArCallbacks {
     /// 番地を `out[0]`、個数を `out[1]` へ書く（並びはイテレータを捨てるまで動かない・生成コードが周ごとに読む）。ほかの型は
     /// `out[1] = -1`（生成コードは field 84 で 1 つずつ取る）。失敗したら `TL_NONE` を返し、`out` は 0 個の並び。
     pub iter_begin: extern "C" fn(i64, *mut i64) -> i64,
+
+    // ── 例外が積まれているか（field 88・known_bugs.md #28） ──
+    /// このスレッドの呼び出しの状態に、誤り（`error`）か `raise` した例外（`pending_raise`）が積まれていれば 1、無ければ 0。
+    /// 生成コードが、例外を出しうるモジュールの関数を直接呼んだ後に呼び、1 ならすぐ戻る（戻り値の印 `TL_EXCEPTION` に
+    /// 頼らない: `int` / `float` を返す関数の戻り値には印を置けない）。
+    pub exc_pending: extern "C" fn() -> i32,
 }
 
 // SAFETY: 表の中身は関数の番地と、プロセスに 1 つの原子的な値の番地（読むだけ）だけ（7-7）。

@@ -2860,7 +2860,17 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     num_field_ptr: ar_num_field_ptr,
     attr_blocks: ar_attr_blocks,
     iter_begin: ar_iter_begin,
+    exc_pending: ar_exc_pending,
 };
+
+/// field 88（known_bugs.md #28）: このスレッドに誤りか `raise` した例外が積まれていれば 1。生成コードが、例外を出しうる
+/// モジュールの関数を直接呼んだ後に呼び、1 ならその関数からすぐ戻る（積まれたものは入口〔`eval/native.rs`〕が取り出す）。
+extern "C" fn ar_exc_pending() -> i32 {
+    with_state(|s| {
+        let st = s.borrow();
+        i32::from(st.error.is_some() || st.pending_raise.is_some())
+    })
+}
 
 /// field 86（copy_alloc_speed_plan.md 7-18）: 同じ親の `n` 個のフィールドが持つインスタンスの先頭の塊の番地を、親を 1 回だけ
 /// たどって `out[i]` へ書く。1 件ごとの結果は field 79 を `reqs[i]` で呼んだのと同じ（読み出しの IC が当たり、slot が今持って

@@ -293,7 +293,7 @@ All values crossing the ABI boundary are `i64` handles into a thread-local `VALU
 | `1` (`TL_TRUE`) | `Value::Bool(true)` |
 | `2` (`TL_FALSE`) | `Value::Bool(false)` |
 | `-1` (`TL_STOP_ITER`) | iteration exhausted |
-| `-2` (`TL_EXCEPTION`) | exception raised |
+| `-2` (`TL_EXCEPTION`) | returned after a raise; exceptions are detected from the native-call state (`take_error_or_raise` / `CB_EXC_PENDING`), not from this value (known_bugs.md #28) |
 | `>= 3` | index into `VALUE_ARENA` |
 
 `ArCallbacks` is a `#[repr(C)]` struct of function pointers covering `make_int`, `make_str`, `call_fn`, `get_attr`, `set_attr`, `binop`, `iter_from`, `iter_next`, `raise_exc`, etc.

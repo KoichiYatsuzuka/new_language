@@ -712,8 +712,30 @@ These integer sentinels are shared between native code and the interpreter:
 | `1` | `True` |
 | `2` | `False` |
 | `-1` | `StopIteration` |
-| `-2` | `TL_EXCEPTION` (exception propagation sentinel) |
+| `-2` | `TL_EXCEPTION` (returned by a handle-returning `_impl` that raised; **not** how exceptions are detected) |
 | `≥ 3` | Dynamic value stored in `VALUE_ARENA` |
+
+### Exception propagation (known_bugs.md #27 / #28)
+
+A compiled `raise` calls `CB_RAISE`, which stores the exception in the thread's native-call state (`pending_raise`), then
+returns at once in the function's own return type (`emit_exception_return`: `ret double 0.0` for `float`, `ret i64 -2`
+otherwise). Receivers look at the **state**, never at the return value:
+
+- **Interpreter entries** (`eval/native.rs`, both function paths) call `take_error_or_raise()` after every native call
+  (one state read; the formatting path is `#[cold]`). The method entry (`call_native_method_at`) checks
+  `take_error` then `take_pending_raise`, as it always did. ⚠ Before #28 the function entries looked at the pending
+  raise only when the result was `-2`, so an `int`-returning function (its `_tl` boxes the raw `-2`) returned `-2`.
+- **Direct calls between compiled functions** (`call_impl` / `_pre` / `_fast`): if the callee may raise, the caller
+  calls `CB_EXC_PENDING` (field 88) right after the call (after `rewind_after_call`, so the rewind's `phi` keeps its
+  blocks) and returns at once when it is set (`check_exc_after_call`). "May raise" (`failing_fns`) is a fixpoint in
+  `generate_llvm_module`, next to `pushing_fns`: a function whose body has `raise`, or that directly calls a may-raise
+  function. `_fast` bodies are tracked separately (key `<sym>#fast`). Functions with no `raise` reachable through
+  direct calls get no check (the `speed_modes` kernels' IR is byte-identical).
+- ⚠ Errors stored by a **callback** (not a `raise`) are deliberately not counted: as before, later callbacks do nothing
+  and the entry returns the error, but the compiled code keeps running until it returns (direct memory writes still
+  happen). Counting every callback put a check after almost every call and slowed k1_step / k2_energy by 8–12%
+  (known_bugs.md #38).
+- typed variants (`_typed`, zero-TLS) never call `_impl`; they propagate through the `ErrSlot` status.
 
 ---
 
