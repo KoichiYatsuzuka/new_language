@@ -115,7 +115,7 @@ Refresh with `./scripts/generate-codebase-map.ps1`. Do not edit by hand.
 
 <!-- BEGIN AUTO-TREE -->
 ```text
-src/  (266 files, 134554 lines)
+src/  (266 files, 134696 lines)
   ar_config.rs (301)
   arc_format.rs (161)
   ast.rs (1731)
@@ -139,7 +139,7 @@ src/  (266 files, 134554 lines)
     basic_traits.ars (96)
     built_in_const.ars (2)
     built_in_type.ars (33)
-    builtins.ars (536)
+    builtins.ars (540)
     error.ars (77)
   cpp_header/
     config.rs (355)
@@ -223,13 +223,13 @@ src/  (266 files, 134554 lines)
       types.rs (339)
     eval/
       attrs.rs (938)
-      builtins.rs (1113)
+      builtins.rs (1114)
       calls.rs (922)
       core.rs (562)
       mod.rs (215)
       native.rs (589)
       native_stub.rs (82)
-      py_builtins.rs (1770)
+      py_builtins.rs (1780)
       subscript.rs (366)
     exec/
       blocks.rs (125)
@@ -353,10 +353,10 @@ src/  (266 files, 134554 lines)
     module_compiler.rs (573)
     stub_gen.rs (353)
     llvm_codegen/
-      context.rs (1564)
-      expr.rs (1952)
+      context.rs (1569)
+      expr.rs (2062)
       function.rs (705)
-      mod.rs (2551)
+      mod.rs (2563)
       stmt.rs (1292)
     rs_loader/
       codegen.rs (758)

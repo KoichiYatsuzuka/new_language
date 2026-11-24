@@ -666,6 +666,18 @@ define internal double @_tl_ffloordiv(double %a, double %b) {
 declare double @llvm.pow.f64(double, double)
 declare double @llvm.floor.f64(double)
 
+; 数学の組み込み関数（`gen_math_builtin`）。CPU の命令（sqrt / fabs）か libm の呼び出しに落ちる。
+; `cbrt` には intrinsic が無いので libm を直接宣言する（インタープリタの `f64::cbrt` も同じ CRT の関数）。
+declare double @llvm.sqrt.f64(double)
+declare double @llvm.fabs.f64(double)
+declare i64 @llvm.abs.i64(i64, i1)
+declare double @llvm.exp.f64(double)
+declare double @llvm.exp2.f64(double)
+declare double @llvm.log.f64(double)
+declare double @llvm.log2.f64(double)
+declare double @llvm.log10.f64(double)
+declare double @cbrt(double)
+
 "#
 }
 

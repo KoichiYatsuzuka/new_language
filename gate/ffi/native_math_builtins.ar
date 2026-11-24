@@ -1,0 +1,100 @@
+# native_math_builtins.ar — 数学の組み込み関数（abs / sqrt / cbrt / exp / log …）をネイティブで行う
+#
+# モジュールは .arc（コンパイル済み）を読む。結果はインタープリタ（この main 側の呼び出し）と**ビットまで同じ**であること。
+#   1. cargo run --release -- --compile gate/ffi/test_modules/native_math_module.ar
+#   2. cargo run --release -- gate/ffi/native_math_builtins.ar
+#
+# - 引数が int / float と分かる呼び出しは intrinsic（sqrt / fabs / exp / log …）か libm（cbrt）へ直接落ちる
+# - 定義域の誤り（sqrt の負数・log の 0 以下）と溢れ（exp）は、typed 変種でもハンドルの道でもインタープリタと同じ例外
+# - 型が分からない引数・底つきの 2 引数形は今までの道
+from ..lib.check import emit, check_output
+
+import test_modules.native_math_module as m
+
+fn check(let label: str, let ok: bool) -> None:
+    if not ok:
+        raise ValueError(label + ": unexpected value")
+    emit([str(label + " OK")])
+
+# 戻り値が float の関数は、インタープリタの同じ式と等しい（`==` はビットまで）
+check("sqrt / cbrt", m.hyp(3.0, 4.0) == 5.0 and m.root3(-27.0) == cbrt(-27.0) and m.root3(0.125) == cbrt(0.125))
+check("sqrt of an int", m.sq_int(49) == 7.0 and m.sq_int(2) == sqrt(2))
+check("exp / exp2 / exp10", m.grow(1.5) == exp(1.5) + exp2(1.5) + exp10(1.5) and m.ex10(3.0) == 1000.0)
+check("log / log2 / log10", m.logs(37.0) == log(37.0) + log2(37.0) + log10(37.0))
+check("abs of int / float", m.abs_i(-7) == 7 and m.abs_f(-2.5) == 2.5 and m.abs_f(-0.0) == 0.0)
+check("abs of the smallest int wraps", m.abs_i(-9223372036854775807 - 1) == -9223372036854775807 - 1)
+check("special values", m.ex(-2000.0) == 0.0 and m.sq(0.0) == 0.0 and m.lg(1.0) == 0.0)
+
+let inf: float = 1e300 * 1e300
+let nan: float = inf - inf
+check("inf / nan pass through", m.sq(inf) == inf and m.ex(inf) == inf and m.lg(inf) == inf and m.sq(nan) != m.sq(nan) and m.lg(nan) != m.lg(nan) and m.ex(nan) != m.ex(nan))
+
+# ハンドルの道（リストの要素を回す）・型が分からない引数・底つき
+check("list of floats", m.root_sum([1.0, 4.0, 9.0]) == 6.0 and m.log_sum([1.0, 1.0]) == 0.0)
+check("untyped argument", m.untyped(16) == 4.0 and m.untyped(2.25) == 1.5)
+check("based forms", m.based(8.0) == log(8.0, 2) + exp(8.0, 2) + log(8.0, 10))
+
+# ── 誤り（typed 変種・ハンドルの道・型が分からない引数で同じ例外） ──
+mut got: list[str] = []
+try:
+    m.sq(-1.0)
+except ValueError as e:
+    got.append("typed sqrt: " + str(e))
+try:
+    m.sq_int(-4)
+except ValueError as e:
+    got.append("typed sqrt int: " + str(e))
+try:
+    m.lg(0.0)
+except ValueError as e:
+    got.append("typed log(0): " + str(e))
+try:
+    m.lg(-1.0)
+except ValueError as e:
+    got.append("typed log(-1): " + str(e))
+try:
+    m.ex(1000.0)
+except OverflowError as e:
+    got.append("typed exp: " + str(e))
+try:
+    m.ex10(400.0)
+except OverflowError as e:
+    got.append("typed exp10: " + str(e))
+try:
+    m.root_sum([4.0, -1.0])
+except ValueError as e:
+    got.append("handle sqrt: " + str(e))
+try:
+    m.log_sum([1.0, 0.0])
+except ValueError as e:
+    got.append("handle log: " + str(e))
+try:
+    m.untyped(-1)
+except ValueError as e:
+    got.append("untyped sqrt: " + str(e))
+for g in got:
+    emit([g])
+
+check_output([
+    "sqrt / cbrt OK",
+    "sqrt of an int OK",
+    "exp / exp2 / exp10 OK",
+    "log / log2 / log10 OK",
+    "abs of int / float OK",
+    "abs of the smallest int wraps OK",
+    "special values OK",
+    "inf / nan pass through OK",
+    "list of floats OK",
+    "untyped argument OK",
+    "based forms OK",
+    "typed sqrt: math domain error",
+    "typed sqrt int: math domain error",
+    "typed log(0): math domain error",
+    "typed log(-1): math domain error",
+    "typed exp: math range error",
+    "typed exp10: math range error",
+    "handle sqrt: math domain error",
+    "handle log: math domain error",
+    "untyped sqrt: math domain error",
+    "",
+], "native_math_builtins")
