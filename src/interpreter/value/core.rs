@@ -523,6 +523,7 @@ impl Value {
             Value::TemplateClass(rc) => Value::TemplateClass(Rc::new(TemplateClassValue {
                 name: rc.name.clone(),
                 template_params: rc.template_params.clone(),
+                module_name: rc.module_name.as_deref().map(Rc::from),
             })),
             Value::TemplateGenFn(rc) => Value::TemplateGenFn(Rc::new(TemplateGenFnValue {
                 name: rc.name.clone(),

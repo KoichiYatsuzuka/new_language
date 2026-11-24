@@ -443,8 +443,12 @@ impl Interpreter {
                 // ⚠ enum のメンバーのクラスは、引いた `Name` クラス（メンバーを持つ方）とは別のクラス
                 //   （`build_enum_classes`）。`Self::same_class` が同じ enum かで見る。
                 drop(inst);
-                let Some(target) = self.dotted_class(type_name) else {
-                    return false;
+                let target = match self.dotted_value(type_name) {
+                    Some(Value::Class(c)) => c,
+                    // 別名を通したテンプレート（`x is m.Box`）は、どの具体化にも真（素の `is Box` と同じ・known_bugs.md #39）。
+                    // ⚠ 以前は `dotted_class` がテンプレートを返さず、いつも偽だった。
+                    Some(Value::TemplateClass(t)) => return self.is_instantiation_of(&inst_rc.borrow().class, &t),
+                    _ => return false,
                 };
                 if Self::same_class(&inst_rc.borrow().class, &target) {
                     return true;
@@ -525,9 +529,27 @@ impl Interpreter {
         self.scopes[0].get(name).is_some_and(|var| {
             var.with_value(|v| match v {
                 Value::Class(target) => !Self::same_class(class, target),
+                // テンプレートの名前（`is Box`）は、そのテンプレートの具体化か（別のモジュールの同じ名前のテンプレートの
+                // 具体化は通さない・known_bugs.md #39）
+                Value::TemplateClass(t) => !self.is_instantiation_of(class, t),
                 _ => false,
             })
         })
+    }
+
+    /// `class` がテンプレート `tmpl` の具体化か（known_bugs.md #39）: 具体化のクラス（`instance_name` を持つ）で、名前と
+    /// 定義したモジュールが同じ。具体化は展開のときにテンプレートと同じモジュールの最上位で作る（`register_mono_instance`）。
+    /// 1 つのモジュールに同じ名前のテンプレートは 1 つなので、別のモジュールの同じ名前のテンプレートとは区別できる。
+    /// ⚠ テンプレートの番地（`template_class_cache` の鍵）では比べない。非同期タスクのワーカーでは名前空間の値と大域が
+    ///   別々に写されるので、別名で引いたテンプレートと大域のテンプレートの番地が違う（実測）。
+    pub(crate) fn is_instantiation_of(
+        &self,
+        class: &crate::interpreter::ClassValue,
+        tmpl: &crate::interpreter::TemplateClassValue,
+    ) -> bool {
+        class.instance_name.is_some()
+            && class.name == tmpl.name
+            && class.module_name.as_deref() == tmpl.module_name.as_deref()
     }
 
     /// 今の大域（`scopes[0]`）で `name` に束縛されたクラスの `class_id`（クラスでなければ `None`）。
@@ -570,7 +592,7 @@ impl Interpreter {
     }
 
     /// `a.b`（名前空間を通した名前）が指す値。引けなければ `None`（7-27・Python のモジュールの名前空間を引く）。
-    #[cfg(feature = "native")]
+    /// ⚠ 評価コア（`native` なし）でも使う（別名で書いたテンプレート `m.Box`・known_bugs.md #39）。
     fn dotted_value(&self, path: &str) -> Option<Value> {
         let mut parts = path.split('.');
         let mut cur = self.get_val(parts.next()?)?;
@@ -585,15 +607,7 @@ impl Interpreter {
 
     /// `t.Tag`（名前空間を通した型名）が指すクラス（10-8）。引けなければ `None`。
     fn dotted_class(&self, type_name: &str) -> Option<std::rc::Rc<crate::interpreter::ClassValue>> {
-        let mut parts = type_name.split('.');
-        let mut cur = self.get_val(parts.next()?)?;
-        for seg in parts {
-            cur = match &cur {
-                Value::Namespace(ns) => self.namespace_member(ns, seg)?,
-                _ => return None,
-            };
-        }
-        match cur {
+        match self.dotted_value(type_name)? {
             Value::Class(c) => Some(c),
             _ => None,
         }

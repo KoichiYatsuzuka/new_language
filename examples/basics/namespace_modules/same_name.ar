@@ -54,3 +54,14 @@ fn parse_bad() -> int:
 
 fn is_level(let a: Any) -> bool:
     return a is Level
+
+# テンプレート（known_bugs.md #39）。本体にも同じ名前のテンプレート `Box` がある
+class Box[T]:
+    mut item: T
+
+fn make_box() -> Box[int]:
+    return Box[int](5)
+
+# このモジュールの中の素の名前 `Box` は、このモジュールのテンプレート
+fn is_box(let a: Any) -> bool:
+    return a is Box

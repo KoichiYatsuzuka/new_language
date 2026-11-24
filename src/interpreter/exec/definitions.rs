@@ -590,6 +590,7 @@ impl Interpreter {
             let tmpl = Rc::new(TemplateClassValue {
                 name: name.to_string(),
                 template_params: template_params.to_vec(),
+                module_name: self.global_module_names.get(self.cur_globals as usize).cloned().flatten(),
             });
             self.declare_var(
                 name.to_string(),

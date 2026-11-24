@@ -260,6 +260,11 @@ Built-in classes get one `class_id` per name for the whole process (`value::buil
 - Shortcut: the lookup is skipped when the class was defined in the current globals' module (`global_module_names`), unless it is a built-in class.
 - Async workers receive the module names (`TaskEnv::module_names`) so that this shortcut stays correct.
 - `ar_method_guard` resolves its cell with the same lookup (`global_class_id`).
+- Templates (known_bugs.md #39): a name bound to a `TemplateClass`, written bare (`is Box`) or qualified (`is m.Box`),
+  matches its instantiations. `is_instantiation_of` checks that the class has an `instance_name` and the same `name` and
+  `module_name` as the template (`TemplateClassValue::module_name`).
+  ⚠ It does not compare the template's address: in async workers the namespace value and the globals are copied
+  separately.
 
 Bound methods (python_builtins_plan.md 1-8 / 1-10): reading `obj.method` returns `FnValue::bind(receiver, target)` — a body-less `FnValue` whose `bound` field holds the receiver and a `BoundTarget` (`Methods` overloads / `Gen` generator method / `Builtin(name)` for methods of built-in values listed in `type_check::names::BUILTIN_VALUE_METHODS`). `exec_fn_evaled` redirects it to `call_bound_method` (same dispatch as `obj.method(..)`, including the immutable-receiver check; access control was checked at the read). Equality / hash use `FnValue::same_binding` / `identity_ptr`.
 
