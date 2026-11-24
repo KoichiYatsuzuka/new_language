@@ -1,0 +1,22 @@
+# exp_log_builtin.ar — 組み込み関数 exp / log（任意の底）と exp2 / exp10 / log2 / log10（底を決めた版）
+#
+# 対になる誤りの例: exp_log_builtin_error.ar
+#
+# - exp(x, base=e) は base ** x、log(x, base=e) は底 base の対数。戻り値は常に float
+# - 誤りは CPython の math と同じ: ValueError（0 以下の対数・0 以下の底）・ZeroDivisionError（底 1）・OverflowError（溢れ）
+
+print(exp(1))               # 2.718281828459045（底を省くと e）
+print(exp(3, 2))            # 8.0（2 ** 3）
+print(exp(2, base=10))      # 100.0
+print(log(8, 2))            # 3.0
+print(log(1000, base=10))   # 3.0
+print(log(1))               # 0.0（自然対数）
+
+# 底を決めた版は、汎用関数の底を 2 / 10 にしたものと同じ値
+print(exp2(10), exp10(3))   # 1024.0 1000.0
+print(log2(1024), log10(0.01))  # 10.0 -2.0
+
+try:
+    print(log(0))
+except ValueError as e:
+    print(e)                # math domain error

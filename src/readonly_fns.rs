@@ -84,7 +84,7 @@ struct Def<'a> {
 /// 書き換えない組み込み関数（引数の値を書き換えず、利用者のコードを特殊メソッド経由でしか呼ばない）。
 /// ⚠ ここに無い組み込み関数の呼び出しは「読むだけでない」とみなす（`setattr`・`open`・`next`・`input` など）。
 const READONLY_BUILTIN_FNS: &[&str] = &[
-    "abs", "all", "any", "bool", "chr", "divmod", "enumerate", "float", "getenv", "hash", "int", "isinstance",
+    "abs", "all", "any", "bool", "chr", "divmod", "enumerate", "exp", "exp10", "exp2", "float", "log", "log10", "log2", "getenv", "hash", "int", "isinstance",
     "len", "max", "min", "ord", "pow", "print", "range", "repr", "round", "sorted", "sqrt", "str", "sum", "type", "zip",
 ];
 

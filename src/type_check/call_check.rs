@@ -1901,6 +1901,12 @@ impl TypeChecker {
                 [(None, T::Int | T::Float | T::Bool)] => Some(T::Float),
                 _ => None,
             },
+            // 指数・対数。引数（`base=` のキーワードも含む）がすべて数値と分かるときだけ float。
+            "exp" | "log" | "exp2" | "exp10" | "log2" | "log10"
+                if !arg_data.is_empty() && arg_data.iter().all(|(_, t)| matches!(t, T::Int | T::Float | T::Bool)) =>
+            {
+                Some(T::Float)
+            }
             "round" => match arg_data {
                 [(None, T::Int | T::Float)] => Some(T::Int),
                 [(None, t @ (T::Int | T::Float)), (_, T::Int)] => Some(t.clone()),

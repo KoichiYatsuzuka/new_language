@@ -460,17 +460,70 @@ impl Interpreter {
         let [x]: [Value; 1] = args
             .try_into()
             .map_err(|a: Vec<Value>| format!("TypeError: sqrt() takes exactly one argument ({} given)", a.len()))?;
-        let f = match &x {
-            Value::Int(n) => *n as f64,
-            Value::UInt(n) => *n as f64,
-            Value::Bool(b) => *b as i64 as f64,
-            Value::Float(f) => *f,
-            other => return Err(format!("TypeError: must be real number, not {}", self.type_name(other))),
-        };
+        let f = self.real_arg(&x)?;
         if f < 0.0 {
             return Err("ValueError: math domain error".to_string());
         }
         Ok(Value::Float(f.sqrt()))
+    }
+
+    /// `exp(x, base=e)` / `log(x, base=e)`（任意の底の指数・対数の**汎用関数**）。
+    /// - `exp(x, base)` は `base ** x`、`log(x, base)` は底 `base` の対数。底を省くと自然対数の底 e。
+    /// - `x` / `base` は int / uint / bool / float（位置でもキーワードでも渡せる）。戻り値は常に float。
+    /// - 誤りは CPython の `math` と同じ文言: `ValueError: math domain error`（`log` の `x <= 0`・底が 0 以下）、
+    ///   `ZeroDivisionError`（`log` の底が 1）、`OverflowError: math range error`（有限の入力で結果が溢れた）。
+    /// - 本体は [`exp_with_base`] / [`log_with_base`]（`exp2` / `exp10` / `log2` / `log10` も同じ関数を通る）。
+    pub(crate) fn py_exp_log(
+        &mut self,
+        name: &str,
+        args: Vec<Value>,
+        mut kw: Vec<(String, Value)>,
+    ) -> Result<Value, String> {
+        let n = args.len();
+        let mut it = args.into_iter();
+        let x = it
+            .next()
+            .or_else(|| take_kw(&mut kw, "x"))
+            .ok_or_else(|| format!("TypeError: {name}() missing required argument 'x' (pos 1)"))?;
+        let base = match (it.next(), take_kw(&mut kw, "base")) {
+            (Some(_), Some(_)) => return Err(format!("TypeError: {name}() got multiple values for argument 'base'")),
+            (a, b) => a.or(b),
+        };
+        if it.next().is_some() {
+            return Err(format!("TypeError: {name}() takes at most 2 arguments ({n} given)"));
+        }
+        reject_extra_kw(name, &kw)?;
+        let x = self.real_arg(&x)?;
+        let base = base.map(|b| self.real_arg(&b)).transpose()?;
+        let r = if name == "exp" { exp_with_base(x, base)? } else { log_with_base(x, base)? };
+        Ok(Value::Float(r))
+    }
+
+    /// `exp2(x)` / `exp10(x)` / `log2(x)` / `log10(x)`（底を 2 / 10 に決めた版。汎用関数と同じ本体を通る）。
+    pub(crate) fn py_fixed_base_fn(&mut self, name: &str, args: Vec<Value>) -> Result<Value, String> {
+        let [x]: [Value; 1] = args
+            .try_into()
+            .map_err(|a: Vec<Value>| format!("TypeError: {name}() takes exactly one argument ({} given)", a.len()))?;
+        let x = self.real_arg(&x)?;
+        let r = match name {
+            "exp2" => exp_with_base(x, Some(2.0))?,
+            "exp10" => exp_with_base(x, Some(10.0))?,
+            "log2" => log_with_base(x, Some(2.0))?,
+            "log10" => log_with_base(x, Some(10.0))?,
+            other => return Err(format!("NameError: '{other}' is not a fixed-base math function")),
+        };
+        Ok(Value::Float(r))
+    }
+
+    /// 数学関数の引数（int / uint / bool / float）を f64 にする。それ以外は CPython と同じ `TypeError`。
+    fn real_arg(&self, v: &Value) -> Result<f64, String> {
+        match v {
+            Value::Int(n) => Ok(*n as f64),
+            Value::UInt(n) => Ok(*n as f64),
+            Value::Bool(b) => Ok(*b as i64 as f64),
+            Value::Float(f) => Ok(*f),
+            other => Err(format!("TypeError: must be real number, not {}", self.type_name(other))),
+        }
     }
 
     /// `round(x, ndigits=None)`。CPython と同じく**偶数への丸め**:
@@ -1018,6 +1071,43 @@ impl Interpreter {
 fn take_kw(kw: &mut Vec<(String, Value)>, name: &str) -> Option<Value> {
     let i = kw.iter().position(|(k, _)| k == name)?;
     Some(kw.remove(i).1)
+}
+
+/// `base ** x`（`base` が `None` なら e の `x` 乗）。
+/// - 底は正でなければならない（0 以下・NaN は `ValueError: math domain error`）。
+/// - 底が e / 2 / 10 のときは専用の命令・関数（`exp` / `exp2`）か `powf` を通す（`exp10(3)` は `1000.0` ちょうど）。
+/// - 有限の入力で結果が溢れたら `OverflowError: math range error`（`inf` を黙って返さない）。
+///   底や `x` が元から無限大・NaN のときは IEEE 754 の結果をそのまま返す。0 への下溢れは `0.0`（CPython と同じ）。
+fn exp_with_base(x: f64, base: Option<f64>) -> Result<f64, String> {
+    let r = match base {
+        None => x.exp(),
+        Some(b) if !(b > 0.0) => return Err("ValueError: math domain error".to_string()),
+        Some(b) if b == 2.0 => x.exp2(),
+        Some(b) => b.powf(x),
+    };
+    if r.is_infinite() && x.is_finite() && base.is_none_or(f64::is_finite) {
+        return Err("OverflowError: math range error".to_string());
+    }
+    Ok(r)
+}
+
+/// 底 `base` の `x` の対数（`base` が `None` なら自然対数）。
+/// - `x <= 0` は `ValueError: math domain error`（NaN は NaN のまま返す）。底が 0 以下・NaN も同じ。
+/// - 底が 1 は `ZeroDivisionError: float division by zero`（CPython の `math.log(x, 1)` と同じ）。
+/// - 底が 2 / 10 のときは `log2` / `log10` を直接使う（`ln x / ln b` だと `log(1000, 10)` が `2.9999999999999996` になる。
+///   CPython の `math.log(x, b)` はそう割るので、ここだけ CPython より正確）。
+fn log_with_base(x: f64, base: Option<f64>) -> Result<f64, String> {
+    if x <= 0.0 {
+        return Err("ValueError: math domain error".to_string());
+    }
+    Ok(match base {
+        None => x.ln(),
+        Some(b) if !(b > 0.0) => return Err("ValueError: math domain error".to_string()),
+        Some(b) if b == 1.0 => return Err("ZeroDivisionError: float division by zero".to_string()),
+        Some(b) if b == 2.0 => x.log2(),
+        Some(b) if b == 10.0 => x.log10(),
+        Some(b) => x.ln() / b.ln(),
+    })
 }
 
 /// 残ったキーワード引数は受けない（CPython と同じ文言）。

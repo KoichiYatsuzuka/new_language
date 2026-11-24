@@ -1,0 +1,96 @@
+# exp_log_builtin.ar — 組み込み関数 exp / log（任意の底の汎用関数）と exp2 / exp10 / log2 / log10（底を決めた版）
+#
+# 対になる誤りの例: exp_log_builtin_error.ar
+#
+# - exp(x, base=e) は base ** x、log(x, base=e) は底 base の対数。戻り値は常に float
+# - 底が 2 / 10 の log は log2 / log10 と同じ本体（log(1000, 10) は 3.0 ちょうど）
+# - 誤りは CPython の math と同じ: ValueError（定義域）・ZeroDivisionError（底 1）・OverflowError（溢れ）
+from ...lib.check import emit, check_output
+
+fn close(a: float, b: float) -> bool:
+    return a - b < 1e-12 and b - a < 1e-12
+
+# --- 汎用関数 ---
+emit([str(exp(0)), str(close(exp(1), 2.718281828459045))])           # 1.0 True
+emit([str(exp(3, 2)), str(exp(2, base=10)), str(exp(x=3, base=2))])  # 8.0 100.0 8.0
+emit([str(exp(-1, 2)), str(exp(0.5, 4))])                            # 0.5 2.0
+emit([str(log(1)), str(close(log(2.718281828459045), 1.0))])         # 0.0 True
+emit([str(log(8, 2)), str(log(1000, 10)), str(log(81, 3) > 3.999999)])  # 3.0 3.0 True
+emit([str(log(8, base=2)), str(log(x=100, base=10))])                # 3.0 2.0
+emit([str(log(0.25, 2)), str(log(1e300 * 1e300))])                   # -2.0 inf
+
+# --- 底を決めた版 ---
+emit([str(exp2(10)), str(exp2(-2)), str(exp10(3)), str(exp10(-1))])  # 1024.0 0.25 1000.0 0.1
+emit([str(log2(1024)), str(log2(0.5)), str(log10(1000)), str(log10(0.01))])  # 10.0 -1.0 3.0 -2.0
+
+# 汎用関数と底を決めた版は同じ値になる
+emit([str(exp(7, 2) == exp2(7)), str(exp(5, 10) == exp10(5))])       # True True
+emit([str(log(37, 2) == log2(37)), str(log(37, 10) == log10(37))])   # True True
+
+# --- 特別な値 ---
+let inf: float = 1e300 * 1e300
+let nan: float = inf - inf
+emit([str(exp(inf)), str(exp(-inf)), str(exp(nan) != exp(nan))])     # inf 0.0 True
+emit([str(exp(-2000)), str(log(True))])                              # 0.0（下溢れは 0.0） 0.0
+
+# --- 誤り（CPython の math と同じ種類） ---
+mut got: list[str] = []
+try:
+    log(0)
+except ValueError as e:
+    got.append("log(0): " + str(e))
+try:
+    log(-1, 2)
+except ValueError as e:
+    got.append("log(-1, 2): " + str(e))
+try:
+    log(5, 0)
+except ValueError as e:
+    got.append("log(5, 0): " + str(e))
+try:
+    log(5, 1)
+except ZeroDivisionError as e:
+    got.append("log(5, 1): " + str(e))
+try:
+    exp(1, -2)
+except ValueError as e:
+    got.append("exp(1, -2): " + str(e))
+try:
+    exp(1000)
+except OverflowError as e:
+    got.append("exp(1000): " + str(e))
+try:
+    exp10(400)
+except OverflowError as e:
+    got.append("exp10(400): " + str(e))
+try:
+    log("a")
+except TypeError as e:
+    got.append("log('a'): " + str(e))
+for g in got:
+    emit([g])
+
+check_output([
+    "1.0 True",
+    "8.0 100.0 8.0",
+    "0.5 2.0",
+    "0.0 True",
+    "3.0 3.0 True",
+    "3.0 2.0",
+    "-2.0 inf",
+    "1024.0 0.25 1000.0 0.1",
+    "10.0 -1.0 3.0 -2.0",
+    "True True",
+    "True True",
+    "inf 0.0 True",
+    "0.0 0.0",
+    "log(0): math domain error",
+    "log(-1, 2): math domain error",
+    "log(5, 0): math domain error",
+    "log(5, 1): float division by zero",
+    "exp(1, -2): math domain error",
+    "exp(1000): math range error",
+    "exp10(400): math range error",
+    "log('a'): must be real number, not str",
+    "",
+], "exp_log_builtin")

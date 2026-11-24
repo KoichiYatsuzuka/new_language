@@ -25,6 +25,8 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
     "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "sqrt", "round", "divmod", "pow",
+    // 指数・対数（任意の底の汎用関数 `exp` / `log` と、底を 2 / 10 に決めた版）
+    "exp", "log", "exp2", "exp10", "log2", "log10",
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
     // 書式指定の小言語（タスク 3-4）
     "format",
@@ -247,6 +249,8 @@ impl Interpreter {
             "reversed" => Some(self.py_reversed(args)),
             "abs" => Some(self.py_abs(args)),
             "sqrt" => Some(self.py_sqrt(args)),
+            "exp" | "log" => Some(self.py_exp_log(name, args, Vec::new())),
+            "exp2" | "exp10" | "log2" | "log10" => Some(self.py_fixed_base_fn(name, args)),
             "round" => Some(self.py_round(args, Vec::new())),
             "divmod" => Some(self.py_divmod(args)),
             "pow" => Some(self.py_pow(args, Vec::new())),
@@ -760,6 +764,11 @@ impl Interpreter {
                     "round" => self.py_round(pos, kw),
                     _ => self.py_pow(pos, kw),
                 })
+            }
+            // `exp(x, base=..)` / `log(x, base=..)`。`exp2` などの底が決まった版はキーワードを取らない。
+            "exp" | "log" => {
+                let (pos, kw) = super::py_builtins::split_named(args);
+                Some(self.py_exp_log(name, pos, kw))
             }
             // ここに無い名前はコンパイラが `CallBuiltinKw` を発行しない（到達しない）。
             _ => None,
