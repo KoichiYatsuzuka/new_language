@@ -1,0 +1,12 @@
+# sqrt_builtin_error.ar — 負の数の平方根
+#
+# 対になる正常系: sqrt_builtin.ar
+#
+# 期待されるエラー（実行時）:
+#   ValueError: math domain error
+#
+# ⚠ Rust の f64::sqrt は NaN を返すが、Arrow は CPython の math.sqrt と同じく例外にする（黙って NaN にしない）。
+# expect-file: runtime ValueError "math domain error"
+
+let x: int = -4
+print(sqrt(x))                           # ⛔ 負の数

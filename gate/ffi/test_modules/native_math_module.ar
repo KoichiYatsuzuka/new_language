@@ -1,0 +1,62 @@
+# native_math_module.ar — 数学の組み込み関数（abs / sqrt / cbrt / exp / log …）をネイティブで行う
+#
+# 引数が int / float と分かる呼び出しは LLVM の命令（intrinsic・libm）へ直接落ちる（`gen_math_builtin`）。
+# - 全引数が `let int/float` の関数は **typed 変種**も作られる（コールバックを使わない）。定義域の誤りは ErrSlot へ。
+# - リストの要素などハンドルを使う関数は、ハンドル ABI の道で同じ誤りを出す（インタープリタに例外を作らせる）。
+# - 型が分からない引数・底つきの 2 引数形は今までの道（`CB_CALL_BUILTIN`）。
+#
+# Compile with:
+#   cargo run --release -- --compile gate/ffi/test_modules/native_math_module.ar
+
+fn hyp(let a: float, let b: float) -> float:
+    return sqrt(a * a + b * b)
+
+fn root3(let x: float) -> float:
+    return cbrt(x)
+
+fn sq_int(let n: int) -> float:
+    return sqrt(n)
+
+fn grow(let x: float) -> float:
+    return exp(x) + exp2(x) + exp10(x)
+
+fn logs(let x: float) -> float:
+    return log(x) + log2(x) + log10(x)
+
+fn abs_i(let n: int) -> int:
+    return abs(n)
+
+fn abs_f(let x: float) -> float:
+    return abs(x)
+
+fn sq(let x: float) -> float:
+    return sqrt(x)
+
+fn lg(let x: float) -> float:
+    return log(x)
+
+fn ex(let x: float) -> float:
+    return exp(x)
+
+fn ex10(let x: float) -> float:
+    return exp10(x)
+
+# --- ハンドルの道（リストの要素を回す） ---
+fn root_sum(let xs: list[float]) -> float:
+    mut s = 0.0
+    for x in xs:
+        s += sqrt(x)
+    return s
+
+fn log_sum(let xs: list[float]) -> float:
+    mut s = 0.0
+    for x in xs:
+        s += log(x)
+    return s
+
+# --- 型が分からない引数・底つき（今までの道） ---
+fn untyped(let v: Any) -> float:
+    return sqrt(v)
+
+fn based(let x: float) -> float:
+    return log(x, 2) + exp(x, 2) + log(x, 10)

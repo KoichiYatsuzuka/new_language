@@ -1,0 +1,12 @@
+# exp_log_builtin_error.ar — 0 以下の数の対数
+#
+# 対になる正常系: exp_log_builtin.ar
+#
+# 期待されるエラー（実行時）:
+#   ValueError: math domain error
+#
+# ⚠ Rust の f64::ln は -inf / NaN を返すが、Arrow は CPython の math.log と同じく例外にする（黙って返さない）。
+# expect-file: runtime ValueError "math domain error"
+
+let x: int = 0
+print(log(x))                            # ⛔ 0 の対数

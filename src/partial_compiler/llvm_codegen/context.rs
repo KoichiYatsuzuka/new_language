@@ -547,6 +547,11 @@ impl<'a> GenCtx<'a> {
                 return;
             }
         };
+        self.emit_typed_error_return(&type_name, &msg);
+    }
+
+    /// typed モードで、静的な例外名・メッセージを ErrSlot へ書いて `ret i32 1` する（`raise` と数学の組み込み関数の定義域の誤りが共有）。
+    pub(super) fn emit_typed_error_return(&mut self, type_name: &str, msg: &str) {
         if self.terminated { return; }
         let tp = self.str_const(type_name.as_bytes());
         let mp = self.str_const(msg.as_bytes());

@@ -1,0 +1,43 @@
+# sqrt_builtin.ar — 組み込み関数 sqrt（CPU の平方根命令 = f64::sqrt）と cbrt（立方根）
+#
+# 対になる誤りの例: sqrt_builtin_error.ar
+#
+# - int / bool / float を受け、戻り値は常に float
+# - 負の数は ValueError: math domain error（CPython の math.sqrt と同じ）
+# - NaN は NaN、無限大は無限大、-0.0 は -0.0
+from ...lib.check import emit, check_output
+
+emit([str(sqrt(16)), str(sqrt(2.25)), str(sqrt(0))])             # 4.0 1.5 0.0
+emit([str(sqrt(True)), str(sqrt(1e300 * 1e300))])                # 1.0 inf
+emit([str(sqrt(-0.0))])                                          # -0.0
+
+let r: float = sqrt(2)
+emit([str(r * r > 1.99999999 and r * r < 2.00000001)])           # True
+
+let nan: float = (1e300 * 1e300) - (1e300 * 1e300)
+emit([str(sqrt(nan) != sqrt(nan))])                              # True（NaN は自分と等しくない）
+
+mut caught = "none"
+try:
+    caught = str(sqrt(-1))
+except ValueError as e:
+    caught = str(e)
+emit([caught])                                                   # math domain error
+
+# --- cbrt（立方根）: 負の数にも実数で定まるので誤りにならない ---
+emit([str(cbrt(27)), str(cbrt(-8)), str(cbrt(0.125)), str(cbrt(True))])   # 3.0 -2.0 0.5 1.0
+emit([str(cbrt(-0.0)), str(cbrt(1e300 * 1e300)), str(cbrt(-1e300 * 1e300))])  # -0.0 inf -inf
+emit([str(cbrt(nan) != cbrt(nan))])                                       # True
+
+check_output([
+    "4.0 1.5 0.0",
+    "1.0 inf",
+    "-0.0",
+    "True",
+    "True",
+    "math domain error",
+    "3.0 -2.0 0.5 1.0",
+    "-0.0 inf -inf",
+    "True",
+    "",
+], "sqrt_builtin")
