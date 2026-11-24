@@ -1,0 +1,14 @@
+# compiled_raise_float_module.ar — compiled_raise.ar のコンパイル済みの側・`float` を返す関数の `raise`（known_bugs.md #27）
+#
+# `raise` は戻り値の型どおりに戻る（`float` は `ret double`）。⚠ 以前は型を見ずに `ret i64 -2` を出して clang が落ち、
+# このモジュールの DLL が作られなかった（`check_native_ir_abi.ps1` が「DLL が埋め込まれなかった」で失敗にする）。
+
+fn fail_f(let n: int) -> float:
+    if n > 0:
+        raise ValueError("boom-f")
+    return 0.5
+
+fn after_f(mut log: list[str], let n: int) -> float:
+    let k = fail_f(n)
+    log.append("after_f")
+    return k + 1.0

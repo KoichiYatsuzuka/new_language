@@ -29,9 +29,18 @@ impl Interpreter {
             return Ok(val);
         }
         let actual = self.type_name_of(&val);
+        // 名前が同じ別のクラス（モジュールの `V` と本体の `V`・known_bugs.md #30）。クラスの名前は修飾しない（利用者の決定）
+        // ので、`expected `V`, got `V`` だけでは分からない。どこで定義したクラスかを添える。
+        let same_name_note = match &val {
+            Value::Instance(inst) if actual == outer => match inst.borrow().class.module_name.as_deref() {
+                Some(m) => format!(" (another class of the same name, defined in module `{m}`)"),
+                None => " (another class of the same name, defined in the main program)".to_string(),
+            },
+            _ => String::new(),
+        };
         let msg = format!(
-            "TypeError: mustbe assertion failed at {}: expected `{}`, got `{}`",
-            span, guard_type, actual
+            "TypeError: mustbe assertion failed at {}: expected `{}`, got `{}`{}",
+            span, guard_type, actual, same_name_note
         );
         if let Some(raised) = self.make_internal_raised_error(&msg) {
             self.current_exception = Some(raised);

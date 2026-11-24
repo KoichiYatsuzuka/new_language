@@ -9,6 +9,8 @@
 #   - 跳ね返りの形（同じ番地を読んで書く）・2 つの入れ子の受け手・`int` のフィールド・`int` → `float`・ローカル変数を読む
 #   - 未初期化のフィールドへ書けば読めるようになる・未初期化のフィールドを読むのは今までどおりの誤り
 #   - 名前による呼び出しの結果を使う箇所は巻き戻さない（本体の同じ名前のクラスを入れてガードを外す）
+#   ⚠ 本体の同じ名前のクラスを入れる件は、known_bugs.md #30 の後は作れない（モジュールの `mustbe` が本体のクラスを
+#     通さない）。今は拒まれることだけを確かめる。
 # ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
 # ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/nested_assign_checked.ar。print は emit に置き換え、
 #   出力は最後の check_output で照らす（gate/README.md 2.2）。
@@ -73,17 +75,19 @@ for r in range(3):
     h = m.fresh()
     check_str("labels", m.labels(h, 3), "mamama6")
 
-    # 本体の `K` を入れる: ガードが外れて名前で呼ぶ（本体のメソッドが走る）
+    # 本体の `K` は、モジュールの `mustbe K` を通らない（known_bugs.md #30）。
+    # ⚠ 以前は `mustbe` が名前で照合したので通り、ガードが外れて名前で呼ぶ（本体のメソッドが走る）形をここで
+    #   確かめていた。今はこの形を Arrow のソースから作れない。
     h = m.fresh()
-    mut put_ok = True
+    mut refused = ""
     try:
         m.put_k(h, K(0, "a"))
     except TypeError as e:
-        # `mustbe` がモジュールの型を区別するようになったら（known_bugs.md #30）、この形は作れない
-        put_ok = False
-        emit([str("put_k refused: " + str(e))])
-    if put_ok:
-        check_str("labels of the main program's K", m.labels(h, 3), "papapa1060")
+        refused = str(e)
+    if "another class of the same name, defined in the main program" in refused:
+        emit([str("put_k refused the main program's K")])
+    else:
+        emit([str("put_k did not refuse the main program's K: " + refused)])
 
 # ── 出力を照らす ──
 check_output([
@@ -100,7 +104,7 @@ check_output([
     "read_uninit raised: 'Q' object has no attribute 'y'",
     "read_uninit leaves the field OK",
     "labels OK",
-    "labels of the main program's K OK",
+    "put_k refused the main program's K",
     "round 1",
     "flips OK",
     "flips leaves the field OK",
@@ -114,7 +118,7 @@ check_output([
     "read_uninit raised: 'Q' object has no attribute 'y'",
     "read_uninit leaves the field OK",
     "labels OK",
-    "labels of the main program's K OK",
+    "put_k refused the main program's K",
     "round 2",
     "flips OK",
     "flips leaves the field OK",
@@ -128,6 +132,6 @@ check_output([
     "read_uninit raised: 'Q' object has no attribute 'y'",
     "read_uninit leaves the field OK",
     "labels OK",
-    "labels of the main program's K OK",
+    "put_k refused the main program's K",
     "",
 ], "nested_assign_checked")

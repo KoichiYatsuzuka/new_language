@@ -254,6 +254,17 @@ Violation raises `AccessError`.
 ## Exceptions (`exceptions.rs`)
 
 Built-in exception classes (60: CPython 3.12's hierarchy plus `AccessError`) are constructed by `make_error_class` (`built_in_types.rs`) from the single table `type_check::names::BUILTIN_EXCEPTIONS`, with all ancestors flattened into `bases` (`ClassValue::is_a` does not walk). They have no `__init__`: `instantiate_evaled` stores the positional arguments in `args` and CPython's `str(e)` in `message` (`exc_set_args`), and `super().__init__(..)` reaches `eval_class_method`. Internal error strings (`"KeyError: 'k'"`) become instances in `make_internal_raised_error`; `except m.Err` uses `value_is_type`.
+Built-in classes get one `class_id` per name for the whole process (`value::builtin_class_id`, ids from `BUILTIN_CLASS_ID_BASE`), although every global scope (main and each module) rebuilds them.
+
+**Runtime type tests compare classes, not names** (known_bugs.md #30). `value_is_type` (`is` / `mustbe` / `is T:` arms / compiled `is`), `vm_exc_matches` (`except T:`) and `class_is_subclass` (`isinstance`) first match by name. When the instance's **own** name matched, `names_another_class` looks the name up in the current globals (`scopes[0]` only, never local frames). If that name is bound to a different class (`same_class`: same `class_id`, or an enum member's class vs its enum), the match fails. Without the check, a module's `V` and the main program's `V` both pass.
+- Shortcut: the lookup is skipped when the class was defined in the current globals' module (`global_module_names`), unless it is a built-in class.
+- Async workers receive the module names (`TaskEnv::module_names`) so that this shortcut stays correct.
+- `ar_method_guard` resolves its cell with the same lookup (`global_class_id`).
+- Templates (known_bugs.md #39): a name bound to a `TemplateClass`, written bare (`is Box`) or qualified (`is m.Box`),
+  matches its instantiations. `is_instantiation_of` checks that the class has an `instance_name` and the same `name` and
+  `module_name` as the template (`TemplateClassValue::module_name`).
+  ⚠ It does not compare the template's address: in async workers the namespace value and the globals are copied
+  separately.
 
 Bound methods (python_builtins_plan.md 1-8 / 1-10): reading `obj.method` returns `FnValue::bind(receiver, target)` — a body-less `FnValue` whose `bound` field holds the receiver and a `BoundTarget` (`Methods` overloads / `Gen` generator method / `Builtin(name)` for methods of built-in values listed in `type_check::names::BUILTIN_VALUE_METHODS`). `exec_fn_evaled` redirects it to `call_bound_method` (same dispatch as `obj.method(..)`, including the immutable-receiver check; access control was checked at the read). Equality / hash use `FnValue::same_binding` / `identity_ptr`.
 
@@ -293,7 +304,7 @@ All values crossing the ABI boundary are `i64` handles into a thread-local `VALU
 | `1` (`TL_TRUE`) | `Value::Bool(true)` |
 | `2` (`TL_FALSE`) | `Value::Bool(false)` |
 | `-1` (`TL_STOP_ITER`) | iteration exhausted |
-| `-2` (`TL_EXCEPTION`) | exception raised |
+| `-2` (`TL_EXCEPTION`) | returned after a raise; exceptions are detected from the native-call state (`take_error_or_raise` / `CB_EXC_PENDING`), not from this value (known_bugs.md #28) |
 | `>= 3` | index into `VALUE_ARENA` |
 
 `ArCallbacks` is a `#[repr(C)]` struct of function pointers covering `make_int`, `make_str`, `call_fn`, `get_attr`, `set_attr`, `binop`, `iter_from`, `iter_next`, `raise_exc`, etc.

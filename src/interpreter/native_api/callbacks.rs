@@ -2343,12 +2343,15 @@ extern "C" fn ar_method_guard(obj_h: i64, class_ptr: *const u8, class_len: i32, 
             return 0;
         }
         let interp = unsafe { &*interp_ptr };
-        match interp.get_var(class_name).map(|v| v.get_value()) {
-            Some(Value::Class(cls)) => {
-                want = cls.class_id as u64;
+        // ⚠ 今の大域（このモジュールの大域・`enter_native_globals`）だけを引く（known_bugs.md #30・型の照合の
+        //   `names_another_class` と同じ）。`get_var` はローカルの枠を先に見るので、非同期タスクの本体が見ていた
+        //   本体の同じ名前のクラスを引いて、セルに別のクラスを焼きうる。
+        match interp.global_class_id(class_name) {
+            Some(id) => {
+                want = id as u64;
                 cell.store(want, Ordering::Relaxed);
             }
-            _ => return 0,
+            None => return 0,
         }
     }
     i32::from(class_id as u64 == want && !(need_mutable != 0 && immutable))
@@ -2860,7 +2863,17 @@ pub(crate) static CALLBACKS: ArCallbacks = ArCallbacks {
     num_field_ptr: ar_num_field_ptr,
     attr_blocks: ar_attr_blocks,
     iter_begin: ar_iter_begin,
+    exc_pending: ar_exc_pending,
 };
+
+/// field 88（known_bugs.md #28）: このスレッドに誤りか `raise` した例外が積まれていれば 1。生成コードが、例外を出しうる
+/// モジュールの関数を直接呼んだ後に呼び、1 ならその関数からすぐ戻る（積まれたものは入口〔`eval/native.rs`〕が取り出す）。
+extern "C" fn ar_exc_pending() -> i32 {
+    with_state(|s| {
+        let st = s.borrow();
+        i32::from(st.error.is_some() || st.pending_raise.is_some())
+    })
+}
 
 /// field 86（copy_alloc_speed_plan.md 7-18）: 同じ親の `n` 個のフィールドが持つインスタンスの先頭の塊の番地を、親を 1 回だけ
 /// たどって `out[i]` へ書く。1 件ごとの結果は field 79 を `reqs[i]` で呼んだのと同じ（読み出しの IC が当たり、slot が今持って

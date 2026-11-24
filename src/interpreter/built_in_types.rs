@@ -151,7 +151,8 @@ pub(super) fn make_error_class(class_name: &str, bases: Vec<String>) -> Rc<Class
         field_index,
         field_mutability_vec,
         is_exception: true,
-        ..ClassValue::synthetic(class_name.to_string(), crate::interpreter::value::alloc_class_id())
+        // ⚠ ID は名前ごとに 1 つ（どの大域の `ValueError` も同じクラス・known_bugs.md #30）
+        ..ClassValue::synthetic(class_name.to_string(), crate::interpreter::value::builtin_class_id(class_name))
     })
 }
 
@@ -230,7 +231,8 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
         field_index: HashMap::from([("value".to_string(), 0usize)]),
         field_count: 1,
         field_mutability_vec: vec![true],
-        ..ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
+        // ⚠ ID は名前ごとに 1 つ（known_bugs.md #30・`builtin_class_id`）
+        ..ClassValue::synthetic(name.to_string(), crate::interpreter::value::builtin_class_id(name))
     })
 }
 
@@ -244,7 +246,8 @@ pub(super) fn make_primitive_wrapper_class(name: &str, prim_type: &str) -> Rc<Cl
 /// （`enum_item_Name` は廃止した名前・`implementation_plans/enum_member_type_plan.md` 1-2）。
 pub(super) fn make_builtin_enum_class(name: &str, variants: &[(&str, i64)]) -> Rc<ClassValue> {
     // メンバーのクラス: value フィールドを持つだけ。⚠ `value` は不変（メンバーは値・`build_enum_classes`）
-    let item_cls_id = crate::interpreter::value::alloc_class_id();
+    // ⚠ ID は名前ごとに 1 つ（known_bugs.md #30・`builtin_class_id`）。メンバーのクラスは enum と同じ名前なので鍵を分ける
+    let item_cls_id = crate::interpreter::value::builtin_class_id(&format!("{name}.<member>"));
     let item_cls = Rc::new(ClassValue {
         field_mutability: HashMap::from([("value".to_string(), false)]),
         field_index: HashMap::from([("value".to_string(), 0usize)]),
@@ -263,7 +266,7 @@ pub(super) fn make_builtin_enum_class(name: &str, variants: &[(&str, i64)]) -> R
     // enum クラス本体（バリアントのみ保持、インスタンス化不可）
     Rc::new(ClassValue {
         class_vars,
-        ..ClassValue::synthetic(name.to_string(), crate::interpreter::value::alloc_class_id())
+        ..ClassValue::synthetic(name.to_string(), crate::interpreter::value::builtin_class_id(name))
     })
 }
 

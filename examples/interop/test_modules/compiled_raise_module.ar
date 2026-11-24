@@ -1,0 +1,67 @@
+# compiled_raise_module.ar — compiled_raise.ar のコンパイル済みの側（known_bugs.md #27 / #28）
+#
+# コンパイル済みの関数の `raise` は例外をスレッドの状態に積み、戻り値の型どおりに戻る。インタープリタの入口と、
+# 直接呼んだ関数の後の生成コードは、戻り値の印ではなく状態を見る。
+# ⚠ 以前は: `int` を返す関数の例外が消えて `-2` が返り（#28 ①）、直接呼んだ関数が `raise` しても呼ぶ側が続きを
+#   走らせ、普通に戻ると例外が消えた（#28 ②）。
+# ⚠ `float` を返す関数の `raise`（#27）は compiled_raise_float_module.ar に分ける（以前はそれがあるとモジュール全体の
+#   DLL が作られず、ここの関数も VM で動いて #28 が隠れた）。
+
+class Box:
+    mut v: int
+
+    fn fail_m(mut self, let n: int) -> int:
+        if n > 0:
+            raise ValueError("boom-m")
+        return 0
+
+    # 直接呼んだメソッドが raise したら、受け手へ書かずに戻る
+    fn after_m(mut self, let n: int) -> None:
+        let k = self.fail_m(n)
+        self.v = 99 + k
+
+# 例外を出す関数（戻り値の型ごと）
+fn fail_i(let n: int) -> int:
+    if n > 0:
+        raise ValueError("boom-i")
+    return 0
+
+fn fail_mi(mut xs: list[int]) -> int:
+    if len(xs) > 0:
+        raise ValueError("boom-mi")
+    return 0
+
+fn fail_s(let n: int) -> str:
+    if n > 0:
+        raise ValueError("boom-s")
+    return "ok"
+
+# 直接呼んだ関数が raise したら、続き（`log` への書き込み）を走らせずに戻る
+fn after_i(mut log: list[str], let n: int) -> int:
+    let k = fail_i(n)
+    log.append("after_i")
+    return k + 1
+
+fn after_s(mut log: list[str], let n: int) -> None:
+    let k = fail_s(n)
+    log.append("after_s " + k)
+
+# 入れ子（3 段）とループの中
+fn deep(mut log: list[str], let n: int) -> int:
+    let k = after_i(log, n)
+    log.append("deep")
+    return k
+
+fn in_loop(mut log: list[str], let n: int) -> int:
+    mut s = 0
+    for i in range(5):
+        s += fail_i(i - n)
+        log.append("loop " + str(i))
+    return s
+
+# コールバックを呼ばない数値だけの関数: 例外を出さないので、呼んだ後に何も確かめない
+fn sq(let x: int) -> int:
+    return x * x
+
+fn use_sq(let n: int) -> int:
+    return sq(n) + 1

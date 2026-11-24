@@ -199,6 +199,9 @@ pub struct TemplateFnValue {
 pub struct TemplateClassValue {
     pub name: String,
     pub template_params: Vec<crate::ast::TemplateParam>,
+    /// **定義したモジュールの名前**（[`ClassValue::module_name`] と同じ・メインは `None`）。具体化のクラスは
+    /// テンプレートと同じモジュールで作るので、`module_name` が一致する（`Interpreter::is_instantiation_of`・known_bugs.md #39）。
+    pub module_name: Option<Rc<str>>,
 }
 
 

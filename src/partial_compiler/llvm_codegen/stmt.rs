@@ -267,7 +267,7 @@ impl<'a> GenCtx<'a> {
                     self.emit_typed_raise(exc_expr);
                     return;
                 }
-                // CB_RAISE(type_handle, msg_handle) → returns TL_EXCEPTION
+                // CB_RAISE(type_handle, msg_handle): 例外をスレッドの状態に積む（戻り値は使わない・#28）
                 let (type_h, msg_h) = match exc_expr {
                     Expr::Call { func, args, .. } => {
                         // func → type name, args[0] → message (or None)
@@ -288,14 +288,18 @@ impl<'a> GenCtx<'a> {
                     }
                 };
                 self.call_cb(CB_RAISE, &[format!("i64 {type_h}"), format!("i64 {msg_h}")]);
-                self.ret_handle("-2"); // TL_EXCEPTION sentinel
+                // この関数は `raise` しうる（直接呼ぶ側が確かめる・#28）
+                self.fail_sites += 1;
+                // 例外はスレッドの状態に積んだので、戻り値の型どおりに戻る（`float` は `ret double`・known_bugs.md #27）
+                self.emit_exception_return();
             }
             Stmt::Raise { exc: None, .. } => {
                 // bare re-raise: signal exception with empty type
                 let empty = self.str_const(b"");
                 self.call_cb(CB_RAISE, &["i64 0".to_string(), "i64 0".to_string()]);
                 let _ = empty;
-                self.ret_handle("-2");
+                self.fail_sites += 1;
+                self.emit_exception_return();
             }
 
             Stmt::If { branches, else_body, span: _ } => {

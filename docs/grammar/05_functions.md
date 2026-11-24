@@ -41,6 +41,26 @@ fn connect(let host: str, let port: int = 8080) -> None:
 
 デフォルト値を持つパラメータの**後ろ**にデフォルト値なしのパラメータを置くとパースエラー。
 
+### 可変長パラメータ（`...` と `local::args`）
+
+```ar
+fn sum_all(let ...: int) -> int:
+    mut result = 0
+    if local::args is not None:
+        for x in local::args:
+            result += x
+    return result
+
+print(sum_all(... = 1, 2, 3))   # 6
+```
+
+`...` のパラメータは 1 つの関数に 1 つまで（2 つ目はパースエラー）。渡された値は `local::args`
+（型は `Optional[list[T]]`）で読む。入れ子の関数からも外の関数の `local::args` を読める。
+
+⚠ `local::` の名前空間にあるのは `local::args` だけ。ほかの名前（`local::calls` など）と、`...` の
+パラメータを持たない関数の中の `local::args` は静的な誤り `UndefinedName`（known_bugs.md #22。以前は型検査を
+通り、実行すると `VmForceError` で落ちていた）。`static mut` の変数は `calls` のように裸の名前で読む。
+
 ### 戻り値型アノテーション
 
 戻り値型アノテーション (`-> Type`) が**ない**場合、静的型検査が  

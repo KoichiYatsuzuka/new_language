@@ -1,0 +1,112 @@
+# module_class_identity.ar — モジュールのクラスと、本体の同じ名前のクラスは別のクラス（known_bugs.md #30）
+#
+# 実行時の `x is V` / `isinstance(x, V)` / `match` の `is V:` の腕 / `x mustbe V` / `except E:` は、その名前を
+# 今の場所で引いたクラスと同じクラスかで決まる（`class_id` で比べる・`ar_method_guard` と同じ）。
+# ⚠ 以前は名前の文字列で比べていたので、モジュールの中の照合が本体の `V` を通し、本体の `except E:` がモジュールの
+#   `E` を捕まえていた。組み込みのクラス（`ValueError`・enum）はどのモジュールでも同じクラスのまま。
+# 例題は examples/basics/module_class_identity.ar（gate/ のテストは examples/ を参照しない）。
+from ..lib.check import check_eq
+
+import namespace_modules.same_name as m
+
+class V:
+    mut x: float
+
+class E(Error):
+    fn __init__(mut self, message: str) -> None:
+        self.message = message
+
+fn raise_main() -> None:
+    raise E("main E")
+
+# モジュールの中の照合
+check_eq(m.probe(V(2.0)), ["is False", "isinstance False", "other arm", "mustbe refused"], "module probe, the main program's V")
+check_eq(m.probe(m.make()), ["is True", "isinstance True", "is V arm", "mustbe ok"], "module probe, the module's V")
+
+# 本体の照合
+let mv: Any = m.make()
+check_eq(mv is V, False, "module V is V")
+check_eq(isinstance(mv, V), False, "isinstance(module V, V)")
+check_eq(mv is m.V, True, "module V is m.V")
+check_eq(V(3.0) is V, True, "main V is V")
+check_eq(isinstance(V(3.0), V), True, "isinstance(main V, V)")
+check_eq(V(3.0) is m.V, False, "main V is m.V")
+mut arm = "other arm"
+match (mv):
+    is V:
+        arm = "is V arm"
+check_eq(arm, "other arm", "match is V with the module's V")
+
+# mustbe の誤りは、どこで定義したクラスかを添える（クラスの名前は修飾しない）
+mut msg = ""
+try:
+    let v = mv mustbe V
+except TypeError as e:
+    msg = str(e)
+check_eq(msg.endswith("expected `V`, got `V` (another class of the same name, defined in module `namespace_modules.same_name`)"),
+    True, "mustbe message: " + msg)
+
+# except
+check_eq(m.catch(raise_main), "another exception", "module except E, the main program's E")
+check_eq(m.catch(m.raise_e), "caught as this module's E", "module except E, the module's E")
+mut caught = ""
+try:
+    m.raise_e()
+except E:
+    caught = "main E"
+except m.E as e:
+    caught = "m.E " + e.message
+check_eq(caught, "m.E module E", "main except E / m.E")
+
+# 組み込みのクラスはどのモジュールでも同じクラス
+mut builtin = ""
+try:
+    m.raise_value()
+except ValueError as e:
+    builtin = str(e is ValueError) + " " + str(isinstance(e, ValueError))
+check_eq(builtin, "True True", "a ValueError raised in the module")
+builtin = ""
+try:
+    m.parse_bad()
+except ValueError as e:
+    builtin = str(e is ValueError)
+check_eq(builtin, "True", "an internal ValueError raised in the module")
+check_eq(m.is_level(m.Level.High), True, "enum member is Level in the module")
+
+# 非同期タスクの中でも同じ（ワーカーにも各大域のモジュールの名前を送る・`TaskEnv::module_names`）
+mut mng = AsyncManager(num_thread=2)
+mng <- async->list[str]:
+    block_return m.probe(V(2.0)) + m.probe(m.make())
+mng.wait_for_finish()
+check_eq(mng.error_list[0], None, "the task did not fail")
+check_eq(mng.results[0], ["is False", "isinstance False", "other arm", "mustbe refused",
+    "is True", "isinstance True", "is V arm", "mustbe ok"], "module probe in a task")
+
+# テンプレート（known_bugs.md #39）: 別名で書いた `m.Box` は、モジュールのテンプレートのどの具体化にも真。
+# 本体の同じ名前のテンプレート `Box` とは別。⚠ 以前は `b is m.Box` が偽、`b is Box` が真だった
+class Box[T]:
+    mut item: T
+
+let b: Any = m.make_box()
+let mb: Any = Box[int](6)
+check_eq([b is m.Box, b is m.Box[int], b is Box, b is Box[int]], [True, True, False, False], "the module's Box[int]")
+check_eq([mb is m.Box, mb is m.Box[int], mb is Box, mb is Box[int]], [False, False, True, True], "the main program's Box[int]")
+check_eq([m.is_box(b), m.is_box(mb)], [True, False], "is Box in the module")
+check_eq((b mustbe m.Box).item, 5, "mustbe m.Box")
+mut refused = False
+try:
+    let x = mb mustbe m.Box
+except TypeError as e:
+    refused = True
+check_eq(refused, True, "mustbe m.Box refuses the main program's Box[int]")
+mut tarm = "other arm"
+match (b):
+    is m.Box:
+        tarm = "is m.Box arm"
+check_eq(tarm, "is m.Box arm", "match is m.Box")
+mut tmng = AsyncManager(num_thread=1)
+tmng <- async->list[bool]:
+    block_return [b is m.Box, mb is m.Box, m.is_box(b), m.is_box(mb)]
+tmng.wait_for_finish()
+check_eq(tmng.error_list[0], None, "the template task did not fail")
+check_eq(tmng.results[0], [True, False, True, False], "templates in a task")

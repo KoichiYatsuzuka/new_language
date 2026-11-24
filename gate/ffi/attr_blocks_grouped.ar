@@ -8,6 +8,8 @@
 #   - 2 つ・3 つの受け手をまとめて取って読み書きする・親が違うときはまとめない
 #   - 呼ぶ間に親のフィールドを差し替えると、次は新しい子を読む（覚えた番地を捨てる）
 #   - まとめた中の 1 件だけ外れる（本体の同じ名前で並びの違うクラスを入れる）と、その件だけ今までの道で、値は同じ
+#   ⚠ 本体の同じ名前のクラスを入れる件は、known_bugs.md #30 の後は作れない（モジュールの `mustbe` が本体のクラスを
+#     通さない）。今は拒まれることだけを確かめる。
 # ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
 # ⚠ gate/ への写し（gate_speed_plan.md 9-1）: もとは examples/interop/attr_blocks_grouped.ar。print は emit に置き換え、
 #   出力は最後の check_output で照らす（gate/README.md 2.2）。
@@ -44,20 +46,19 @@ for r in range(3):
     mut b = m.fresh()
     check("others", m.others(a, b, 2), 2002.5)
 
-    # 本体の `V` を `h.w` に入れる: まとめた中で `h.w` の件だけ外れる
+    # 本体の `V` は、モジュールの `mustbe V` を通らない（known_bugs.md #30）。
+    # ⚠ 以前は `mustbe` が名前で照合したので通り、`h.w` に本体の `V` を入れて、まとめた中で `h.w` の件だけ外れる形を
+    #   ここで確かめていた。今はこの形を Arrow のソースから作れない。
     h = m.fresh()
-    mut put_ok = True
+    mut refused = ""
     try:
         m.put_w(h, V(0.25, 0.5))
     except TypeError as e:
-        # `mustbe` がモジュールの型を区別するようになったら（known_bugs.md #30）、この形は作れない
-        put_ok = False
-        emit([str("put_w refused: " + str(e))])
-    if put_ok:
-        check("adds with the main program's V", m.adds(h, 4), 3003.0)
-        h = m.fresh()
-        m.put_w(h, V(0.25, 0.5))
-        check("sums with the main program's V", m.sums(h, 3), 10503.5)
+        refused = str(e)
+    if "another class of the same name, defined in the main program" in refused:
+        emit([str("put_w refused the main program's V")])
+    else:
+        emit([str("put_w did not refuse the main program's V: " + refused)])
 
 # ── 出力を照らす ──
 check_output([
@@ -68,8 +69,7 @@ check_output([
     "replaces OK",
     "replaces leaves the last child OK",
     "others OK",
-    "adds with the main program's V OK",
-    "sums with the main program's V OK",
+    "put_w refused the main program's V",
     "round 1",
     "adds OK",
     "adds leaves the argument OK",
@@ -77,8 +77,7 @@ check_output([
     "replaces OK",
     "replaces leaves the last child OK",
     "others OK",
-    "adds with the main program's V OK",
-    "sums with the main program's V OK",
+    "put_w refused the main program's V",
     "round 2",
     "adds OK",
     "adds leaves the argument OK",
@@ -86,7 +85,6 @@ check_output([
     "replaces OK",
     "replaces leaves the last child OK",
     "others OK",
-    "adds with the main program's V OK",
-    "sums with the main program's V OK",
+    "put_w refused the main program's V",
     "",
 ], "attr_blocks_grouped")

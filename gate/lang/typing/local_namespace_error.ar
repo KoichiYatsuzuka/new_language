@@ -1,0 +1,22 @@
+# local_namespace_error.ar — `local::` で読めるのは可変長パラメータの `local::args` だけ（known_bugs.md #22）
+#
+# 正常系は variadic.ar・varargs_nested_fn.ar（入れ子の関数から外の `local::args` を読む）。
+# ⚠ 以前は型検査を通り、実行すると `VmForceError` で落ちていた。
+
+fn count(let p: int) -> int:
+    static mut calls: int = 0
+    calls += 1
+    return local::calls          # expect: static UndefinedName "name 'local::calls' is not defined (`local::` holds only"
+
+fn no_variadic(let x: int) -> int:
+    return len(local::args)      # expect: static UndefinedName "name 'local::args' is not defined"
+
+# 入れ子の関数の中でも、外の関数に `...` が無ければ読めない
+fn outer(let x: int) -> int:
+    fn inner() -> int:
+        return len(local::args)  # expect: static UndefinedName "name 'local::args' is not defined"
+    return inner()
+
+print(count(1))
+print(no_variadic(2))
+print(outer(3))

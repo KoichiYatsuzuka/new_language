@@ -1,0 +1,269 @@
+# compiled_raise.ar — コンパイル済みのモジュールの関数の `raise`（known_bugs.md #27 / #28）
+#
+# 以前は、`--compile` したモジュールで:
+#   - `int` を返す関数（typed の入口を持たないもの・`fail_mi`）の `raise` が例外にならず `-2` が返った（#28 ①）
+#   - 直接呼んだ関数が `raise` しても、呼ぶ側が続き（`log.append(..)`・受け手への書き込み）を走らせ、呼ぶ側が普通に
+#     戻ると例外が消えた（`after_i` が `-1` を返す・`after_s` が `None` を返す・`after_m` が `v = 99` を書く・#28 ②）
+#   - `float` を返す関数に `raise` があると clang が落ち、モジュール全体の DLL が作られなかった（#27）
+# 今は `raise` が例外をスレッドの状態に積み、インタープリタの入口と、直接呼んだ後の生成コードが状態を見る。
+# 同じ定義を、モジュール（.arc・コンパイル済み）と、この本体に書いた写し（VM）の両方で走らせて同じ結果になること。
+#   1. cargo run --release -- --compile examples/interop/test_modules/compiled_raise_module.ar
+#      cargo run --release -- --compile examples/interop/test_modules/compiled_raise_float_module.ar
+#   2. cargo run --release -- examples/interop/compiled_raise.ar
+# ⚠ `float` の関数はモジュールを分ける（以前はそれがあるとモジュール全体が VM で動き、#28 が隠れた）。
+# ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
+
+import test_modules.compiled_raise_module as m
+import test_modules.compiled_raise_float_module as mf
+
+# ── VM（この本体の写し） ─────────────────────────────────────────────────────
+class Box:
+    mut v: int
+
+    fn fail_m(mut self, let n: int) -> int:
+        if n > 0:
+            raise ValueError("boom-m")
+        return 0
+
+    # 直接呼んだメソッドが raise したら、受け手へ書かずに戻る
+    fn after_m(mut self, let n: int) -> None:
+        let k = self.fail_m(n)
+        self.v = 99 + k
+
+# 例外を出す関数（戻り値の型ごと）
+fn fail_i(let n: int) -> int:
+    if n > 0:
+        raise ValueError("boom-i")
+    return 0
+
+fn fail_mi(mut xs: list[int]) -> int:
+    if len(xs) > 0:
+        raise ValueError("boom-mi")
+    return 0
+
+fn fail_f(let n: int) -> float:
+    if n > 0:
+        raise ValueError("boom-f")
+    return 0.5
+
+fn fail_s(let n: int) -> str:
+    if n > 0:
+        raise ValueError("boom-s")
+    return "ok"
+
+# 直接呼んだ関数が raise したら、続き（`log` への書き込み）を走らせずに戻る
+fn after_i(mut log: list[str], let n: int) -> int:
+    let k = fail_i(n)
+    log.append("after_i")
+    return k + 1
+
+fn after_s(mut log: list[str], let n: int) -> None:
+    let k = fail_s(n)
+    log.append("after_s " + k)
+
+fn after_f(mut log: list[str], let n: int) -> float:
+    let k = fail_f(n)
+    log.append("after_f")
+    return k + 1.0
+
+# 入れ子（3 段）とループの中
+fn deep(mut log: list[str], let n: int) -> int:
+    let k = after_i(log, n)
+    log.append("deep")
+    return k
+
+fn in_loop(mut log: list[str], let n: int) -> int:
+    mut s = 0
+    for i in range(5):
+        s += fail_i(i - n)
+        log.append("loop " + str(i))
+    return s
+
+# コールバックを呼ばない数値だけの関数: 例外を出さないので、呼んだ後に何も確かめない
+fn sq(let x: int) -> int:
+    return x * x
+
+fn use_sq(let n: int) -> int:
+    return sq(n) + 1
+
+fn run_vm() -> list[str]:
+    mut out: list[str] = []
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = fail_i(1)
+            out.append("fail_i: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("fail_i: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = fail_mi(ys)
+            out.append("fail_mi: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("fail_mi: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = fail_f(1)
+            out.append("fail_f: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("fail_f: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = fail_s(1)
+            out.append("fail_s: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("fail_s: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = after_i(log, 1)
+            out.append("after_i: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("after_i: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = after_s(log, 1)
+            out.append("after_s: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("after_s: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = after_f(log, 1)
+            out.append("after_f: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("after_f: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = deep(log, 1)
+            out.append("deep: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("deep: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = in_loop(log, 2)
+            out.append("in_loop: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("in_loop: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut b = Box(0)
+        try:
+            b.after_m(1)
+            out.append("after_m: no exception, v=" + str(b.v))
+        except ValueError as ex:
+            out.append("after_m: ValueError " + str(ex) + " v=" + str(b.v))
+    out.append("use_sq: " + str(use_sq(7)) + " " + str(fail_i(0)) + " " + str(fail_f(0)) + " " + fail_s(0))
+    return out
+
+# ── コンパイル済み（モジュール） ──────────────────────────────────────────────
+fn run_compiled() -> list[str]:
+    mut out: list[str] = []
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = m.fail_i(1)
+            out.append("fail_i: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("fail_i: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = m.fail_mi(ys)
+            out.append("fail_mi: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("fail_mi: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = mf.fail_f(1)
+            out.append("fail_f: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("fail_f: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = m.fail_s(1)
+            out.append("fail_s: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("fail_s: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = m.after_i(log, 1)
+            out.append("after_i: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("after_i: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = m.after_s(log, 1)
+            out.append("after_s: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("after_s: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = mf.after_f(log, 1)
+            out.append("after_f: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("after_f: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = m.deep(log, 1)
+            out.append("deep: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("deep: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut log: list[str] = []
+        mut ys = [1]
+        try:
+            let r = m.in_loop(log, 2)
+            out.append("in_loop: no exception, got " + str(r) + " " + str(log))
+        except ValueError as ex:
+            out.append("in_loop: ValueError " + str(ex) + " " + str(log))
+    block:
+        mut b = m.Box(0)
+        try:
+            b.after_m(1)
+            out.append("after_m: no exception, v=" + str(b.v))
+        except ValueError as ex:
+            out.append("after_m: ValueError " + str(ex) + " v=" + str(b.v))
+    out.append("use_sq: " + str(m.use_sq(7)) + " " + str(m.fail_i(0)) + " " + str(mf.fail_f(0)) + " " + m.fail_s(0))
+    return out
+
+fn expect(let name: str, let got: list[str], let want: list[str]) -> None:
+    if got != want:
+        raise RuntimeError("compiled_raise: " + name + " = " + str(got) + ", expected " + str(want))
+
+let want: list[str] = ['fail_i: ValueError boom-i []', 'fail_mi: ValueError boom-mi []', 'fail_f: ValueError boom-f []', 'fail_s: ValueError boom-s []', 'after_i: ValueError boom-i []', 'after_s: ValueError boom-s []', 'after_f: ValueError boom-f []', 'deep: ValueError boom-i []', "in_loop: ValueError boom-i ['loop 0', 'loop 1', 'loop 2']", 'after_m: ValueError boom-m v=0', 'use_sq: 50 0 0.5 ok']
+let vm = run_vm()
+expect("vm", vm, want)
+let compiled = run_compiled()
+expect("compiled", compiled, vm)
+for line in compiled:
+    print("compiled_raise: " + line)
+print("compiled_raise: ok")

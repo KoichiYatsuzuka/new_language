@@ -8,6 +8,8 @@
 #   - 2 つ・3 つの受け手をまとめて取って読み書きする・親が違うときはまとめない
 #   - 呼ぶ間に親のフィールドを差し替えると、次は新しい子を読む（覚えた番地を捨てる）
 #   - まとめた中の 1 件だけ外れる（本体の同じ名前で並びの違うクラスを入れる）と、その件だけ今までの道で、値は同じ
+#   ⚠ 本体の同じ名前のクラスを入れる件は、known_bugs.md #30 の後は作れない（モジュールの `mustbe` が本体のクラスを
+#     通さない）。今は拒まれることだけを確かめる。
 # ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
 
 import test_modules.attr_blocks_grouped_module as m
@@ -47,7 +49,8 @@ for r in range(3):
     try:
         m.put_w(h, V(0.25, 0.5))
     except TypeError as e:
-        # `mustbe` がモジュールの型を区別するようになったら（known_bugs.md #30）、この形は作れない
+        # known_bugs.md #30 で `mustbe` がモジュールの型を区別するようになったので、ここに来る（この形は作れない。
+        # 誤りの文に `another class of the same name, defined in the main program` と添えられる）
         put_ok = False
         print("put_w refused: " + str(e))
     if put_ok:

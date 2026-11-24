@@ -422,7 +422,15 @@ impl Interpreter {
                 //   どの具体化にも真、`is Stack[int]` は具体化の名前で見る（フェーズ10 10-10）。
                 // 基底・`Exception`（すべての例外の基底・10-19）は `ClassValue::is_a` で見る。
                 if inst.class.is_a(type_name) || inst.class.instance_name.as_deref() == Some(type_name) {
-                    return true;
+                    // ⚠ 自分の名前で一致したときは、その名前を今の場所で引いたクラスと同じクラスか見る（known_bugs.md #30・
+                    //   `ar_method_guard` と同じ照合）。実行時のクラスの名前はモジュールで修飾しないので、名前だけだと
+                    //   モジュールの `V` と本体の同じ名前の `V` が区別できず、`x is V` / `mustbe V` / `is V:` の腕 /
+                    //   `except V` が別のクラスを通していた。基底（`is LookupError`）・`Exception` での一致は名前のまま。
+                    let own = inst.class.name == type_name || inst.class.instance_name.as_deref() == Some(type_name);
+                    if !own || !self.names_another_class(&inst.class, type_name) {
+                        return true;
+                    }
+                    return inst.class.bases.iter().any(|b| b == type_name);
                 }
                 // モジュールのクラス（`tags.Tag`・10-8）。
                 if !type_name.contains('.') {
@@ -433,19 +441,16 @@ impl Interpreter {
                 }
                 // 書いたとおりの別名（`t.Tag`）は名前空間を引いて、同じクラスか・その派生か見る。
                 // ⚠ enum のメンバーのクラスは、引いた `Name` クラス（メンバーを持つ方）とは別のクラス
-                //   （`build_enum_classes`）。`class_id` は一致しないので、同じモジュールの同じ名前の
-                //   enum かで見る。
-                let class_id = inst.class.class_id;
-                let enum_key = inst.class.enum_of.clone().map(|e| (e, inst.class.module_name.clone()));
+                //   （`build_enum_classes`）。`Self::same_class` が同じ enum かで見る。
                 drop(inst);
-                let Some(target) = self.dotted_class(type_name) else {
-                    return false;
+                let target = match self.dotted_value(type_name) {
+                    Some(Value::Class(c)) => c,
+                    // 別名を通したテンプレート（`x is m.Box`）は、どの具体化にも真（素の `is Box` と同じ・known_bugs.md #39）。
+                    // ⚠ 以前は `dotted_class` がテンプレートを返さず、いつも偽だった。
+                    Some(Value::TemplateClass(t)) => return self.is_instantiation_of(&inst_rc.borrow().class, &t),
+                    _ => return false,
                 };
-                if target.class_id == class_id
-                    || enum_key.is_some_and(|(e, m)| {
-                        target.enum_of.is_none() && target.name == e && target.module_name == m
-                    })
-                {
+                if Self::same_class(&inst_rc.borrow().class, &target) {
                     return true;
                 }
                 // ⚠ 基底（Python のクラスの継承・`d is z.Animal`）。祖先は修飾名で `bases` に載っている
@@ -501,6 +506,73 @@ impl Interpreter {
         }
     }
 
+    /// 裸の名前 `name` を今の大域で引くと、`class` とは別のクラスか（known_bugs.md #30）。
+    ///
+    /// ⚠ 名前がクラスに束縛されていなければ `false`（名前での一致をそのまま使う）。テンプレート（`TemplateClass`・
+    ///   `is Stack` はどの具体化にも真）・具体化の名前（`Stack[int]` は束縛ではない）・trait はここに来て、
+    ///   以前と同じく名前で決まる。
+    pub(crate) fn names_another_class(&self, class: &crate::interpreter::ClassValue, name: &str) -> bool {
+        // 今の大域のモジュールで定義したクラスなら、引くまでもなくその名前はこのクラス（1 つのモジュールに同じ名前のクラスは
+        // 1 つだけ・クラスの `module_name` は定義したときの `global_module_names`）。引くのは別のモジュールのクラスのときだけ。
+        // ⚠ 名前を毎回引くと、`is` を回すだけのループが 15%（写さずに引いても 9%）遅くなった。
+        // ⚠ 対話 REPL でクラスを定義し直すと、前のクラスのインスタンスも名前で一致する（以前と同じ）。
+        // ⚠ 組み込みのクラス（`module_name` は本体と同じ `None`）は近道しない（本体の `class KeyError` と、モジュールの中で出た
+        //   組み込みの `KeyError` を取り違える）。
+        let here = self.global_module_names.get(self.cur_globals as usize).and_then(|n| n.as_deref());
+        if class.module_name.as_deref() == here && !crate::interpreter::value::is_builtin_class_id(class.class_id) {
+            return false;
+        }
+        // ⚠ 今の大域（`scopes[0]`）だけを引く。クラスとその `import` は最上位にしか書けない（10-16）ので、型の名前は大域の
+        //   束縛。`get_var` はローカルの枠を先に見るが、VM で関数を呼んでも呼び出し側の枠は残るので、非同期タスクの本体が
+        //   見ていた本体の `V`（タスクの枠に置かれる）をモジュールの関数の中から引いてしまっていた。
+        // ⚠ 値を写さずに見る（`get_val` は値を写す）
+        self.scopes[0].get(name).is_some_and(|var| {
+            var.with_value(|v| match v {
+                Value::Class(target) => !Self::same_class(class, target),
+                // テンプレートの名前（`is Box`）は、そのテンプレートの具体化か（別のモジュールの同じ名前のテンプレートの
+                // 具体化は通さない・known_bugs.md #39）
+                Value::TemplateClass(t) => !self.is_instantiation_of(class, t),
+                _ => false,
+            })
+        })
+    }
+
+    /// `class` がテンプレート `tmpl` の具体化か（known_bugs.md #39）: 具体化のクラス（`instance_name` を持つ）で、名前と
+    /// 定義したモジュールが同じ。具体化は展開のときにテンプレートと同じモジュールの最上位で作る（`register_mono_instance`）。
+    /// 1 つのモジュールに同じ名前のテンプレートは 1 つなので、別のモジュールの同じ名前のテンプレートとは区別できる。
+    /// ⚠ テンプレートの番地（`template_class_cache` の鍵）では比べない。非同期タスクのワーカーでは名前空間の値と大域が
+    ///   別々に写されるので、別名で引いたテンプレートと大域のテンプレートの番地が違う（実測）。
+    pub(crate) fn is_instantiation_of(
+        &self,
+        class: &crate::interpreter::ClassValue,
+        tmpl: &crate::interpreter::TemplateClassValue,
+    ) -> bool {
+        class.instance_name.is_some()
+            && class.name == tmpl.name
+            && class.module_name.as_deref() == tmpl.module_name.as_deref()
+    }
+
+    /// 今の大域（`scopes[0]`）で `name` に束縛されたクラスの `class_id`（クラスでなければ `None`）。
+    /// コンパイル済みコードのガード（`ar_method_guard`）が使う。⚠ ローカルの枠は見ない（`names_another_class` と同じ理由）。
+    pub(crate) fn global_class_id(&self, name: &str) -> Option<u32> {
+        self.scopes[0].get(name).and_then(|var| {
+            var.with_value(|v| match v {
+                Value::Class(cls) => Some(cls.class_id),
+                _ => None,
+            })
+        })
+    }
+
+    /// `class` が、名前で引いたクラス `target` と同じクラスか: `class_id` が同じか、`class` が enum のメンバーの
+    /// クラスで `target` がその enum（`build_enum_classes` はメンバーごとに別のクラスを作るので `class_id` が違う。
+    /// 同じモジュールの同じ名前の enum かで見る）。
+    pub(crate) fn same_class(class: &crate::interpreter::ClassValue, target: &crate::interpreter::ClassValue) -> bool {
+        target.class_id == class.class_id
+            || class.enum_of.as_ref().is_some_and(|e| {
+                target.enum_of.is_none() && &target.name == e && target.module_name == class.module_name
+            })
+    }
+
     /// `tags.Tag` / `tags.Box[int]` が、モジュール tags で定義したそのクラスか（10-8）。
     fn qualified_class_matches(class: &crate::interpreter::ClassValue, type_name: &str) -> bool {
         let Some(module) = class.module_name.as_deref() else {
@@ -520,7 +592,7 @@ impl Interpreter {
     }
 
     /// `a.b`（名前空間を通した名前）が指す値。引けなければ `None`（7-27・Python のモジュールの名前空間を引く）。
-    #[cfg(feature = "native")]
+    /// ⚠ 評価コア（`native` なし）でも使う（別名で書いたテンプレート `m.Box`・known_bugs.md #39）。
     fn dotted_value(&self, path: &str) -> Option<Value> {
         let mut parts = path.split('.');
         let mut cur = self.get_val(parts.next()?)?;
@@ -535,15 +607,7 @@ impl Interpreter {
 
     /// `t.Tag`（名前空間を通した型名）が指すクラス（10-8）。引けなければ `None`。
     fn dotted_class(&self, type_name: &str) -> Option<std::rc::Rc<crate::interpreter::ClassValue>> {
-        let mut parts = type_name.split('.');
-        let mut cur = self.get_val(parts.next()?)?;
-        for seg in parts {
-            cur = match &cur {
-                Value::Namespace(ns) => self.namespace_member(ns, seg)?,
-                _ => return None,
-            };
-        }
-        match cur {
+        match self.dotted_value(type_name)? {
             Value::Class(c) => Some(c),
             _ => None,
         }
