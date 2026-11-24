@@ -247,14 +247,23 @@ thread_local! {
 ///   単価 1.18〜1.27x（借用と本体は変えていない＝取り出しの固定費だけの差）。
 #[inline(always)]
 fn with_state<R>(f: impl FnOnce(&RefCell<NativeCallState>) -> R) -> R {
-    let p = STATE_PTR.with(|c| c.get());
-    if !p.is_null() {
-        // SAFETY: `STATE` はスレッドが終わるまで動かない。消えるときは `Drop` が番地を空にする
-        return f(unsafe { &*p });
+    let mut p = STATE_PTR.with(|c| c.get());
+    if p.is_null() {
+        p = init_state_ptr();
     }
+    // ⚠ `f` を呼ぶのはここ 1 か所だけにする。2 か所（速い道と遅い道）で呼ぶと、コールバックの本体（クロージャ）が
+    //   インライン化されるかがファイルの分け方で変わる（callbacks.rs を分けたとき k1 が 1.12 倍遅くなった）
+    // SAFETY: `STATE` はスレッドが終わるまで動かない。消えるときは `Drop` が番地を空にする
+    f(unsafe { &*p })
+}
+
+/// [`with_state`] がスレッドで初めて通るとき（と `STATE` が消えた後）の道: `STATE` を作り、その番地を覚える。
+#[cold]
+#[inline(never)]
+fn init_state_ptr() -> *const RefCell<NativeCallState> {
     STATE.with(|s| {
         STATE_PTR.with(|c| c.set(s as *const _));
-        f(s)
+        s as *const _
     })
 }
 
