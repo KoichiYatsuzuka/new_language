@@ -293,7 +293,7 @@ plus `python.search_paths` for non-relative imports) at the front of `sys.path`.
 
 Parsing errors in `.pyi` / `.py` files are silently ignored (best-effort via `unwrap_or_default()`).
 
-**Value conversion** (`src/interpreter/py_interop.rs` — `ar_to_py` / `py_to_tl`, ffi_value_exchange_plan.md 2-6):
+**Value conversion** (`src/interpreter/py_interop/convert.rs` — `ar_to_py` / `py_to_tl`, ffi_value_exchange_plan.md 2-6):
 a Python list / dict / set is **not copied** — `py_to_tl` returns it as a `PyObject`, typed `py_list[T]` / `py_dict[K, V]` /
 `py_set[T]` (`InferredType::PyList` / `PyDict` / `PySet`; the stub extractor's `py_type_to_arrow` reads `list[T]` as
 `py_list[T]`; pandas_import_plan.md D-12 / 2-7). The cast `=>` converts between them and Arrow's collections
@@ -303,7 +303,7 @@ statically) also casts to `list[T]` (task 4-3): `from_python_as` reads a numeric
 only element / target pairs that `tolist()` would pass, `BufferElem::fits`) and otherwise really calls `tolist()`, so
 values and errors match. ⚠ `py_to_tl` starts with `py_to_tl_exact` (exact built-in types by type pointer; task 4-1);
 subclasses take the general path because they can override `__index__`.
-Their operations are typed by `py_collection_binop` (`binop.rs`), `py_collection_method_return` (`call_check.rs`) and
+Their operations are typed by `py_collection_binop` (`binop.rs`), `py_collection_method_return` (`call_check/py_values.rs`) and
 the closed method table `names::PY_COLLECTION_METHODS`; at run time they are ordinary `PyObject` operations. The return
 boundary check (`ffi_boundary`) checks their elements (`py_collection_items` / `py_dict_pairs`). Every later read is checked too (2-12):
 the type checker records the expected type of a subscript / iterated element (`AstAnnotations::py_reads` / `py_iters`,
@@ -829,7 +829,7 @@ print(mng.results[0])   # "List[int]"
 | `.arc` binary format | `src/partial_compiler/module_compiler.rs` | ~1–170 |
 | Runtime module execution | `src/interpreter/exec/modules.rs` | `exec_module`, `attach_submodule`, `import_search_dirs` |
 | Packages / binding / `from . import x` | `src/parser/imports/packages.rs` | `chain_and_bind`, `from_import_submodules`, `from_dots_import` |
-| Python interop runtime | `src/interpreter/py_interop.rs` | `load_py_int_module` |
+| Python interop runtime | `src/interpreter/py_interop.rs` + `py_interop/` (`modules.rs`) | `load_py_int_module` |
 | Type checker import handling | `src/type_check/stmt/check.rs` / `resolve.rs` | `Stmt::Import` arm, `closed_module`, `module_member_types`, `report_unimported_module_type` |
 | JS-proc stub loader | `src/parser/imports/cs_js_modules.rs` | `load_js_module` |
 | JS-proc config reader | `src/interpreter/exec/mod.rs` | `find_js_config` |
