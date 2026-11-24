@@ -15,6 +15,8 @@
 //                  定義へ移動が見える宣言へ飛ぶか・見えない名前に hover も定義も出ないか（0 が正常・name_scope_plan.md の 2-3）。
 //                  ⚠ 宣言の位置しか見ない上の数え上げでは、使っている位置が別の宣言に結び付く誤りを数えられない。
 //                  例題が 1 本も無いタグ（実測: cpp-dll）はこれでしか守れない。
+//   compl misses : 補完のフィクスチャ（`COMPLETION_FIXTURE`）で、組み込みの型名（`int` / `list` / `int32` …）が型の位置・
+//                  式の位置に型として出なかった・余計な候補が出た件数（0 が正常）。
 //   bind  misses : import が束縛する名前が索引に載っていない件数（0 が正常）。
 //                  期待値は**ソースの行スキャン**で作る — パーサから取ると一致して
 //                  しまい、まさにこの種の欠落を検出できない（`importBindings` の注記）。
@@ -184,6 +186,49 @@ function checkScopeFixture(){
   return {misses, total:cases.length};
 }
 
+// ── 補完に組み込みの型名が型として出るか ────────────────────────────────────────
+// `int` / `str` / `float` … は builtins.ars では変換関数（`fn int(..)`）なので、宣言表だけから補完を作ると
+// 型の位置（`let x: `）に 1 つも出なかった。型の位置でも式の位置でも**型として**（Class）出ること、
+// 利用者が同じ名前を宣言したらそちらだけが出ることを見る。`|` はカーソルの位置（解析の前に取り除く）。
+const COMPLETION_FIXTURE = [
+  'class Code:',
+  '    mut s: str',
+  'fn area(w: float, h: float) -> float:',
+  '    let a: |float = w * h',
+  '    return |a',
+  'let n = area(1.0, 2.0)',
+];
+const COMPLETION_WANT = [
+  // [ラベル, 型の位置で出るべきか, 式の位置で出るべきか]
+  ['int', true, true], ['float', true, true], ['str', true, true], ['bool', true, true],
+  ['list', true, true], ['dict', true, true], ['Option', true, true], ['Any', true, true],
+  ['int32', true, true], ['float64', true, true], ['Code', true, true],
+  ['area', false, true], ['w', false, true],
+];
+function checkCompletionFixture(){
+  const misses=[], marks=[];
+  const lines=COMPLETION_FIXTURE.map((l,ln)=>{ const c=l.indexOf('|'); if(c>=0) marks.push({line:ln,character:c}); return l.replace('|',''); });
+  const doc=new Doc('<fixture:completion>', lines.join('\n')+'\n');
+  const [typePos, exprPos]=marks;
+  const CLASS=6;   // vscode.CompletionItemKind.Class
+  for(const [where, pos, col] of [['type', typePos, 1], ['expr', exprPos, 2]]){
+    let items;
+    try{ items=P.provideCompletionItems(doc,pos); }
+    catch(e){ misses.push(`  COMPL THREW ${where}  ${String(e).split('\n')[0]}`); continue; }
+    for(const want of COMPLETION_WANT){
+      const name=want[0], hits=items.filter(i=>i.label===name);
+      if(!want[col]){ if(hits.length) misses.push(`  COMPL MISS  ${where}  '${name}' should not be offered`); continue; }
+      if(hits.length!==1) { misses.push(`  COMPL MISS  ${where}  '${name}' offered ${hits.length} time(s) (want 1)`); continue; }
+      const isType = want[1];
+      if(isType && hits[0].kind!==CLASS) misses.push(`  COMPL MISS  ${where}  '${name}' kind ${hits[0].kind} (want Class)`);
+    }
+    // 利用者の `class Code` が組み込みの `Code` に勝つ（説明が組み込みの書き方 `Code` ではない）
+    const code=items.find(i=>i.label==='Code');
+    if(code && code.detail==='Code') misses.push(`  COMPL MISS  ${where}  'Code' is the built-in, not the user's class`);
+  }
+  return {misses, total:COMPLETION_WANT.length*2};
+}
+
 const files=walk(path.join(__dirname,'..','examples'));
 let ok=0, failed=0, noSym=0, totalSym=0, totalHover=0, hoverMiss=0, totalDef=0, defMiss=0, defNone=0;
 let totalBind=0, bindMiss=0;
@@ -259,4 +304,7 @@ problems.push(...tagMisses);
 const scope = checkScopeFixture();
 console.log(`scope misses   : ${scope.misses.length} / ${scope.total}   <- must be 0 (使っている位置の結び付き・test_fixtures/name_scope_cases.ar)`);
 problems.push(...scope.misses);
+const compl = checkCompletionFixture();
+console.log(`compl misses   : ${compl.misses.length} / ${compl.total}   <- must be 0 (組み込みの型名が補完に型として出るか)`);
+problems.push(...compl.misses);
 if(problems.length){ console.log('\nproblems:'); problems.slice(0,25).forEach(p=>console.log(p)); }

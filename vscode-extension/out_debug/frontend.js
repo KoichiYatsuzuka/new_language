@@ -11,7 +11,7 @@
  * 実行時には要らない。
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.builtinsSource = exports.invalidateModules = exports.analyze = exports.frontendLoadError = exports.isFrontendReady = exports.loadFrontend = void 0;
+exports.builtinTypes = exports.builtinsSource = exports.invalidateModules = exports.analyze = exports.frontendLoadError = exports.isFrontendReady = exports.loadFrontend = void 0;
 const fs = require("fs");
 const path = require("path");
 const wasm_host_1 = require("./wasm_host");
@@ -140,6 +140,27 @@ function builtinsSource() {
     return new TextDecoder().decode(out);
 }
 exports.builtinsSource = builtinsSource;
+/**
+ * 型注釈に書ける組み込みの型名の一覧。型検査器の表（`BUILTIN_TYPE_NAMES` / `C_ABI_TYPES`）を wasm から受け取る。
+ *
+ * `int` / `str` / `float` … は `builtins.ars` では変換関数として宣言されているので、宣言表からは型として出せない。
+ *
+ * @returns 一覧。wasm が使えない・古い wasm なら空。
+ */
+function builtinTypes() {
+    const ex = exports_;
+    if (!ex || !ex.ar_builtin_types)
+        return [];
+    try {
+        const len = ex.ar_builtin_types();
+        const out = new Uint8Array(ex.memory.buffer, ex.ar_result_ptr(), len);
+        return JSON.parse(new TextDecoder().decode(out));
+    }
+    catch {
+        return [];
+    }
+}
+exports.builtinTypes = builtinTypes;
 /**
  * wasm へ UTF-8 文字列を書き込み、`(ptr, len)` で `f` に渡す。
  *

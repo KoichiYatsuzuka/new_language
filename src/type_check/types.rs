@@ -1,6 +1,74 @@
 use std::collections::HashMap;
 
 // ---------------------------------------------------------------------------
+// Built-in type names (for the editor's completion)
+// ---------------------------------------------------------------------------
+
+/// 型注釈に書ける組み込みの型名 1 つ。
+// ルートの bin は使わない（使うのは `arrow-frontend` の `ar_builtin_types` とテスト）
+#[allow(dead_code)]
+pub struct BuiltinTypeName {
+    /// 書く名前（`list`）
+    pub name: &'static str,
+    /// 型引数まで含めた書き方（`list[T]`）。型引数を取らなければ `name` と同じ
+    pub form: &'static str,
+    /// 型引数の数（`dict[K, V]` は 2・可変長の `Union` などは最小の数）。0 は `[..]` を取らない
+    /// （`function` は書き方が違うので 0）。テストが `name[int, ..]` を組んで解決できるか確かめる
+    pub arity: usize,
+    /// 書き方の説明（補完の detail に出す）
+    pub doc: &'static str,
+}
+
+/// **型注釈に書ける組み込みの型名の一覧**（VS Code 拡張の補完が wasm 経由で受け取る・`ar_builtin_types`）。
+///
+/// `builtins.ars` では `int` / `str` / `float` … が**変換関数**（`fn int(..)`）として宣言されているので、
+/// 宣言表から補完を作ると型の位置に型名が出なかった。拡張に一覧を持たせると型検査器と食い違うので、
+/// [`InferredType::from_ann`] の表の隣に置く。
+///
+/// ⚠ `from_ann` に名前を足したらここにも足すこと。逆向き（ここにあって `from_ann` が知らない名前）は
+///   テスト `builtin_type_names_resolve` が落とす。C ABI の型は [`crate::ast::C_ABI_TYPES`] から足す。
+/// ⚠ `builtins.ars` で宣言している型（プロトコル・`FileObject`・列挙）はここに書かない（宣言表から出る）。
+// ルートの bin は使わない（使うのは `arrow-frontend` の `ar_builtin_types` とテスト）
+#[allow(dead_code)]
+pub const BUILTIN_TYPE_NAMES: &[BuiltinTypeName] = &[
+    BuiltinTypeName { name: "int", form: "int", arity: 0, doc: "整数（i64）" },
+    BuiltinTypeName { name: "uint", form: "uint", arity: 0, doc: "符号なし整数（静的には int と同じ）" },
+    BuiltinTypeName { name: "float", form: "float", arity: 0, doc: "浮動小数点数（f64）" },
+    BuiltinTypeName { name: "complex", form: "complex", arity: 0, doc: "複素数" },
+    BuiltinTypeName { name: "str", form: "str", arity: 0, doc: "文字列" },
+    BuiltinTypeName { name: "bytes", form: "bytes", arity: 0, doc: "バイト列" },
+    BuiltinTypeName { name: "bool", form: "bool", arity: 0, doc: "真偽値" },
+    BuiltinTypeName { name: "None", form: "None", arity: 0, doc: "値が無いこと" },
+    BuiltinTypeName { name: "Undefined", form: "Undefined", arity: 0, doc: "未定義の値" },
+    BuiltinTypeName { name: "Any", form: "Any", arity: 0, doc: "任意の型（使う前に型を確かめる）" },
+    BuiltinTypeName { name: "object", form: "object", arity: 0, doc: "すべての値の基底（静的には Any と同じ）" },
+    BuiltinTypeName { name: "Self", form: "Self", arity: 0, doc: "このクラス自身の型" },
+    BuiltinTypeName { name: "list", form: "list[T]", arity: 1, doc: "リスト" },
+    BuiltinTypeName { name: "dict", form: "dict[K, V]", arity: 2, doc: "辞書" },
+    BuiltinTypeName { name: "set", form: "set[T]", arity: 1, doc: "集合" },
+    BuiltinTypeName { name: "frozenset", form: "frozenset[T]", arity: 1, doc: "変更できない集合" },
+    BuiltinTypeName { name: "tuple", form: "tuple[T, ...]", arity: 1, doc: "タプル" },
+    BuiltinTypeName { name: "fixed_list", form: "fixed_list[T]", arity: 1, doc: "長さを変えないリスト" },
+    BuiltinTypeName { name: "list_like", form: "list_like[T]", arity: 1, doc: "list / fixed_list のどちらも受ける" },
+    BuiltinTypeName { name: "py_list", form: "py_list[T]", arity: 1, doc: "CPython の list（`=>` で変換）" },
+    BuiltinTypeName { name: "py_dict", form: "py_dict[K, V]", arity: 2, doc: "CPython の dict（`=>` で変換）" },
+    BuiltinTypeName { name: "py_set", form: "py_set[T]", arity: 1, doc: "CPython の set（`=>` で変換）" },
+    BuiltinTypeName { name: "Option", form: "Option[T]", arity: 1, doc: "T か None" },
+    BuiltinTypeName { name: "Result", form: "Result[T, E]", arity: 2, doc: "成功の値か誤り" },
+    BuiltinTypeName { name: "Union", form: "Union[A, B, ...]", arity: 2, doc: "いずれかの型" },
+    BuiltinTypeName { name: "Intersection", form: "Intersection[A, B, ...]", arity: 2, doc: "すべての型を満たす" },
+    BuiltinTypeName { name: "type", form: "type[T]", arity: 1, doc: "型そのもの" },
+    BuiltinTypeName { name: "generator", form: "generator[T]", arity: 1, doc: "gen 関数が返すジェネレータ" },
+    BuiltinTypeName { name: "function", form: "function[params] -> R", arity: 0, doc: "関数" },
+    BuiltinTypeName { name: "Ptr", form: "Ptr[T]", arity: 1, doc: "C のポインタ" },
+    BuiltinTypeName { name: "Code", form: "Code", arity: 0, doc: "コード片（メタプログラミング）" },
+    BuiltinTypeName { name: "meta_instance", form: "meta_instance", arity: 0, doc: "インスタンスのメタ情報" },
+    BuiltinTypeName { name: "meta_function", form: "meta_function", arity: 0, doc: "関数のメタ情報" },
+    BuiltinTypeName { name: "meta_class", form: "meta_class", arity: 0, doc: "クラスのメタ情報" },
+    BuiltinTypeName { name: "meta_member", form: "meta_member", arity: 0, doc: "メンバのメタ情報" },
+];
+
+// ---------------------------------------------------------------------------
 // Inferred type
 // ---------------------------------------------------------------------------
 
@@ -1104,4 +1172,58 @@ pub(crate) struct VarInfo {
     /// この変数を束縛した記録（`TypeChecker::bindings` の添字・エディタだけ・name_scope_plan.md の 2-2）。
     /// 識別子を使っている位置からその宣言を引くのに使う（`NameUse`）。記録しない束縛（引数・関数の名前など）は `None`。
     pub(crate) binding: Option<usize>,
+}
+
+#[cfg(test)]
+mod builtin_type_names_tests {
+    use super::{InferredType, BUILTIN_TYPE_NAMES};
+
+    /// 一覧の名前はどれも `from_ann` が**組み込みとして**知っている（未知の名前の `NamedInstance` に落ちない）。
+    #[test]
+    fn builtin_type_names_resolve() {
+        for t in BUILTIN_TYPE_NAMES {
+            let ann = match t.name {
+                "function" => "function[int]->int".to_string(),
+                _ if t.arity == 0 => t.name.to_string(),
+                _ => format!("{}[{}]", t.name, vec!["int"; t.arity].join(",")),
+            };
+            let ty = InferredType::from_ann(&ann);
+            let unknown = match &ty {
+                None => true,
+                // `generator` は表で明示的に `NamedInstance("generator")` にしている（要素型が無いとき）
+                Some(InferredType::NamedInstance(n)) => n != "generator" && ann.starts_with(n.as_str()),
+                Some(_) => false,
+            };
+            assert!(!unknown, "`{ann}` is not a built-in type for from_ann: {ty:?}");
+        }
+    }
+
+    /// 名前の重複が無い（補完に同じ型が 2 つ並ばない）。
+    #[test]
+    fn builtin_type_names_unique() {
+        let mut seen = std::collections::HashSet::new();
+        for t in BUILTIN_TYPE_NAMES {
+            assert!(seen.insert(t.name), "duplicate built-in type name `{}`", t.name);
+        }
+        for (name, _) in crate::ast::C_ABI_TYPES {
+            assert!(seen.insert(name), "C ABI type `{name}` collides with a built-in type name");
+        }
+    }
+
+    /// `C_ABI_TYPES` と `c_abi_base_type` の中身が同じ。
+    #[test]
+    fn c_abi_types_match_base_type() {
+        for (name, base) in crate::ast::C_ABI_TYPES {
+            assert_eq!(crate::ast::c_abi_base_type(name), Some(*base), "{name}");
+        }
+        // 逆向き: `c_abi_base_type` が受ける綴りはどれも表にある
+        for prefix in ["int", "uint", "float"] {
+            for bits in ["8", "16", "32", "64", "128"] {
+                let name = format!("{prefix}{bits}");
+                if crate::ast::c_abi_base_type(&name).is_some() {
+                    assert!(crate::ast::C_ABI_TYPES.iter().any(|(n, _)| *n == name), "`{name}` missing from C_ABI_TYPES");
+                }
+            }
+        }
+    }
 }

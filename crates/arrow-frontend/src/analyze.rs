@@ -395,6 +395,21 @@ fn members_of_body(body: &[Stmt], bases: &[String]) -> Value {
     json!({ "members": items, "bases": bases })
 }
 
+/// 型注釈に書ける組み込みの型名の一覧（`wasm::ar_builtin_types`）。
+///
+/// `[{ "name": "list", "form": "list[T]", "doc": "リスト", "cAbi": null }, …]`。C ABI の型は `cAbi` に基底型名
+/// （`"int"` / `"float"`）が入る。
+pub fn builtin_types_json() -> String {
+    let mut items: Vec<Value> = crate::type_check::BUILTIN_TYPE_NAMES
+        .iter()
+        .map(|t| json!({ "name": t.name, "form": t.form, "doc": t.doc, "cAbi": Value::Null }))
+        .collect();
+    items.extend(crate::ast::C_ABI_TYPES.iter().map(|(name, base)| {
+        json!({ "name": name, "form": name, "doc": format!("C ABI の型（値は {base}）"), "cAbi": base })
+    }));
+    Value::Array(items).to_string()
+}
+
 /// 解析結果を JSON 文字列で返す（ファイルに無いソース。import の探索の起点を持たない）。
 ///
 /// `ok` が false のときは構文エラーで AST が得られなかったことを意味する。その場合
