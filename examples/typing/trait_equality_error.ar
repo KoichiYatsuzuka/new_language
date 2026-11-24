@@ -1,0 +1,58 @@
+# trait_equality_error.ar — 決して真にならない trait の値の比較
+#
+# 正常系は trait_equality.ar
+#
+# 期待されるエラー:
+#   StaticTypeError  '==' between 'Sq' and 'Circ' can never be true
+#   StaticTypeError  '==' between 'Shape' and 'Plain' can never be true
+#   StaticTypeError  '==' between 'Shape' and 'int' can never be true
+#   StaticTypeError  '==' between 'Box[int]' and 'StrBox' can never be true
+
+trait Shape:
+    fn area(self) -> int:
+        ...
+
+trait Named:
+    fn name(self) -> str:
+        ...
+
+class Sq(Shape):
+    let s: int
+    fn area(self) -> int:
+        return self.s * self.s
+
+class Circ(Shape):
+    let r: int
+    fn area(self) -> int:
+        return self.r
+
+class Tile(Shape, Named):
+    let n: int
+    fn area(self) -> int:
+        return self.n
+    fn name(self) -> str:
+        return "tile"
+
+trait Box[T]:
+    fn get(self) -> T:
+        ...
+
+class IntBox(Box[int]):
+    let v: int
+    fn get(self) -> int:
+        return self.v
+
+class StrBox(Box[str]):
+    let v: str
+    fn get(self) -> str:
+        return self.v
+
+class Plain:
+    let n: int
+
+let a: Shape = Sq(2)
+print(Sq(2) == Circ(1))             # ⛔ 同じ trait を実装する別のクラス
+print(a == Plain(1))                # ⛔ trait を実装しないクラス
+print(a == 1)                       # ⛔ クラスのインスタンスでない型
+let box: Box[int] = IntBox(3)
+print(box == StrBox("a"))           # ⛔ 型引数が違う

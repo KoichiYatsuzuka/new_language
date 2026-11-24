@@ -1,0 +1,75 @@
+# trait_equality_error.ar — 決して真にならない trait の値の比較（trait_equality_plan.md）
+#
+# 正常系は trait_equality.ar
+#
+# クラスは trait しか継承できないので、互いに部分型でない 2 つのクラスと、trait とそれを実装しないクラスは重ならない。
+
+trait Shape:
+    fn area(self) -> int:
+        ...
+
+trait Named:
+    fn name(self) -> str:
+        ...
+
+class Sq(Shape):
+    let s: int
+    fn area(self) -> int:
+        return self.s * self.s
+
+class Circ(Shape):
+    let r: int
+    fn area(self) -> int:
+        return self.r
+
+class Tile(Shape, Named):
+    let n: int
+    fn area(self) -> int:
+        return self.n
+    fn name(self) -> str:
+        return "tile"
+
+trait Box[T]:
+    fn get(self) -> T:
+        ...
+
+class IntBox(Box[int]):
+    let v: int
+    fn get(self) -> int:
+        return self.v
+
+class StrBox(Box[str]):
+    let v: str
+    fn get(self) -> str:
+        return self.v
+
+class Plain:
+    let n: int
+
+let a: Shape = Sq(2)
+let b = Sq(2)
+
+print(b == Circ(1))                 # ⛔ 同じ trait を実装する別のクラス   # expect: static CrossTypeEquality
+print(b in [Circ(1)])               # ⛔ 要素でも同じ   # expect: static CrossTypeEquality
+print([b] == [Circ(1)])             # ⛔ 容器の要素でも同じ   # expect: static CrossTypeEquality
+
+print(a == Plain(1))                # ⛔ trait を実装しないクラス   # expect: static CrossTypeEquality
+let t: Named = Tile(1)
+print(t != b)                       # ⛔ Sq は Named を実装しない   # expect: static CrossTypeEquality
+let shapes: list[Shape] = [b]
+print(shapes == [Plain(1)])         # ⛔ 容器の要素でも同じ   # expect: static CrossTypeEquality
+
+print(a == 1)                       # ⛔ クラスのインスタンスでない型   # expect: static CrossTypeEquality
+print(a == None)                    # ⛔ Shape は None になりえない   # expect: static CrossTypeEquality
+
+let box: Box[int] = IntBox(3)
+print(box == StrBox("a"))           # ⛔ 型引数が違う   # expect: static CrossTypeEquality
+let sbox: Box[str] = StrBox("a")
+print(box == sbox)                  # ⛔ 型引数が違う trait どうし   # expect: static CrossTypeEquality
+
+let look: LookupError = KeyError("k")
+print(look == ValueError("k"))      # ⛔ ValueError は LookupError の派生ではない   # expect: static CrossTypeEquality
+
+fn is_one[T](x: T) -> bool:
+    return x == 1                   # ⛔ 具体化した本体（T = str）   # expect: static CrossTypeEquality
+print(is_one[str]("a"))

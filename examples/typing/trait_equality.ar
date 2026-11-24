@@ -1,0 +1,80 @@
+# trait_equality.ar — trait / protocol 型の値の等値比較
+#
+# trait 型の値は実行時にはそれを実装するクラスのインスタンスなので、`Shape` と `Sq` は `==` / `!=` / `in` で比べられる。
+# 決して真にならない比較は静的な誤り（trait_equality_error.ar）。
+
+trait Shape:
+    fn area(self) -> int:
+        ...
+
+trait Named:
+    fn name(self) -> str:
+        ...
+
+class Sq(Shape):
+    let s: int
+    fn area(self) -> int:
+        return self.s * self.s
+
+class Circ(Shape):
+    let r: int
+    fn area(self) -> int:
+        return self.r
+
+class Tile(Shape, Named):
+    let n: int
+    fn area(self) -> int:
+        return self.n
+    fn name(self) -> str:
+        return "tile"
+
+trait Box[T]:
+    fn get(self) -> T:
+        ...
+
+class IntBox(Box[int]):
+    let v: int
+    fn get(self) -> int:
+        return self.v
+
+class StrBox(Box[str]):
+    let v: str
+    fn get(self) -> str:
+        return self.v
+
+protocol HasArea:
+    fn area(self) -> int:
+        ...
+
+let a: Shape = Sq(2)
+let b = Sq(2)
+
+# trait 型と、それを実装するクラス（どちらの向きも）
+print(a == b)                       # True
+print(b != a)                       # False
+print(a in [b])                     # True
+print(a == Circ(1))                 # False（Circ のインスタンスでもありえたので、誤りではない）
+
+# 別の trait どうし（両方を実装するクラスがありうる）
+let t1: Shape = Tile(1)
+let t2: Named = Tile(1)
+print(t1 == t2)                     # True
+
+# 型引数つきの trait
+let box: Box[int] = IntBox(3)
+print(box == IntBox(3))             # True
+
+# 容器の要素
+let shapes: list[Shape] = [Sq(1)]
+print(Sq(1) in shapes)              # True
+print(shapes == [Sq(1)])            # True
+
+# protocol 型の仮引数
+fn same(x: HasArea) -> bool:
+    return x == b
+print(same(Sq(2)))                  # True
+
+# 例外の階層
+let key = KeyError("k")
+let look: LookupError = key
+print(look == key)                  # True

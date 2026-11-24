@@ -1,0 +1,15 @@
+# py_class_equality.ar — Python のクラスの値と、その基底の型の値の等値比較（trait_equality_plan.md）
+#
+# 基底の型の変数には派生のインスタンスが入るので、比較は真になりうる。
+# ⚠ 以前は「can never be true」の偽の静的な誤りになった。
+# 弾かれる例は py_class_equality_error.ar
+from ..lib.check import check_eq
+
+import[py] test_modules.py_module_types_zoo as z
+
+mut p = z.Puppy()
+mut a: z.Animal = p
+check_eq(a == p, True, "base == derived (the same object)")
+check_eq(p == a, True, "derived == base")
+check_eq(a != p, False, "base != derived")
+check_eq(a == z.Puppy(), False, "another object (no __eq__: identity)")
