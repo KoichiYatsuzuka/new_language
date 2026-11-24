@@ -24,7 +24,7 @@ pub(crate) const BUILTIN_VALUE_NAMES: &[&str] = &[
     "create_flat_int_list", "flat_get_int", "flat_set_int", "list", "tuple",
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜）
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
-    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
+    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "sqrt", "round", "divmod", "pow",
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
     // 書式指定の小言語（タスク 3-4）
     "format",
@@ -246,6 +246,7 @@ impl Interpreter {
             "sorted" => Some(self.py_sorted(args, Vec::new())),
             "reversed" => Some(self.py_reversed(args)),
             "abs" => Some(self.py_abs(args)),
+            "sqrt" => Some(self.py_sqrt(args)),
             "round" => Some(self.py_round(args, Vec::new())),
             "divmod" => Some(self.py_divmod(args)),
             "pow" => Some(self.py_pow(args, Vec::new())),

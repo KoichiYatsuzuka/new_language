@@ -1897,6 +1897,10 @@ impl TypeChecker {
                 [(None, T::Float | T::Complex)] => Some(T::Float),
                 _ => None,
             },
+            "sqrt" => match arg_data {
+                [(None, T::Int | T::Float | T::Bool)] => Some(T::Float),
+                _ => None,
+            },
             "round" => match arg_data {
                 [(None, T::Int | T::Float)] => Some(T::Int),
                 [(None, t @ (T::Int | T::Float)), (_, T::Int)] => Some(t.clone()),

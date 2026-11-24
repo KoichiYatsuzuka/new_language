@@ -1,0 +1,15 @@
+# sqrt_builtin.ar — 組み込み関数 sqrt（CPU の平方根命令 = f64::sqrt）
+#
+# 対になる誤りの例: sqrt_builtin_error.ar
+#
+# - int / bool / float を受け、戻り値は常に float
+# - 負の数は ValueError: math domain error（CPython の math.sqrt と同じ）
+
+print(sqrt(16))              # 4.0
+print(sqrt(2.25))            # 1.5
+print(sqrt(0))               # 0.0
+
+try:
+    print(sqrt(-1))
+except ValueError as e:
+    print(e)                 # math domain error

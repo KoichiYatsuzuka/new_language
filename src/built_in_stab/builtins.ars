@@ -393,6 +393,10 @@ fn abs(x: Any):
     """The absolute value of a number (the magnitude of a complex)."""
     pass
 
+fn sqrt(x: Any):
+    """The square root of a non-negative number, always a float (ValueError for a negative number)."""
+    pass
+
 fn round(number: Any, ndigits: Any = None):
     """number rounded to ndigits decimals, half to even (an int when ndigits is omitted)."""
     pass

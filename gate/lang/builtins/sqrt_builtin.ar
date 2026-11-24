@@ -1,0 +1,35 @@
+# sqrt_builtin.ar — 組み込み関数 sqrt（CPU の平方根命令 = f64::sqrt）
+#
+# 対になる誤りの例: sqrt_builtin_error.ar
+#
+# - int / bool / float を受け、戻り値は常に float
+# - 負の数は ValueError: math domain error（CPython の math.sqrt と同じ）
+# - NaN は NaN、無限大は無限大、-0.0 は -0.0
+from ...lib.check import emit, check_output
+
+emit([str(sqrt(16)), str(sqrt(2.25)), str(sqrt(0))])             # 4.0 1.5 0.0
+emit([str(sqrt(True)), str(sqrt(1e300 * 1e300))])                # 1.0 inf
+emit([str(sqrt(-0.0))])                                          # -0.0
+
+let r: float = sqrt(2)
+emit([str(r * r > 1.99999999 and r * r < 2.00000001)])           # True
+
+let nan: float = (1e300 * 1e300) - (1e300 * 1e300)
+emit([str(sqrt(nan) != sqrt(nan))])                              # True（NaN は自分と等しくない）
+
+mut caught = "none"
+try:
+    caught = str(sqrt(-1))
+except ValueError as e:
+    caught = str(e)
+emit([caught])                                                   # math domain error
+
+check_output([
+    "4.0 1.5 0.0",
+    "1.0 inf",
+    "-0.0",
+    "True",
+    "True",
+    "math domain error",
+    "",
+], "sqrt_builtin")

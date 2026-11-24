@@ -85,7 +85,7 @@ struct Def<'a> {
 /// ⚠ ここに無い組み込み関数の呼び出しは「読むだけでない」とみなす（`setattr`・`open`・`next`・`input` など）。
 const READONLY_BUILTIN_FNS: &[&str] = &[
     "abs", "all", "any", "bool", "chr", "divmod", "enumerate", "float", "getenv", "hash", "int", "isinstance",
-    "len", "max", "min", "ord", "pow", "print", "range", "repr", "round", "sorted", "str", "sum", "type", "zip",
+    "len", "max", "min", "ord", "pow", "print", "range", "repr", "round", "sorted", "sqrt", "str", "sum", "type", "zip",
 ];
 
 /// 戻り値の型として認めるもの（受けた値の中身を指さない）。

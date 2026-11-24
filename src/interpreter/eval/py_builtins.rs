@@ -452,6 +452,27 @@ impl Interpreter {
         }
     }
 
+    /// `sqrt(x)`。int / uint / bool / float を受け、常に float を返す（CPU の平方根命令 = `f64::sqrt`・IEEE 754 で正確に丸める）。
+    /// - 負の数は `ValueError: math domain error`（CPython の `math.sqrt` と同じ。Rust の `NaN` で黙って返さない）。
+    /// - `NaN` は `NaN`、`+inf` は `+inf`、`-0.0` は `-0.0`（`-0.0 < 0.0` は偽なので誤りにならない）。
+    /// - int は f64 へ丸めてから取る（`i64` / `u64` の範囲は f64 に必ず収まるので溢れない）。
+    pub(crate) fn py_sqrt(&mut self, args: Vec<Value>) -> Result<Value, String> {
+        let [x]: [Value; 1] = args
+            .try_into()
+            .map_err(|a: Vec<Value>| format!("TypeError: sqrt() takes exactly one argument ({} given)", a.len()))?;
+        let f = match &x {
+            Value::Int(n) => *n as f64,
+            Value::UInt(n) => *n as f64,
+            Value::Bool(b) => *b as i64 as f64,
+            Value::Float(f) => *f,
+            other => return Err(format!("TypeError: must be real number, not {}", self.type_name(other))),
+        };
+        if f < 0.0 {
+            return Err("ValueError: math domain error".to_string());
+        }
+        Ok(Value::Float(f.sqrt()))
+    }
+
     /// `round(x, ndigits=None)`。CPython と同じく**偶数への丸め**:
     /// - 桁が無ければ int（float は `round_ties_even`・NaN / 無限大は CPython と同じ誤り）
     /// - 桁があれば同じ型。float は**正確な 10 進の値**で丸める（CPython の `_Py_dg_dtoa` の mode 3 と同じ）ので、
@@ -1207,7 +1228,7 @@ fn py_lazy_prelude(name: &str) -> Result<Value, String> {
                         body,
                         captured_env: std::collections::HashMap::new(),
                         qualname: None,
-                        // ⚠ 前置き（`PY_LAZY_PRELUDE`）は Arrow の構文で書いた Arrow のコード。
+                        // ⚠ 前置き（`PY_LAZY_PRELUDE`）は Arrow の構文で書いた Arrow のコード。
                         group: None,
                     }));
                     table.insert(name, value);

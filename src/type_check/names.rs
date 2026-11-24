@@ -65,7 +65,7 @@ pub(crate) const RUNTIME_BUILTIN_NAMES: &[&str] = &[
     "list", "tuple", "frozenset", "bytes",
     // Python の組み込み（python_builtins_plan.md のフェーズ 2〜・本体は `eval/py_builtins.rs`）。
     "isinstance", "type", "getattr", "hasattr", "setattr", "issubclass", "callable",
-    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "round", "divmod", "pow",
+    "all", "any", "min", "max", "sum", "sorted", "reversed", "abs", "sqrt", "round", "divmod", "pow",
     "map", "filter", "iter", "hash", "ord", "chr", "hex", "oct", "bin", "ascii",
     // 書式指定の小言語（タスク 3-4・f-string の `{x:spec}` の脱糖先）
     "format",
