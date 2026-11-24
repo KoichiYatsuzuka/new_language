@@ -734,7 +734,9 @@ otherwise). Receivers look at the **state**, never at the return value:
 - ⚠ Errors stored by a **callback** (not a `raise`) are deliberately not counted: as before, later callbacks do nothing
   and the entry returns the error, but the compiled code keeps running until it returns (direct memory writes still
   happen). Counting every callback put a check after almost every call and slowed k1_step / k2_energy by 8–12%
-  (known_bugs.md #38).
+  (known_bugs.md #38). **This is the adopted behaviour** (2026-11-24, the user's decision): the exception that
+  reaches Arrow code is still correct; only direct writes after the error (address-called variants, raw-layout field
+  stores, `_fast` arithmetic) may run where the VM would have stopped. Do not "fix" it by checking after every callback.
 - typed variants (`_typed`, zero-TLS) never call `_impl`; they propagate through the `ErrSlot` status.
 
 ---
