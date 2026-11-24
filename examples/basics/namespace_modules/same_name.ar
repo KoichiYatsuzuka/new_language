@@ -1,0 +1,56 @@
+# namespace_modules/same_name.ar — 例題 module_class_identity.ar が import するモジュール（known_bugs.md #30）
+#
+# 本体にも同じ名前・同じ形の `V` / `E` がある。このモジュールの中の `V` / `E` は、このモジュールのクラスを指す。
+
+class V:
+    mut x: float
+
+class E(Error):
+    fn __init__(mut self, message: str) -> None:
+        self.message = message
+
+enum Level:
+    Low
+    High
+
+fn make() -> V:
+    return V(1.0)
+
+# このモジュールの中で、渡された値をこのモジュールの `V` と照らす
+fn probe(let a: Any) -> list[str]:
+    mut out: list[str] = []
+    out.append("is " + str(a is V))
+    out.append("isinstance " + str(isinstance(a, V)))
+    mut arm = "other arm"
+    match (a):
+        is V:
+            arm = "is V arm"
+    out.append(arm)
+    try:
+        let v = a mustbe V
+        out.append("mustbe ok")
+    except TypeError as e:
+        out.append("mustbe refused")
+    return out
+
+fn raise_e() -> None:
+    raise E("module E")
+
+# `f` が出した例外を、このモジュールの `E` として捕まえるか
+fn catch(let f: function[]->None) -> str:
+    try:
+        f()
+    except E:
+        return "caught as this module's E"
+    except Exception:
+        return "another exception"
+    return "nothing raised"
+
+fn raise_value() -> None:
+    raise ValueError("module ValueError")
+
+fn parse_bad() -> int:
+    return int("zz")
+
+fn is_level(let a: Any) -> bool:
+    return a is Level

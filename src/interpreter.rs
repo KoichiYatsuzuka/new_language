@@ -382,6 +382,14 @@ impl Var {
         }
     }
 
+    /// 値を写さずに `f` で見る（`get_value` は `Rc` を増減させる）。型の照合で名前を引くたびに写すと遅い（known_bugs.md #30）。
+    pub(self) fn with_value<R>(&self, f: impl FnOnce(&Value) -> R) -> R {
+        match self {
+            Var::Immutable(v) | Var::Mutable(v) => f(v),
+            Var::Cell(rc) | Var::SlotCell(rc) => f(&rc.borrow()),
+        }
+    }
+
     /// 変数に新しい値をセットする。`Immutable` に対して呼ぶのは呼び出し元の責任。
     pub(self) fn set_value(&mut self, val: Value) {
         match self {

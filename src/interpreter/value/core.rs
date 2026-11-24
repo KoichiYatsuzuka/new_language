@@ -62,6 +62,38 @@ pub fn alloc_class_id() -> u32 {
     NEXT_CLASS_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// 組み込みのクラス（`ValueError`・`Path`・`FileOpenMode` …）の ID。**鍵ごとにプロセスで 1 つ**。
+///
+/// 組み込みのクラスは大域を作るたびに作り直す（`builtin_global_scope`・メインと各モジュールの大域）。以前は作るたびに
+/// 新しい ID を発行していたので、モジュールの中で出した `ValueError` と本体の `ValueError` が別のクラスだった。
+/// 型の照合はクラスを `class_id` で比べる（known_bugs.md #30・`Interpreter::same_class`）ので、同じ鍵には同じ ID を返す。
+/// ⚠ 同じ鍵のクラスはどれも同じ形（同じ関数が作る）なので、ID を共有してもフィールドの並びは食い違わない
+///   （非同期タスクへ送るクラスの写しも ID を共有している・`ClassValue::deep_clone`）。
+/// ⚠ ID は利用者のクラスと別の範囲（[`BUILTIN_CLASS_ID_BASE`] から上）から出す。組み込みのクラスの `module_name` は
+///   本体のクラスと同じ `None` なので、型の照合の近道（`Interpreter::names_another_class`）は ID で組み込みかを見分ける。
+pub fn builtin_class_id(key: &str) -> u32 {
+    static IDS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u32>>> =
+        std::sync::OnceLock::new();
+    static NEXT: AtomicU32 = AtomicU32::new(BUILTIN_CLASS_ID_BASE);
+    let mut ids = IDS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(&id) = ids.get(key) {
+        return id;
+    }
+    let id = NEXT.fetch_add(1, Ordering::Relaxed);
+    ids.insert(key.to_string(), id);
+    id
+}
+
+/// 組み込みのクラスの ID の範囲の始まり（[`builtin_class_id`]）。利用者のクラスの ID（[`alloc_class_id`]・1 から）は
+/// ここに届かない。
+pub const BUILTIN_CLASS_ID_BASE: u32 = 1 << 31;
+
+/// [`builtin_class_id`] が出した ID か。
+#[inline]
+pub fn is_builtin_class_id(id: u32) -> bool {
+    id >= BUILTIN_CLASS_ID_BASE
+}
+
 
 // ---------------------------------------------------------------------------
 // Value enum

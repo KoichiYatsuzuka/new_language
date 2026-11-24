@@ -9,6 +9,8 @@
 #   - 跳ね返りの形（同じ番地を読んで書く）・2 つの入れ子の受け手・`int` のフィールド・`int` → `float`・ローカル変数を読む
 #   - 未初期化のフィールドへ書けば読めるようになる・未初期化のフィールドを読むのは今までどおりの誤り
 #   - 名前による呼び出しの結果を使う箇所は巻き戻さない（本体の同じ名前のクラスを入れてガードを外す）
+#   ⚠ 本体の同じ名前のクラスを入れる件は、known_bugs.md #30 の後は作れない（モジュールの `mustbe` が本体のクラスを
+#     通さない）。今は拒まれることだけを確かめる。
 # ⚠ 期待値と違えば raise する（ゲートの多くは exit code しか見ない）。
 
 import test_modules.nested_assign_checked_module as m
@@ -76,7 +78,8 @@ for r in range(3):
     try:
         m.put_k(h, K(0, "a"))
     except TypeError as e:
-        # `mustbe` がモジュールの型を区別するようになったら（known_bugs.md #30）、この形は作れない
+        # known_bugs.md #30 で `mustbe` がモジュールの型を区別するようになったので、ここに来る（この形は作れない。
+        # 誤りの文に `another class of the same name, defined in the main program` と添えられる）
         put_ok = False
         print("put_k refused: " + str(e))
     if put_ok:

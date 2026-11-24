@@ -1,0 +1,56 @@
+# module_class_identity.ar — モジュールのクラスと、本体の同じ名前のクラスは別のクラス（known_bugs.md #30）
+#
+# 型の決まり（モジュールで宣言した型はモジュールの名前で呼ぶ・10-8）どおり、`namespace_modules/same_name.ar` の `V` と
+# 本体の `V` は別の型。実行時の `x is V` / `isinstance(x, V)` / `match` の `is V:` の腕 / `x mustbe V` / `except E:` も、
+# その名前を**今の場所で引いたクラス**と同じクラスかで決まる。
+# ⚠ 以前は実行時の照合がクラスの名前の文字列で比べていたので（実行時のクラスの名前はモジュールで修飾しない）、
+#   どちらの `V` も通り、`mustbe` を通った本体の `V` がモジュールの `V` として使われていた。
+# ⚠ クラスの名前の表示は修飾しない（`type(x)` は `V` のまま）。`mustbe` の誤りには、どこで定義したクラスかを添える。
+
+import namespace_modules.same_name as m
+
+class V:
+    mut x: float
+
+class E(Error):
+    fn __init__(mut self, message: str) -> None:
+        self.message = message
+
+fn raise_main() -> None:
+    raise E("main E")
+
+# モジュールの中の照合
+print(m.probe(V(2.0)))       # ['is False', 'isinstance False', 'other arm', 'mustbe refused']
+print(m.probe(m.make()))     # ['is True', 'isinstance True', 'is V arm', 'mustbe ok']
+
+# 本体の照合（修飾しない `V` は本体の `V`、`m.V` はモジュールの `V`）
+let mv: Any = m.make()
+print(mv is V, isinstance(mv, V), mv is m.V)     # False False True
+print(V(3.0) is V, isinstance(V(3.0), V))        # True True
+
+# mustbe の誤り
+try:
+    let v = mv mustbe V
+except TypeError as e:
+    print(str(e).endswith("(another class of the same name, defined in module `namespace_modules.same_name`)"))   # True
+
+# except も同じ
+print(m.catch(raise_main))   # another exception
+print(m.catch(m.raise_e))    # caught as this module's E
+try:
+    m.raise_e()
+except E:
+    print("not reached")
+except m.E as e:
+    print("caught as m.E:", e.message)           # caught as m.E: module E
+
+# 組み込みの例外・enum は今までどおり（組み込みのクラスはどのモジュールでも同じクラス）
+try:
+    m.raise_value()
+except ValueError as e:
+    print("ValueError:", e is ValueError, isinstance(e, ValueError))   # ValueError: True True
+try:
+    m.parse_bad()
+except ValueError as e:
+    print("internal ValueError:", e is ValueError)                     # internal ValueError: True
+print(m.is_level(m.Level.High))                                       # True

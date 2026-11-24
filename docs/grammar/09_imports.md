@@ -239,6 +239,11 @@ print(pkg.core.LABEL)                # サブモジュール（wrapper が読み
 - モジュールで宣言した型は `モジュール名.型名` の型です（`tags.ar` の `Tag` は `tags.Tag`）。
   注釈には束縛した名前を通して書きます（`import tags as t` → `let x: t.Tag`、`import a.b` → `let x: a.b.Tag`）。
   `from tags import Tag` した `Tag` も同じ型です。再エクスポートで取り込んだ型は、元の宣言の型に解決されます。
+- 実行時の型の照合（`x is Tag` / `isinstance(x, Tag)` / `match` の `is Tag:` の腕 / `x mustbe Tag` / `except Tag:`）も、
+  名前をそのファイルの大域で引いたクラスと**同じクラスか**で決まります。本体の `Tag` は `tags.Tag` を通しません
+  （known_bugs.md #30。以前は名前の文字列で比べていたので通っていました）。クラスの名前の表示は修飾しません
+  （`type(x)` は `Tag` のまま。`mustbe` の誤りには ``(another class of the same name, defined in module `tags`)`` と添えます）。
+  組み込みのクラス（`ValueError` など）は、どのモジュールでも同じクラスです。
 - 型の表はプログラム全体で 1 つですが、**このファイルが束縛していないモジュールの型名は書けません**
   （CPython でも束縛していない名前は `NameError`）。別名で束縛していれば、使うべき綴りを案内します。
 - ⚠ 外部言語のスタブ（cpp / cs / js / rs）では、無いメンバーを誤りにしません。

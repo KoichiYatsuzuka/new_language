@@ -171,7 +171,16 @@ impl Interpreter {
             if type_name.contains('.') {
                 return self.value_is_type(exc, type_name);
             }
-            Self::exc_matches(&inst_rc.borrow().class, type_name)
+            let class = inst_rc.borrow().class.clone();
+            if !Self::exc_matches(&class, type_name) {
+                return false;
+            }
+            // ⚠ 自分の名前で一致したときは、その名前を今の場所で引いたクラスと同じクラスか見る（known_bugs.md #30・
+            //   `value_is_type` と同じ）。以前はモジュールの `E` と本体の同じ名前の `E` を互いに捕まえていた。
+            if class.name == type_name && self.names_another_class(&class, type_name) {
+                return class.bases.iter().any(|b| b == type_name);
+            }
+            true
         } else {
             false
         }

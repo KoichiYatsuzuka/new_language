@@ -150,8 +150,9 @@ fn a_module_class_matches_its_qualified_name() {
     .expect("run");
     assert!(matches!(interp.get_val("q"), Some(Value::Bool(true))));
     assert!(matches!(interp.get_val("n"), Some(Value::Int(1))));
-    // ⚠ 素の名前での判定は従来どおり（実行時は表示名でも当たる。静的には別の型として弾く）。
-    assert!(matches!(interp.get_val("mine"), Some(Value::Bool(true))));
+    // ⚠ 素の名前 `Tag` は本体の `Tag` で、モジュールの `Tag` とは別のクラス（known_bugs.md #30・名前を今の場所で引いた
+    //   クラスと `class_id` で比べる）。以前は表示名で当たって `True` だった。
+    assert!(matches!(interp.get_val("mine"), Some(Value::Bool(false))));
 }
 
 // ── CPython と同じ名前空間（2026-10-02）────────────────────────────────────

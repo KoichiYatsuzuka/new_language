@@ -67,6 +67,10 @@
     type positions may also spell it through the alias (`cp.Person`, `x is cp.Person`; ffi_value_exchange_plan.md 7-6).
   - ⚠ A type can only be named through a module **this file imports** (`UnimportedModuleType`): the type
     table is program-wide, but `let t: util.Tag` is an error unless this file imports `util`.
+  - ⚠ Runtime type tests (`is` / `isinstance` / `match`'s `is T:` arm / `mustbe` / `except T:`) compare the class the
+    name is bound to **in the current module's globals**, by `class_id` (known_bugs.md #30): the main program's `Tag`
+    does not pass as `tags.Tag`. Runtime class names stay unqualified (`type(x)` shows `Tag`). Built-in classes
+    (`ValueError` …) are the same class in every module (`builtin_class_id`).
 - **Modules behave like CPython** (2026-10-02, phase 4 of `IMPORT_RESOLUTION_PLAN.md`; rule: `src/module_path.rs`):
   - `import a.b.c` runs package `a` (its `a/__init__.ar`; a directory without one is an empty namespace
     package), then `a.b`, then `a.b.c`, and **binds `a`** — call it as `a.b.c.f()`. `import a.b.c as m` binds

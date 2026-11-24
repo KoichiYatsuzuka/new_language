@@ -2343,12 +2343,15 @@ extern "C" fn ar_method_guard(obj_h: i64, class_ptr: *const u8, class_len: i32, 
             return 0;
         }
         let interp = unsafe { &*interp_ptr };
-        match interp.get_var(class_name).map(|v| v.get_value()) {
-            Some(Value::Class(cls)) => {
-                want = cls.class_id as u64;
+        // ⚠ 今の大域（このモジュールの大域・`enter_native_globals`）だけを引く（known_bugs.md #30・型の照合の
+        //   `names_another_class` と同じ）。`get_var` はローカルの枠を先に見るので、非同期タスクの本体が見ていた
+        //   本体の同じ名前のクラスを引いて、セルに別のクラスを焼きうる。
+        match interp.global_class_id(class_name) {
+            Some(id) => {
+                want = id as u64;
                 cell.store(want, Ordering::Relaxed);
             }
-            _ => return 0,
+            None => return 0,
         }
     }
     i32::from(class_id as u64 == want && !(need_mutable != 0 && immutable))

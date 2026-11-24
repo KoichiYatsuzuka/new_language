@@ -147,8 +147,9 @@ impl Interpreter {
         self.frame_floor = floor;
     }
 
-    /// 非同期タスクへ送る各モジュールの大域の複製と、今の大域の添字（`async_mgr::TaskEnv`）。
-    pub(crate) fn snapshot_globals_for_task(&self) -> (Vec<Vec<(String, Value, bool)>>, u32) {
+    /// 非同期タスクへ送る各モジュールの大域の複製と、今の大域の添字と、各大域のモジュールの名前（`async_mgr::TaskEnv`）。
+    #[allow(clippy::type_complexity)]
+    pub(crate) fn snapshot_globals_for_task(&self) -> (Vec<Vec<(String, Value, bool)>>, u32, Vec<Option<String>>) {
         let cur = self.cur_globals as usize;
         let globals = (0..self.global_scopes.len())
             .map(|i| {
@@ -160,12 +161,19 @@ impl Interpreter {
                     .collect()
             })
             .collect();
-        (globals, self.cur_globals)
+        // ⚠ `Rc<str>` はスレッドを越えられないので `String` で送る
+        let module_names = self.global_module_names.iter().map(|n| n.as_deref().map(str::to_string)).collect();
+        (globals, self.cur_globals, module_names)
     }
 
     /// 非同期タスクのワーカーに、送られてきた各モジュールの大域を**同じ添字で**置き、
     /// タスクを出したコードの大域へ切り替える（`async_mgr::TaskEnv`）。
-    pub(crate) fn install_task_globals(&mut self, globals: Vec<Vec<(String, Value, bool)>>, cur: u32) {
+    pub(crate) fn install_task_globals(
+        &mut self,
+        globals: Vec<Vec<(String, Value, bool)>>,
+        cur: u32,
+        module_names: Vec<Option<String>>,
+    ) {
         debug_assert_eq!(self.cur_globals, 0, "a fresh worker starts in its main globals");
         for (i, entries) in globals.into_iter().enumerate() {
             if i == 0 {
@@ -178,9 +186,10 @@ impl Interpreter {
                     g.insert(n, Var::new(v, m));
                 }
                 self.global_scopes.push(g);
-                // ⚠ 添字を揃えるだけ（ワーカーでクラスを定義することは無い。送られてきたクラスは
-                //   `module_name` を自分で持っている）。
-                self.global_module_names.push(None);
+                // ⚠ ワーカーでクラスを定義することは無い（送られてきたクラスは `module_name` を自分で持っている）が、
+                //   型の照合が今の大域のモジュールの名前を見る（known_bugs.md #30・`names_another_class`）ので送られてきた
+                //   名前を置く。以前は `None` で埋めていた。
+                self.global_module_names.push(module_names.get(i).cloned().flatten().map(|n| std::rc::Rc::from(n.as_str())));
             }
         }
         // ⚠ 具体化のキャッシュを組み直す（D36・タスク 2-16）。キャッシュの鍵はテンプレートの値の

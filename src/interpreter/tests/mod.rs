@@ -229,6 +229,26 @@ mod modules;
 mod a_axis_invariants {
     use crate::interpreter::Interpreter;
 
+    /// 大域を作り直しても（メインと各モジュールの大域）、組み込みのクラスは同じ `class_id`（known_bugs.md #30）。
+    /// ⚠ 型の照合はクラスを `class_id` で比べるので、ずれるとモジュールの中で出た `ValueError` を本体の
+    ///   `e is ValueError` が偽にする。
+    #[test]
+    fn builtin_classes_keep_their_class_id_across_global_scopes() {
+        let a = Interpreter::builtin_global_scope(&crate::interpreter::Value::None);
+        let b = Interpreter::builtin_global_scope(&crate::interpreter::Value::None);
+        let mut classes = 0;
+        for (name, var) in a.iter() {
+            if let crate::interpreter::Value::Class(ca) = var.get_value() {
+                let Some(crate::interpreter::Value::Class(cb)) = b.get(name.as_str()).map(|v| v.get_value()) else {
+                    panic!("'{name}' is a class in one scope only");
+                };
+                assert_eq!(ca.class_id, cb.class_id, "'{name}' got another class_id in a new global scope");
+                classes += 1;
+            }
+        }
+        assert!(classes > 40, "expected the built-in exception classes, got {classes} classes");
+    }
+
     /// 型検査の「実行時が宣言なしで解決する名前」の表（`type_check::names::RUNTIME_BUILTIN_NAMES`）が
     /// 実行時とずれていないか（フェーズ10 10-12）。**両方向**を見る。
     /// ⚠ 表に無い組み込みがあると、正しいプログラムが静的に「未定義」になる（偽の誤り）。
