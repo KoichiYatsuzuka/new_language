@@ -214,6 +214,23 @@ See the table below. `Any` or `Union` on either side → error (explicit downcas
 
 Ordered comparisons (`<`, `>`, `<=`, `>=`) are only valid between: `int/int`, `float/float`, `int/float`, `float/int`, `str/str`, `bytes/bytes`. Any other pair → `IncompatibleComparison` error.
 
+**Equality** (`==` / `!=` / `in` / `not in`, `check_equality` in `binop.rs`; D-15): a comparison that can never be true is
+`CrossTypeEquality`. `in` compares the left operand with the element type. It passes when (in order):
+
+1. a type parameter appears on either side (the instantiated body is checked instead), or either side is opaque
+   (`Unresolved` / `Protocol` / `Intersection` / …; protocol names are resolved first, so protocol parameters are opaque too);
+2. same type; 3. numeric family (`int` / `float` / `complex`, not `bool`);
+4. either side declares an `__eq__` accepting the other — for a trait-typed side, the trait's own `__eq__`;
+5. one instance can have both types (`instances_may_coincide`): subtype either way (class ↔ implemented trait with its type
+   arguments, exception hierarchy, Python class hierarchy), or two different traits (a class may implement both;
+   `Exception` counts as a trait);
+6. same kind of container whose elements pass 2, 5 or are opaque (`containers_may_equal`; element `__eq__` is not used at
+   run time, so it is not considered).
+
+Still rejected: two classes neither of which is a subtype of the other, a trait and a class that does not implement it, and
+a trait value against a type only some implementer's `__eq__` accepts (decided, `implementation_logs/trait_equality_plan.md` #4:
+narrow with `is` first, or declare `__eq__` in the trait).
+
 ### Function calls
 
 Handled by `infer_call()`:

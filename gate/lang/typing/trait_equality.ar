@@ -1,0 +1,144 @@
+# trait_equality.ar — trait / protocol 型の値の等値比較（trait_equality_plan.md）
+#
+# trait 型の値は実行時にはそれを実装するクラスのインスタンスなので、`Shape` と `Sq` の比較は真になりうる。
+# ⚠ 以前は部分型の関係を見ず、「can never be true」の偽の静的な誤りになった。
+# 弾かれる例は trait_equality_error.ar
+from ...lib.check import check_eq
+import trait_equality_mods.shapes as m
+
+trait Shape:
+    fn area(self) -> int:
+        ...
+
+trait Named:
+    fn name(self) -> str:
+        ...
+
+class Sq(Shape):
+    let s: int
+    fn area(self) -> int:
+        return self.s * self.s
+
+class Circ(Shape):
+    let r: int
+    fn area(self) -> int:
+        return self.r
+
+class Tile(Shape, Named):
+    let n: int
+    fn area(self) -> int:
+        return self.n
+    fn name(self) -> str:
+        return "tile"
+
+trait Box[T]:
+    fn get(self) -> T:
+        ...
+
+class IntBox(Box[int]):
+    let v: int
+    fn get(self) -> int:
+        return self.v
+
+class StrBox(Box[str]):
+    let v: str
+    fn get(self) -> str:
+        return self.v
+
+protocol HasArea:
+    fn area(self) -> int:
+        ...
+
+let a: Shape = Sq(2)
+let b = Sq(2)
+let c = Circ(1)
+
+# ── trait 型と、それを実装するクラス（どちらの向きも）──
+check_eq(a == b, True, "trait == class")
+check_eq(b == a, True, "class == trait")
+check_eq(a != b, False, "trait != class")
+check_eq(a == c, False, "trait == another implementer (another class at run time)")
+check_eq(a in [b], True, "trait in list[class]")
+check_eq(a not in [b], False, "trait not in list[class]")
+let shapes: list[Shape] = [Sq(1), Circ(1)]
+check_eq(Sq(1) in shapes, True, "class in list[trait]")
+check_eq(Sq(3) in shapes, False, "class in list[trait] (absent)")
+let table: dict[Shape, int] = {a: 7}
+check_eq(b in table, True, "class in dict[trait, ..]")
+let opt: Option[Shape] = Sq(2)
+if opt is not None:
+    check_eq(opt == b, True, "narrowed Option[trait] == class")
+
+# ── 別の trait どうし: 両方を実装するクラスがありうる ──
+let t1: Shape = Tile(1)
+let t2: Named = Tile(1)
+check_eq(t1 == t2, True, "trait == another trait")
+check_eq(t2 == a, False, "trait == another trait (different classes)")
+check_eq(t2 == Tile(1), True, "second trait == class")
+
+# ── 型引数つきの trait ──
+let box: Box[int] = IntBox(3)
+check_eq(box == IntBox(3), True, "Box[int] == IntBox")
+check_eq(IntBox(4) == box, False, "IntBox == Box[int]")
+
+# ── 容器の要素 ──
+let sqs: list[Sq] = [Sq(1)]
+let one: list[Shape] = [Sq(1)]
+check_eq(one == sqs, True, "list[trait] == list[class]")
+check_eq((a, 1) == (b, 1), True, "tuple[trait, ..] == tuple[class, ..]")
+check_eq({1: a} == {1: b}, True, "dict[.., trait] == dict[.., class]")
+
+# ── trait が宣言した __eq__ が相手を受ける ──
+trait Num:
+    fn val(self) -> int:
+        ...
+    fn __eq__(self, other: int) -> bool:
+        return self.val() == other
+
+class N(Num):
+    let v: int
+    fn val(self) -> int:
+        return self.v
+
+let num: Num = N(1)
+check_eq(num == 1, True, "trait __eq__ accepts int")
+check_eq(2 == num, False, "trait __eq__ accepts int (right operand)")
+check_eq(num in [2, 1], True, "trait __eq__ in list[int]")
+
+# ── protocol 型の仮引数（以前は仮引数だけ誤りになった）──
+fn same(x: HasArea, ys: list[HasArea]) -> list[bool]:
+    return [x == b, b == x, x in [b], b in ys, x == c, ys == [b]]
+check_eq(same(b, [b]), [True, True, True, True, False, True], "protocol parameter")
+
+# ── テンプレートの本体の型変数は、具体化した本体で検査する ──
+fn is_one[T](x: T) -> bool:
+    return x == 1
+check_eq(is_one[int](1), True, "T == int")
+
+fn same_as_trait[T: Shape](x: T) -> bool:
+    let s: Shape = x
+    return s == x
+check_eq(same_as_trait[Sq](b), True, "trait == T")
+
+# ── 例外の階層 ──
+class MyErr(Error, Named):
+    let no: int
+    fn __init__(mut self, no: int) -> None:
+        self.no = no
+    fn name(self) -> str:
+        return "my"
+
+let key = KeyError("k")
+let look: LookupError = key
+check_eq(look == key, True, "LookupError == KeyError")
+let exc: Exception = key
+check_eq(exc == key, True, "Exception == KeyError")
+let err: Error = MyErr(1)
+check_eq(err == MyErr(1), True, "Error == MyErr")
+let named: Named = MyErr(1)
+let as_exc: Exception = MyErr(1)
+check_eq(as_exc == named, True, "Exception == trait (a class may be both)")
+
+# ── 別のモジュールの trait ──
+let ma: m.Shape = m.Sq(2)
+check_eq(ma == m.Sq(2), True, "imported trait == imported class")

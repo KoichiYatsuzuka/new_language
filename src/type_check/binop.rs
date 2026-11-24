@@ -112,6 +112,13 @@ impl TypeChecker {
     /// 2. **同型**なら通す
     /// 3. **数値族**（`int` / `float` / `complex`）は相互に許す
     /// 4. どちらかのクラスが **`__eq__` の宣言で相手を受ける**なら通す
+    /// 5. **同じインスタンスが両方の型になりうる**なら通す（[`Self::instances_may_coincide`]）:
+    ///    片方がもう片方の部分型（クラスと実装する trait・例外の階層・Python のクラスの階層）か、別の trait どうし
+    /// 6. 同じ種類の容器で、要素どうしが 2・5 か不透明なら通す（[`Self::containers_may_equal`]）
+    ///
+    /// テンプレートの本体の型変数（`T`）を含む比較は見ない（具体化した本体で検査する）。
+    /// protocol の名前は先に `Protocol` へ寄せる（規則 1 に当たる）。⚠ 仮引数の注釈は `NamedInstance` のまま届くので、
+    /// 寄せないと `fn f(x: HasArea)` の `x == b` だけが誤りになる（`let h: HasArea` は通る）。
     ///
     /// ## ⚠⚠ `<` と違って「弾く理由」が別
     ///
@@ -137,6 +144,18 @@ impl TypeChecker {
         span: Span,
     ) {
         use InferredType as T;
+        // テンプレートの型変数は突き合わせない（`types_compatible` と同じ）。`T` が何になるかは具体化ごとに決まり、
+        // 具体化した本体は別に検査される。⚠ 以前は `T` という名のクラスとして比べ、`x: T` の `x == 1` が誤りだった。
+        if self.mentions_type_param(lt) || self.mentions_type_param(rt) {
+            return;
+        }
+        // クラスの名前は修飾名へ引き直してから比べる（代入の検査の `types_compatible` と同じ・フェーズ10 10-8）。
+        // ⚠ 以前は書いた綴りのまま比べたので、`list[m.Plain]`（別名）と、スタブの `-> Plain` から来た `m8.Plain` の
+        //   `y in xs` / `y == q` が「決して真にならない」になった（known_bugs.md の #8 の ④）。
+        let (lt, rt) = (
+            &self.resolve_protocols(&self.canon_type(lt)),
+            &self.resolve_protocols(&self.canon_type(rt)),
+        );
         // `in` は右辺が容器。左辺と**要素型**を比べる。
         let (a, b) = if matches!(op, BinOp::In | BinOp::NotIn) {
             let elem = match rt {
@@ -170,10 +189,6 @@ impl TypeChecker {
         } else {
             (lt.clone(), rt.clone())
         };
-        // クラスの名前は修飾名へ引き直してから比べる（代入の検査の `types_compatible` と同じ・フェーズ10 10-8）。
-        // ⚠ 以前は書いた綴りのまま比べたので、`list[m.Plain]`（別名）と、スタブの `-> Plain` から来た `m8.Plain` の
-        //   `y in xs` / `y == q` が「決して真にならない」になった（known_bugs.md の #8 の ④）。
-        let (a, b) = (self.canon_type(&a), self.canon_type(&b));
         if Self::opaque_for_equality(&a) || Self::opaque_for_equality(&b) {
             return;
         }
@@ -204,7 +219,7 @@ impl TypeChecker {
         if self.eq_overload_accepts(&a, &b) || self.eq_overload_accepts(&b, &a) {
             return;
         }
-        if Self::containers_may_equal(&a, &b) {
+        if self.instances_may_coincide(&a, &b) || self.containers_may_equal(&a, &b) {
             return;
         }
         self.report_error(StaticTypeError {
@@ -217,14 +232,65 @@ impl TypeChecker {
         });
     }
 
+    /// 1 つのインスタンスが `a` の値でも `b` の値でもありうるか（型の同じ値は別の規則が見る）。
+    ///
+    /// trait 型の値は実行時にはそれを実装するクラスのインスタンスなので、`Shape` と `Sq` の比較は真になりうる
+    /// （trait_equality_plan.md）。⚠ 以前は部分型の関係を見ず、`a == b`（`a: Shape`・`b: Sq`）が「決して真にならない」になった。
+    ///
+    /// - 片方がもう片方の部分型: クラスと実装する trait（型引数も見る）・例外の階層・Python のクラスの階層
+    /// - どちらも trait で別の名前: 両方を実装するクラスがありうる（読み込んでいないモジュールが宣言してもよいので、
+    ///   今あるクラスを数えて決めない）。`Exception` / `BaseException` は `Error` を実装したクラスを含むので trait と同じ扱い
+    ///
+    /// ⚠ クラスは trait しか継承できないので、互いに部分型でない 2 つのクラス（同じ trait を実装していても）と、trait と
+    ///   それを実装しないクラスは重ならない。
+    /// ⚠ クラスの型どうしだけを見る。`types_compatible` をそのまま使うと `int` と `float` の拡大のような、等値と関係の無い
+    ///   規則を足したときに D-15 が弾く比較まで通ってしまう。
+    fn instances_may_coincide(&self, a: &InferredType, b: &InferredType) -> bool {
+        use InferredType as T;
+        // テンプレートの具体化は、展開器が置いた普通のクラスとして見る（その基底の表を引く）。
+        let nominal = |t: &T| match t {
+            T::NamedInstance(_) => Some(t.clone()),
+            T::GenericInstance { .. } => Some(match self.registry.instance_class(&t.to_string()) {
+                Some(cls) => T::NamedInstance(cls.clone()),
+                None => t.clone(),
+            }),
+            // クラスのインスタンスでない型は、ほかの規則が見る
+            _ => None,
+        };
+        let (Some(a), Some(b)) = (nominal(a), nominal(b)) else {
+            return false;
+        };
+        // trait なら名前。型引数は名前が同じときに部分型の判定が見る（`Box[int]` と `Box[str]` は重ならない）。
+        let trait_name = |t: &T| match t {
+            T::NamedInstance(name) | T::GenericInstance { name, .. }
+                if self.registry.is_known_trait(name) || matches!(name.as_str(), "Exception" | "BaseException") =>
+            {
+                Some(name.clone())
+            }
+            _ => None,
+        };
+        if let (Some(x), Some(y)) = (trait_name(&a), trait_name(&b)) {
+            if x != y {
+                return true;
+            }
+        }
+        self.type_matches_exact(&a, &b) || self.type_matches_exact(&b, &a)
+    }
+
     /// 同じ種類の容器どうしで、要素どうしが等しくなりうるか（等値は要素で比べる）。⚠ 以前は型が完全に同じでなければ
     /// 「決して真にならない」にしたので、`mut c: list[Any] = [1]` の `c == [1]` が誤りだった（`Any` の要素は何とでも
     /// 等しくなりうる・known_bugs.md の #15）。
+    /// ⚠ 要素の `__eq__` は見ない。容器の中の比較は同じクラスで中身が等しいかだけを見る（`values_eq`）ので、要素は
+    ///   [`Self::instances_may_coincide`] で足りる（`list[Shape] == list[Sq]`・trait_equality_plan.md）。
     /// ⚠ 要素の数の型の違いは等しくならない（`[2] == [2.0]` は実行時に偽・容器の等値は要素の型まで見る）ので、数の族は混ぜない。
-    fn containers_may_equal(a: &InferredType, b: &InferredType) -> bool {
+    fn containers_may_equal(&self, a: &InferredType, b: &InferredType) -> bool {
         use InferredType as T;
         let elements = |x: &T, y: &T| {
-            Self::opaque_for_equality(x) || Self::opaque_for_equality(y) || x == y || Self::containers_may_equal(x, y)
+            Self::opaque_for_equality(x)
+                || Self::opaque_for_equality(y)
+                || x == y
+                || self.instances_may_coincide(x, y)
+                || self.containers_may_equal(x, y)
         };
         fn listish(t: &InferredType) -> Option<&InferredType> {
             match t {
@@ -304,8 +370,12 @@ impl TypeChecker {
         let Some((cls, subst)) = self.class_and_subst(owner) else {
             return false;
         };
-        let sigs = self.collect_class_method_sigs(cls.as_str());
-        let Some(sigs) = sigs.get("__eq__") else {
+        // trait 型の値は、trait が宣言した `__eq__` を見る（実装するクラスは必ず持つ）。クラスの表には trait 自身のメソッドが
+        // 無い（⚠ 以前はクラスの表だけを見たので、`trait Num` が `__eq__(self, o: int)` を宣言していても `z: Num` の
+        // `z == 1` が「決して真にならない」になった・trait_equality_plan.md）。
+        let class_sigs = self.collect_class_method_sigs(cls.as_str());
+        let trait_sigs = self.registry.trait_methods(cls.as_str());
+        let Some(sigs) = class_sigs.get("__eq__").or_else(|| trait_sigs.and_then(|m| m.get("__eq__"))) else {
             return false;
         };
         sigs.iter().any(|sig| {

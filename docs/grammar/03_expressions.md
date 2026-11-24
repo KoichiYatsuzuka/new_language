@@ -220,6 +220,9 @@ a not in b
 **評価**: `Bool` を返します。  
 `values_eq` は型を考慮して比較 (`Int(1) == Float(1.0)` は `true`)。
 
+**静的検査**: 決して真にならない `==` / `!=` / `in` / `not in`（`1 == "a"`・別のクラスどうしなど）は静的な誤りです。
+trait 型の値は、それを実装するクラスの値や別の trait 型の値と比べられます（`examples/typing/trait_equality.ar`・`_error`）。
+
 list 同士・tuple 同士の大小比較（`<` / `<=` / `>` / `>=`）は CPython と同じ辞書順です（最初に違う要素だけを
 比べ、違いが無ければ長さで決める）。list と tuple は比べられません（`TypeError`）。比べられない要素に届いた
 ときだけ `TypeError`（`(1, 'a') < (2, 3)` は `True`）。

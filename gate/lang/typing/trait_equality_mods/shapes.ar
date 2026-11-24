@@ -1,0 +1,9 @@
+# trait_equality.ar から import する、trait と実装クラスのモジュール。
+trait Shape:
+    fn area(self) -> int:
+        ...
+
+class Sq(Shape):
+    let s: int
+    fn area(self) -> int:
+        return self.s * self.s

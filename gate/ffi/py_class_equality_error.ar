@@ -1,0 +1,10 @@
+# py_class_equality_error.ar — 互いに派生でない Python のクラスの比較（trait_equality_plan.md）
+#
+# 正常系は py_class_equality.ar
+
+import[py] test_modules.py_module_types_zoo as z
+import[py] test_modules.py_module_types_kennel as k
+
+mut p = z.Puppy()
+mut d = k.Dog()
+print(p == d)                       # ⛔ kennel の Dog は zoo の Puppy の基底ではない   # expect: static CrossTypeEquality
