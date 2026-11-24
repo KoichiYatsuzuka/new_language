@@ -879,12 +879,16 @@ impl<'a> GenCtx<'a> {
                 self.ec(&format!("{r} = call {t} {callee}({params})"));
                 // 生値なので残すハンドルは無い（TL_NONE を渡して巻き戻すだけ）
                 self.rewind_after_call(save, None);
+                // 呼ばれた側が例外を積んだらすぐ戻る（巻き戻しの後・known_bugs.md #28）
+                self.check_exc_after_call(sym);
                 (r, ret)
             }
             _ => {
                 let raw = self.fresh_reg();
                 self.ec(&format!("{raw} = call i64 {callee}({params})"));
-                (self.rewind_after_call(save, Some(&raw)), Ty::Handle)
+                let h = self.rewind_after_call(save, Some(&raw));
+                self.check_exc_after_call(sym);
+                (h, Ty::Handle)
             }
         }
     }
@@ -1437,6 +1441,8 @@ impl<'a> GenCtx<'a> {
                                 self.ec(&format!("{r} = call double @{sym}_fast({fast_args})"));
                                 // 被演算子を複製したとき（1-15・7-12）・呼ばれた側が積むとき（9-2）に巻き戻す
                                 self.rewind_after_call(save, None);
+                                // `_fast` の本体が例外を出しうるなら確かめる（`_impl` とは別に決める・#28）
+                                self.check_exc_after_call(&fast_fail_key(&sym));
                                 return Some((r, Ty::Float));
                             }
                             // `build_fast_call_args` は被演算子を作る前にしか `None` を返さない（作った複製は無い）

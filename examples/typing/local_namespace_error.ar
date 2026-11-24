@@ -1,0 +1,21 @@
+# local_namespace_error.ar — `local::` で読めるのは可変長パラメータの `local::args` だけ（known_bugs.md #22）
+#
+# 正常系は variadic.ar（`fn f(let ...: int)` の中の `local::args`）。
+#
+# ⚠ 以前は `local::` の後の名前を型検査が確かめず素通しにしていたので、下の形は型検査を通り、
+#   実行すると `VmForceError: cannot compile function 'count' to bytecode` で落ちていた。
+#
+# 期待されるエラー（どれも静的）:
+#   name 'local::calls' is not defined (`local::` holds only the variadic parameter `local::args`, ...)
+#   name 'local::args' is not defined (...)   ← 可変長パラメータの無い関数
+
+fn count(let p: int) -> int:
+    static mut calls: int = 0
+    calls += 1
+    return local::calls          # ⛔ `static mut` は `calls` と書く
+
+fn no_variadic(let x: int) -> int:
+    return len(local::args)      # ⛔ この関数に `...` のパラメータは無い
+
+print(count(1))
+print(no_variadic(2))

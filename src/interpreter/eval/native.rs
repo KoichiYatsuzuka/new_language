@@ -232,15 +232,16 @@ impl Interpreter {
                 Err(e)
             }
             Ok(result_h) => {
-                if let Some(err) = crate::interpreter::native_api::take_error() {
+                // 誤りも `raise` した例外も、戻り値の印（`TL_EXCEPTION`）ではなくスレッドの状態で見る（known_bugs.md #28・
+                // 1 回の参照で取り出す）。⚠ 以前は例外を印のときだけ見ていて、`int` を返す関数（`_tl` の包みが生の `-2` を
+                // 整数として箱に入れる）の例外が消え、`-2` が値として返っていた。メソッドの入口
+                // （`native_api::try_dispatch_native_method`）は元から状態を見ている
+                if let Some(err) = crate::interpreter::native_api::take_error_or_raise() {
                     crate::interpreter::native_api::abort_native_call(is_outermost);
                     return Err(err);
                 }
                 if result_h == crate::interpreter::native_api::TL_EXCEPTION {
                     crate::interpreter::native_api::abort_native_call(is_outermost);
-                    if let Some((type_name, msg)) = crate::interpreter::native_api::take_pending_raise() {
-                        return Err(format!("{type_name}: {msg}"));
-                    }
                     return Err("NativeError: CB_RAISE called but no pending raise".to_string());
                 }
                 // Read back write-back values BEFORE exit_native_call truncates the arena
@@ -563,15 +564,16 @@ impl Interpreter {
                 Err(e)
             }
             Ok(result_h) => {
-                if let Some(err) = crate::interpreter::native_api::take_error() {
+                // 誤りも `raise` した例外も、戻り値の印（`TL_EXCEPTION`）ではなくスレッドの状態で見る（known_bugs.md #28・
+                // 1 回の参照で取り出す）。⚠ 以前は例外を印のときだけ見ていて、`int` を返す関数（`_tl` の包みが生の `-2` を
+                // 整数として箱に入れる）の例外が消え、`-2` が値として返っていた。メソッドの入口
+                // （`native_api::try_dispatch_native_method`）は元から状態を見ている
+                if let Some(err) = crate::interpreter::native_api::take_error_or_raise() {
                     crate::interpreter::native_api::abort_native_call(is_outermost);
                     return Err(err);
                 }
                 if result_h == crate::interpreter::native_api::TL_EXCEPTION {
                     crate::interpreter::native_api::abort_native_call(is_outermost);
-                    if let Some((type_name, msg)) = crate::interpreter::native_api::take_pending_raise() {
-                        return Err(format!("{type_name}: {msg}"));
-                    }
                     return Err("NativeError: CB_RAISE called but no pending raise".to_string());
                 }
                 // ⚠ **`exit_native_call` がアリーナを切り詰める前に**読み出すこと（#48）。

@@ -1145,6 +1145,12 @@ impl StaticTypeError {
                 "unknown type {} in type guard; the branch can never match",
                 hl_q(type_name)
             ),
+            // `local::` の名前空間にあるのは可変長パラメータの `local::args` だけ（known_bugs.md #22）
+            TypeErrorKind::UndefinedName { name } if name.starts_with("local::") => format!(
+                "name {} is not defined (`local::` holds only the variadic parameter `local::args`, inside a function \
+                 with a `...` parameter)",
+                hl_q(name)
+            ),
             TypeErrorKind::UndefinedName { name } => format!("name {} is not defined", hl_q(name)),
             TypeErrorKind::BareClassMember { name, class_name, spelled } => format!(
                 "name {} is not defined ({} is a member of {}; write `{}`)",

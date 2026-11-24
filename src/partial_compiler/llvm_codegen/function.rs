@@ -32,6 +32,8 @@ impl<'a> GenCtx<'a> {
         self.current_fn_ret = ret_ty;
         // この関数の `_impl` がアリーナへ積むかを数え始める（入口の先読みを含む・9-2）
         let pushes_at_start = self.push_sites;
+        // `raise` しうるか（known_bugs.md #28）も数え始める
+        let fails_at_start = self.fail_sites;
 
         // Populate param_classes for type-specialised field reads.
         self.param_classes.clear();
@@ -154,6 +156,9 @@ impl<'a> GenCtx<'a> {
         }
         if self.push_sites > pushes_at_start {
             self.fn_pushes.insert(name.to_string());
+        }
+        if self.fail_sites > fails_at_start {
+            self.fn_fails.insert(name.to_string());
         }
 
         let attr = export_attr();
@@ -375,6 +380,8 @@ impl<'a> GenCtx<'a> {
     pub(super) fn emit_fn_fast(&mut self, name: &str, params: &[Param], ret_ty: Ty, body: &[Stmt]) {
         self.fast_mode = true;
         self.fast_failed = false;
+        // `_fast` が `raise` しうるか（known_bugs.md #28）は `_impl` と別に、この本体で決める
+        let fails_at_start = self.fail_sites;
         self.fast_flattened.clear();
         // Build fast signature: for each param, if it's a class instance with
         // pre-readable fields → expand to scalars; otherwise keep as i64 handle.
@@ -507,6 +514,9 @@ impl<'a> GenCtx<'a> {
         if self.fast_failed {
             self.discarded_fast.insert(name.to_string());
         } else {
+            if self.fail_sites > fails_at_start {
+                self.fn_fails.insert(fast_fail_key(name));
+            }
             self.finish_block_cache();
             self.fn_defs.push_str(&format!(
                 "\ndefine internal {impl_ret} @{name}_fast({sig}) {{\nentry:\n{}{}}}\n",
@@ -653,8 +663,13 @@ impl<'a> GenCtx<'a> {
             iter_depth: self.iter_scopes.len(),
         });
 
+        let fails_at_start = self.fail_sites;
         self.gen_stmts(body);
         self.block_stack.pop();
+        // 本体が `raise` するか、`raise` しうる関数を直接呼んだ（known_bugs.md #28・`fn_fails`）
+        if self.fail_sites > fails_at_start {
+            self.fn_fails.insert(name.to_string());
+        }
 
         // Return the accumulated list
         let list_final = self.fresh_reg();

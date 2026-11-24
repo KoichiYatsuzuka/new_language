@@ -1066,12 +1066,17 @@ impl Interpreter {
         }
     }
 
+    /// `c` が `base` と同じクラスか、その派生か（基底の名前で見る）。
+    ///
+    /// ⚠ 別のクラスの**自分の名前**では一致させない（known_bugs.md #30）。実行時のクラスの名前はモジュールで修飾しない
+    ///   ので、以前は本体の `V` を渡した `isinstance(x, V)` がモジュールの同じ名前の `V` のインスタンスを真にしていた。
     pub(crate) fn class_is_subclass(c: &ClassValue, base: &ClassValue) -> bool {
-        if c.class_id == base.class_id {
+        if Self::same_class(c, base) {
             return true;
         }
         match base.module_name.as_deref() {
             Some(m) => c.is_a(&format!("{m}.{}", base.name)),
+            None if c.name == base.name => c.bases.iter().any(|b| *b == base.name),
             None => c.is_a(&base.name),
         }
     }

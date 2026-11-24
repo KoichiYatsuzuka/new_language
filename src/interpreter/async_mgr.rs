@@ -86,6 +86,12 @@ pub(super) struct TaskEnv {
     pub(super) globals: Vec<Vec<(String, Value, bool)>>,
     /// タスクを出したコードの大域の添字（本体はこの大域で走る）。
     pub(super) cur_globals: u32,
+    /// 各大域のモジュールの名前（`Interpreter::global_module_names` の写し・添字は `globals` と同じ）。
+    ///
+    /// ⚠ 型の照合（`Interpreter::names_another_class`）は、インスタンスのクラスが今の大域のモジュールで定義された
+    ///   ものなら名前を引かない（known_bugs.md #30）。以前はワーカーの表を `None` で埋めていたので、ワーカーでは
+    ///   どのモジュールの中もメインに見え、モジュールの中の `x is V` が本体の `V` を通してしまう。
+    pub(super) module_names: Vec<Option<String>>,
     /// タスクを出したコードのクラスの文脈（`Interpreter::current_class` の深い複製）。
     ///
     /// ⚠ メソッドの中で出したタスクの本体はクラスの中のコード（型検査もそう扱う）。以前は
@@ -359,7 +365,7 @@ fn run_task(
         env.globals.iter().flatten().chain(env.vars.iter()).map(|(_, v, _)| v),
     );
     // 各モジュールの大域を同じ添字に置き、タスクを出したコードの大域へ切り替える（`TaskEnv` の doc）。
-    interp.install_task_globals(env.globals, env.cur_globals);
+    interp.install_task_globals(env.globals, env.cur_globals, env.module_names);
     interp.current_class = env.class_ctx.map(std::rc::Rc::new);
     for (parent, name, v) in env.submodules {
         interp.submodules.entry(parent).or_default().insert(name, v);
@@ -454,7 +460,7 @@ impl AsyncStatus {
 /// インタープリタのスコープスタックから非同期タスク用の環境スナップショットを取得する。
 /// `mut` 変数は Rc クローン（変更が伝播）、`let` 変数はディープクローン（独立コピー）となる。
 pub(super) fn capture_env(interp: &Interpreter) -> TaskEnv {
-    let (globals, cur_globals) = interp.snapshot_globals_for_task();
+    let (globals, cur_globals, module_names) = interp.snapshot_globals_for_task();
     let class_ctx = interp.current_class.as_ref().map(|c| c.deep_clone());
     let submodules = interp
         .submodules
@@ -465,7 +471,7 @@ pub(super) fn capture_env(interp: &Interpreter) -> TaskEnv {
         .collect();
     let native_libs = interp.native_libs.iter().map(|(p, l)| (p.clone(), l.clone())).collect();
     let vars = capture_vars(interp, &globals[cur_globals as usize]);
-    TaskEnv { vars, globals, cur_globals, class_ctx, submodules, native_libs }
+    TaskEnv { vars, globals, cur_globals, module_names, class_ctx, submodules, native_libs }
 }
 
 /// タスクへ送る値の複製規則（見えている名前・各モジュールの大域で共通）。

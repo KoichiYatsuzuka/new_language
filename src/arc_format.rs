@@ -65,7 +65,7 @@ pub const VERSION_V3: u32 = 3;
 /// ⚠ 表に欄を足したらここも足す（`native_api/mod.rs` のコンパイル時の `assert!` が、ずれるとビルドを止める）。
 /// 形式の読み取りに置くのは、VS Code 拡張（wasm・`ArCallbacks` を持たない）も CLI と同じ誤りを出すため
 /// （`compare_wasm_frontend`）。
-pub const CALLBACK_TABLE_LEN: u32 = 88;
+pub const CALLBACK_TABLE_LEN: u32 = 89;
 
 /// `.arc` の中身。
 pub struct ArcFile {
