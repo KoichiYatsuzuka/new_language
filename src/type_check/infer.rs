@@ -225,11 +225,24 @@ impl TypeChecker {
             }
 
             // --- local::name 変数 ---
+            // `local::` の名前空間に束縛されるのは可変長パラメータの `local::args` だけ（`declare_param_in`）。
+            // ⚠ 見つからない名前は静的な誤り（known_bugs.md #22）。以前は `Unresolved` に倒して素通しにしていたので、
+            //   `local::calls`（`static mut calls` のつもり）が型検査を通り、VM のコンパイラが枠に載せられず
+            //   `VmForceError` で落ちていた。
             Expr::LocalVar(name) => {
                 let key = format!("local::{}", name);
-                self.lookup(&key)
-                    .map(|v| v.ty.clone())
-                    .unwrap_or(InferredType::Unresolved)
+                match self.lookup(&key).map(|v| v.ty.clone()) {
+                    Some(ty) => ty,
+                    None => {
+                        if !self.registry_incomplete && !self.already_reported_undefined(&key) {
+                            self.report_error(StaticTypeError {
+                                kind: TypeErrorKind::UndefinedName { name: key },
+                                span: None,
+                            });
+                        }
+                        InferredType::Unresolved
+                    }
+                }
             }
 
             // --- 単項演算子 ---
