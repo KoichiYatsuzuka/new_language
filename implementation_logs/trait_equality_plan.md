@@ -3,9 +3,9 @@
 trait 型で注釈した値と、その trait を実装するクラスの値を `==` / `!=` / `in` で比べると、
 「can never be true」の静的エラーになる。実行時には真になりうる比較なので、これは誤検出である。
 
-- 起票: 2026-10-07（[enum_member_type_plan.md](../implementation_logs/enum_member_type_plan.md) の調査中に見つけた。症状は同じだが原因が違うので分けた）
+- 起票: 2026-10-07（[enum_member_type_plan.md](enum_member_type_plan.md) の調査中に見つけた。症状は同じだが原因が違うので分けた）
 - 調査: Arrow `2045111`。2026-11-25 に `8e25ece6`（0.9.1）で再現を確かめ、周辺の形を測った（4 節）
-- 状態: **#1・#2・#3 は済**（2026-11-25）。**#4 は要判断**（5 節）
+- 状態: **完了**（2026-11-25）。#1・#2・#3 は済、#4 は今のままを採用（利用者の決定・5 節）
 
 ## 0. 何が起きるか
 
@@ -73,11 +73,11 @@ print(b == c)      # StaticTypeError: '==' between 'Sq' and 'Circ' can never be 
 | ~~#1~~ | ✅ **済**（2026-11-25）`check_equality` に「同じインスタンスが両方の型になりうるなら通す」規則（`instances_may_coincide`）を足し、容器の要素（`containers_may_equal`）からも使う。protocol の名前は先に `Protocol` へ寄せる。trait が宣言した `__eq__` を見る（`eq_overload_accepts`）。テストは `gate/lang/typing/trait_equality{,_error}.ar`・`gate/ffi/py_class_equality{,_error}.ar`、例題は `examples/typing/trait_equality{,_error}.ar` | なし | 小 |
 | ~~#2~~ | ✅ **済**（2026-11-25）`type-checking` スキルに等値の節を足した。VSIX を作り直した | #1 | 小 |
 | ~~#3~~ | ✅ **済**（2026-11-25・#1 の調査で見つけた）テンプレートの本体の型変数（`x: T` の `x == 1`）を `T` という名のクラスとして比べていた。`types_compatible` と同じく型変数を含む比較は見ず、具体化した本体で検査する | なし | 小 |
-| **#4** | ⚠ **要判断**: trait 型の値と、trait を実装する**一部のクラスの `__eq__` だけ**が受ける型の比較（5 節） | #1 | 小〜中 |
+| ~~#4~~ | ✅ **今のままを採用**（2026-11-25・利用者の決定・案 1）: trait 型の値と、trait を実装する**一部のクラスの `__eq__` だけ**が受ける型の比較は、静的な誤りのまま（5 節） | #1 | — |
 
 **ゲート**: `gates_every_time` / `type_obligations` / `compare_wasm_frontend`（`compare_python_impl` は凍結中）
 
-⚠ enum のメンバーの比較は [enum_member_type_plan.md](../implementation_logs/enum_member_type_plan.md) でメンバーの型を enum 型に
+⚠ enum のメンバーの比較は [enum_member_type_plan.md](enum_member_type_plan.md) でメンバーの型を enum 型に
 したので同型の比較になり、本書の規則に頼らない。
 
 ## 4. 測定と直した後（2026-11-25）
@@ -97,7 +97,7 @@ print(b == c)      # StaticTypeError: '==' between 'Sq' and 'Circ' can never be 
 | テンプレートの型変数（`x: T` の `x == 1`） | 具体化による | 具体化した本体で検査する |
 | 同じ trait を実装する別のクラス・trait とそれを実装しないクラス・`Shape == 1`・`Shape == None`・`x == True`・`1 == None` | 偽（`Shape == 1` は 5 節） | 弾く（変えない） |
 
-## 5. #4（要判断）: 実装クラスの `__eq__` だけが受ける型
+## 5. #4: 実装クラスの `__eq__` だけが受ける型（今のままを採用・2026-11-25 に利用者が決定）
 
 ```
 trait Shape:
@@ -120,11 +120,11 @@ trait の宣言には `__eq__(int)` が無いので静的には弾くが、実�
 
 | 案 | 内容 | 利点 | 欠点 |
 |---|---|---|---|
-| **1（推奨）** | 今のまま。trait 型の値に使えるのは trait が宣言したものだけ、という規則（メソッド呼び出し `z.only_in_ev()` が誤りなのと同じ）と読む | 検査がモジュールの中で閉じる。`Shape == 1`・`Shape == None`・`Shape == Plain` の書き間違いを捕まえ続ける | 「can never be true」の文面は、この形では正確でない |
+| **1（採用）** | 今のまま。trait 型の値に使えるのは trait が宣言したものだけ、という規則（メソッド呼び出し `z.only_in_ev()` が誤りなのと同じ）と読む | 検査がモジュールの中で閉じる。`Shape == 1`・`Shape == None`・`Shape == Plain` の書き間違いを捕まえ続ける | 「can never be true」の文面は、この形では正確でない |
 | 2 | trait を protocol と同じ不透明にする | 誤検出が無くなる。`HasArea == 1` が通る protocol と揃う | `Shape == 1` などの書き間違いを捕まえなくなる（`trait_equality_error.ar` の 6 行） |
 | 3 | 型の表にある実装クラスを全部たどり、相手を受ける `__eq__` があれば通す | 今のプログラムについては正確 | 別のモジュールに実装クラスを足すだけで、ここの誤りの有無が変わる。単独で検査したモジュールと、import した側の検査で結果が食い違いうる |
 
-案 1 のときの書き方（どれも測った）:
+書き方（どれも測った）:
 
 - 比べる前に絞る（`if z is Ev:`）。
 - trait に `__eq__(self, o: int) -> bool` を宣言する（#1 で効くようになった）。⚠ 実装クラスの `__eq__` は trait と同じ型で

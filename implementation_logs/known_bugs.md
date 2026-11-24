@@ -34,7 +34,7 @@ Python のコードを Arrow で動かす作業（[python_builtins_plan.md](pyth
 - #30 は 2026-11-24 に直した（実行時の型の照合を `class_id` で比べる・組み込みのクラスの ID を名前ごとに 1 つにした）。#39 は同日に起票（#30 を直していて見つけた）。
 - #38 は 2026-11-24 に今のままを採用した（利用者の決定・文書に書いた）。
 - #39 は 2026-11-24 に直した（別名で書いたテンプレートの `is`）。
-- #40 / #41 は 2026-11-25 に起票（[trait_equality_plan.md](../implementation_plans/trait_equality_plan.md) の #1 の例題を書いていて見つけた、trait 型と、テンプレート・protocol の代入の検査）。
+- #40 / #41 は 2026-11-25 に起票（[trait_equality_plan.md](trait_equality_plan.md) の #1 の例題を書いていて見つけた、trait 型と、テンプレート・protocol の代入の検査）。
 - 測定: Arrow `11362ae`・CPython 3.12.2（release ビルド）。master（`326e112c`）へ rebase した後の `ac5df650`（2026-10-22）で
   測り直し、#7 は `2e07586b`（2026-10-26）でも測り直した。
   ⚠ master の決定（7-27 / 7-30）で、`import[py-int]` の注釈の無い関数の戻り値は `Any` になった。#7 / #8 の形を

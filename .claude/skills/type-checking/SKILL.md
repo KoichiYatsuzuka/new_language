@@ -228,8 +228,8 @@ Ordered comparisons (`<`, `>`, `<=`, `>=`) are only valid between: `int/int`, `f
    run time, so it is not considered).
 
 Still rejected: two classes neither of which is a subtype of the other, a trait and a class that does not implement it, and
-a trait value against a type only some implementer's `__eq__` accepts (`implementation_plans/trait_equality_plan.md` #4,
-open decision).
+a trait value against a type only some implementer's `__eq__` accepts (decided, `implementation_logs/trait_equality_plan.md` #4:
+narrow with `is` first, or declare `__eq__` in the trait).
 
 ### Function calls
 
