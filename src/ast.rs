@@ -62,6 +62,9 @@ impl std::fmt::Debug for NativeCallCache {
 /// 詳細は .claude/skills/c-abi-interop/SKILL.md を参照。
 ///
 /// 戻り値: 基底型名（`"int"` / `"float"`）。C ABI 型でなければ `None`。
+///
+/// ⚠ 実行時の注釈検査が束縛のたびに呼ぶので `match` のまま（表の線形探索にしない）。
+///   名前を足したら [`C_ABI_TYPES`] にも足すこと（一致はテスト `c_abi_types_match_base_type` が確かめる）。
 pub fn c_abi_base_type(ann: &str) -> Option<&'static str> {
     match ann {
         "int8" | "int16" | "int32" | "int64" | "uint8" | "uint16" | "uint32" | "uint64" => {
@@ -71,6 +74,23 @@ pub fn c_abi_base_type(ann: &str) -> Option<&'static str> {
         _ => None,
     }
 }
+
+/// C ABI 型の名前と基底型名の表（[`c_abi_base_type`] と同じ中身）。
+/// VS Code 拡張の補完がこの表を受け取る（`type_check::types::BUILTIN_TYPE_NAMES` と並べて `ar_builtin_types`）。
+// ルートの bin は使わない（使うのは `arrow-frontend` の `ar_builtin_types` とテスト）
+#[allow(dead_code)]
+pub const C_ABI_TYPES: &[(&str, &str)] = &[
+    ("int8", "int"),
+    ("int16", "int"),
+    ("int32", "int"),
+    ("int64", "int"),
+    ("uint8", "int"),
+    ("uint16", "int"),
+    ("uint32", "int"),
+    ("uint64", "int"),
+    ("float32", "float"),
+    ("float64", "float"),
+];
 
 /// 変数スロットキャッシュ（代入文の AST 焼き込み）。
 ///

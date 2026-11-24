@@ -143,6 +143,15 @@ renders as `let`, a writable one as `mut`, and `mut self` keeps its `mut`. This 
   `class FileObject` …); their members reach `.` completion through `preludeMembers`, and hover on
   `expr.name` resolves `name` through the receiver type (`receiverTypeAt` + `membersOf`, the same path
   as completion) whenever the plain name lookup misses or lands on another type's declaration.
+  ⚠ **Built-in type names for completion come from the type checker, not from `builtins.ars`.**
+  `int` / `str` / `float` … are declared there as conversion functions (`fn int(..)`), so the type
+  position (`let x: `, which keeps only type-kind symbols) offered none of them. The wasm export
+  `ar_builtin_types` → `frontend.ts` `builtinTypes()` → `preludeTypes` hands over
+  `type_check::BUILTIN_TYPE_NAMES` (next to `from_ann`'s table; add a name there when `from_ann`
+  learns one — the test `builtin_type_names_resolve` checks the other direction) plus
+  `ast::C_ABI_TYPES` (`int32` …). Completion offers them as `Class` items in both type and expression
+  position, replacing the prelude function of the same name; a user declaration of the name wins.
+  `stress.js` checks this (`compl misses`).
   ⚠ Enum members are excluded from `prelude` (the global-name table): they are only reachable as
   `FileOpenMode.read`, and letting them in made `f.read()` hover as `FileOpenMode.read`. List only functions that exist at runtime
   (`builtins_ars_matches_the_runtime` checks both directions), omit `->` when the return type is

@@ -34,6 +34,8 @@ interface FrontendExports {
     ar_result_ptr(): number;
     ar_result_len(): number;
     ar_builtins(): number;
+    /** 古い wasm には無い（`builtinTypes` が空を返す） */
+    ar_builtin_types?(): number;
 }
 
 /** 診断 1 件。`at` は 0 始まりの行・列で、位置不明のときは null。 */
@@ -172,6 +174,35 @@ export function builtinsSource(): string | null {
     // 呼んだ後に buffer を取り直す（`analyze` と同じ注意）。
     const out = new Uint8Array(ex.memory.buffer, ex.ar_result_ptr(), len);
     return new TextDecoder().decode(out);
+}
+
+/** 型注釈に書ける組み込みの型名 1 つ（`crates/arrow-frontend/src/analyze.rs` の `builtin_types_json`）。 */
+export interface BuiltinType {
+    name: string;
+    /** 型引数まで含めた書き方（`list[T]`） */
+    form: string;
+    doc: string;
+    /** C ABI の型なら基底型名（`int` / `float`） */
+    cAbi: string | null;
+}
+
+/**
+ * 型注釈に書ける組み込みの型名の一覧。型検査器の表（`BUILTIN_TYPE_NAMES` / `C_ABI_TYPES`）を wasm から受け取る。
+ *
+ * `int` / `str` / `float` … は `builtins.ars` では変換関数として宣言されているので、宣言表からは型として出せない。
+ *
+ * @returns 一覧。wasm が使えない・古い wasm なら空。
+ */
+export function builtinTypes(): BuiltinType[] {
+    const ex = exports_;
+    if (!ex || !ex.ar_builtin_types) return [];
+    try {
+        const len = ex.ar_builtin_types();
+        const out = new Uint8Array(ex.memory.buffer, ex.ar_result_ptr(), len);
+        return JSON.parse(new TextDecoder().decode(out)) as BuiltinType[];
+    } catch {
+        return [];
+    }
 }
 
 /**

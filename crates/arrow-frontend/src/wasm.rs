@@ -118,6 +118,20 @@ pub extern "C" fn ar_builtins() -> usize {
     })
 }
 
+/// 型注釈に書ける組み込みの型名の一覧（JSON）を結果バッファに置く。戻り値はバイト長（[`ar_builtins`] と同じ読み方）。
+///
+/// `int` / `str` / `float` … は `builtins.ars` では変換関数（`fn int(..)`）として宣言されているので、宣言表からは
+/// 型として補完に出せない。型検査器の表（`type_check::types::BUILTIN_TYPE_NAMES` と `ast::C_ABI_TYPES`）を渡す。
+#[no_mangle]
+pub extern "C" fn ar_builtin_types() -> usize {
+    let json = crate::analyze::builtin_types_json();
+    RESULT.with(|r| {
+        let mut r = r.borrow_mut();
+        *r = json.into_bytes();
+        r.len()
+    })
+}
+
 /// 直近の解析結果 JSON の先頭ポインタ。
 #[no_mangle]
 pub extern "C" fn ar_result_ptr() -> *const u8 {

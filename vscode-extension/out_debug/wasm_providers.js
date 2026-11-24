@@ -67,6 +67,13 @@ const cache = new Map();
  */
 let prelude = [];
 let preludeMembers = {};
+/**
+ * 型注釈に書ける組み込みの型名（`int` / `list` / `Option` / `int32` …）。型検査器の表を wasm から受け取る。
+ *
+ * ⚠ `int` / `str` / `float` … は `builtins.ars` では変換関数（`fn int(..)`）なので、`prelude` には関数として載る。
+ *   補完ではこちらを優先し、**型として**出す（型の位置で関数を外すと型名が 1 つも出なかった）。
+ */
+let preludeTypes = [];
 /** 拡張の activate から 1 度だけ呼ぶ。失敗しても致命的ではない（組み込みが出ないだけ）。 */
 function loadPrelude() {
     try {
@@ -83,6 +90,7 @@ function loadPrelude() {
         //   `read` / `write` / `top` / `end` … が並ぶ。
         prelude = result.symbols.filter(s => s.scope === 0 && s.kind !== 'enum_member');
         preludeMembers = result.members;
+        preludeTypes = (0, frontend_1.builtinTypes)();
         return true;
     }
     catch {
@@ -776,7 +784,13 @@ function provideCompletionItems(document, position) {
     // `.` の後ろでなければ、その位置から**見えている**名前だけを返す。
     // ただし型注釈位置なら型だけに絞る（`let x: ` の後ろに変数や関数を出さない）。
     const wantTypes = inTypePosition(analysis, document, position);
-    return visibleSymbols(analysis, position.line)
+    const visible = visibleSymbols(analysis, position.line);
+    // 利用者が同じ名前を宣言していれば（`class Path:` など）そちらが勝つ。組み込みの関数（`fn int(..)`）は型に置き換える。
+    const shadowed = new Set(visible.filter(sym => !prelude.includes(sym)).map(sym => sym.name));
+    const types = preludeTypes.filter(t => !shadowed.has(t.name));
+    const typeNames = new Set(types.map(t => t.name));
+    const symbolItems = visible
+        .filter(sym => !typeNames.has(sym.name))
         .filter(sym => !wantTypes || TYPE_TOKEN_OF[sym.kind] !== undefined)
         .map(sym => {
         const item = new vscode.CompletionItem(sym.name, completionKindOf(sym.kind));
@@ -785,8 +799,23 @@ function provideCompletionItems(document, position) {
             item.documentation = new vscode.MarkdownString(sym.doc);
         return item;
     });
+    return [...symbolItems, ...types.map(builtinTypeItem)];
 }
 exports.provideCompletionItems = provideCompletionItems;
+/**
+ * 組み込みの型名の補完候補。型の位置でも式の位置（`x is int` / `int(s)` / `xs => py_list[int]`）でも型として出す。
+ * 同名の変換関数（`fn int(..)`）があれば、そのシグネチャを説明に添える。
+ */
+function builtinTypeItem(t) {
+    const item = new vscode.CompletionItem(t.name, vscode.CompletionItemKind.Class);
+    item.detail = t.form;
+    const conv = prelude.find(sym => sym.name === t.name && sym.kind === 'function');
+    const lines = [t.doc];
+    if (conv)
+        lines.push('', '```arrow', renderSignature(conv), '```');
+    item.documentation = new vscode.MarkdownString(lines.join('\n'));
+    return item;
+}
 /**
  * カーソルが型注釈位置にいるか。
  *

@@ -20,6 +20,9 @@ pub mod builtins;
 // bin からは未使用だが frontend_tests が使うため、narrowing しないこと。
 #[allow(unused_imports)]
 pub use types::{FnTypeParam, InferredType, MetaKind, PtrElem, VarAttr};
+// 型注釈に書ける組み込みの型名（VS Code 拡張の補完・`arrow-frontend` の `ar_builtin_types`）
+#[allow(unused_imports)]
+pub use types::{BuiltinTypeName, BUILTIN_TYPE_NAMES};
 #[allow(unused_imports)]
 pub use annotations::{
     arg_is_disjoint, ArgAnnotation, AstAnnotations, BinOperandKind, CallInfo, Directive, TypeId,
