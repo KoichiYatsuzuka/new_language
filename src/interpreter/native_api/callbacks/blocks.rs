@@ -27,7 +27,7 @@ pub(super) extern "C" fn ar_attr_blocks(parent_h: i64, n: i32, reqs: *const Attr
         clear(out);
         return;
     }
-    with_state(|s| {
+    with_state_once(|s| {
         let st = s.borrow();
         if st.error.is_some() {
             clear(out);
@@ -77,7 +77,7 @@ pub(super) extern "C" fn ar_num_field_ptr(obj_h: i64, name_ptr: *const u8, name_
     if packed == 0 {
         return std::ptr::null_mut();
     }
-    with_state(|s| {
+    with_state_once(|s| {
         let st = s.borrow();
         if st.error.is_some() {
             return std::ptr::null_mut();
@@ -112,7 +112,7 @@ pub(super) extern "C" fn ar_num_field_ptr(obj_h: i64, name_ptr: *const u8, name_
 /// ⚠ 先に積まれたエラー・例外があれば何もしない（呼んだメソッドが投げた例外をこの誤りで上書きしない）。
 /// ⚠ `int` に `bool` は通さない（Arrow の `bool` は `int` ではない）。`float` に `int` も通さない（VM はそのまま `int` で続ける）。
 pub(super) extern "C" fn ar_expect_ret(h: i64, kind: i32, name_ptr: *const u8, name_len: i32) -> i64 {
-    let (has_err, got) = with_state(|s| {
+    let (has_err, got) = with_state_once(|s| {
         let st = s.borrow();
         if st.error.is_some() || st.pending_raise.is_some() {
             return (true, None);
@@ -167,7 +167,7 @@ pub(super) extern "C" fn ar_attr_block(
     }
     // SAFETY: 生成コードが渡すのは DLL 内の `i64` の大域（`read_ic_hit` と同じ）
     let packed = unsafe { &*(ic_cell as *const AtomicU64) }.load(Ordering::Relaxed);
-    with_state(|s| {
+    with_state_once(|s| {
         let st = s.borrow();
         if st.error.is_some() {
             return std::ptr::null_mut();
@@ -266,7 +266,7 @@ pub(super) extern "C" fn ar_inst_block(h: i64, desc: *const crate::interpreter::
     if h < 3 || cell.is_null() || desc.is_null() {
         return std::ptr::null_mut();
     }
-    with_state(|s| {
+    with_state_once(|s| {
         let st = s.borrow();
         // 先に積まれたエラーがあれば直接の道に入れない（今までの道が何もせずに戻る）
         if st.error.is_some() {

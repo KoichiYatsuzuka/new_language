@@ -23,13 +23,13 @@ pub(super) extern "C" fn ar_enter_method_ctx(obj_h: i64) -> i64 {
     if !crate::interpreter::value::restricted_members_exist() {
         return CTX_UNCHANGED;
     }
-    let (obj, interp_ptr) = with_state(|s| {
+    let (obj, interp_ptr) = with_state_once(|s| {
         let st = s.borrow();
         (st.clone_value(obj_h), st.interp_ptr)
     });
     let Value::Instance(rc) = obj else { return CTX_UNCHANGED };
     if interp_ptr.is_null() {
-        with_state(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for enter_method_ctx".to_string()));
+        with_state_once(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for enter_method_ctx".to_string()));
         return CTX_UNCHANGED;
     }
     let interp = unsafe { &mut *interp_ptr };
@@ -44,12 +44,12 @@ pub(super) extern "C" fn ar_leave_method_ctx(token: i64) {
     if token == CTX_UNCHANGED {
         return;
     }
-    let interp_ptr = with_state(|s| s.borrow().interp_ptr);
+    let interp_ptr = with_state_once(|s| s.borrow().interp_ptr);
     // SAFETY: `token` は `ar_enter_method_ctx` が `Rc::into_raw` で返したもの（0 は `None`）で、ここで 1 回だけ戻す。
     let prev = (token != CTX_NONE)
         .then(|| unsafe { std::rc::Rc::from_raw(token as *const crate::interpreter::ClassValue) });
     if interp_ptr.is_null() {
-        with_state(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for leave_method_ctx".to_string()));
+        with_state_once(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for leave_method_ctx".to_string()));
         return;
     }
     unsafe { &mut *interp_ptr }.current_class = prev;
@@ -70,7 +70,7 @@ pub(super) extern "C" fn ar_method_guard(obj_h: i64, class_ptr: *const u8, class
     if cell.is_null() || obj_h < 3 {
         return 0;
     }
-    let probe = with_state(|s| {
+    let probe = with_state_once(|s| {
         let st = s.borrow();
         match st.arena.get(obj_h as usize) {
             Some(Value::Instance(rc)) => {
@@ -130,7 +130,7 @@ pub(super) extern "C" fn ar_construct_ic(
 ) -> i64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     // 作りたての印を読んで 0 に戻すのと、エラーの有無・インタープリタを読むのを、状態を 1 回借りて済ませる（7-10）
-    let (fresh, has_err, interp_ptr) = with_state(|s| {
+    let (fresh, has_err, interp_ptr) = with_state_once(|s| {
         let mut st = s.borrow_mut();
         (std::mem::take(&mut st.fresh_mask), st.error.is_some(), st.interp_ptr)
     });
@@ -155,20 +155,20 @@ pub(super) extern "C" fn ar_construct_ic(
 /// クラスを名前で引いて生成する（field 67 と field 70 の外れた道）。`cell` があればクラスを表とセルに入れる。
 /// 直後の生成・名前によるメソッド呼び出しの「作りたての引数」の印を入れる（field 75・2-4）。
 pub(super) extern "C" fn ar_set_fresh(mask: u32) {
-    with_state(|s| s.borrow_mut().fresh_mask = mask);
+    with_state_once(|s| s.borrow_mut().fresh_mask = mask);
 }
 
 /// 印を読んで 0 に戻す。⚠ `ar_construct_ic` / `ar_call_method_ic` は**入口の最初に**読む（途中で抜けても、次の
 /// 呼び出しに印が残らないように。`ar_construct_ic` はエラーの有無と一緒に、状態を借りる 1 回の中で読む・7-10）。
 pub(super) fn take_fresh_mask() -> u32 {
-    with_state(|s| std::mem::take(&mut s.borrow_mut().fresh_mask))
+    with_state_once(|s| std::mem::take(&mut s.borrow_mut().fresh_mask))
 }
 
 /// 引数 `i` の値。作りたての印（`fresh` の bit i+1）が付いていれば、アリーナの欄から**取り出す**（欄は `None` になる。
 /// 生成コードはその欄を二度と読まない）。付いていなければ今までどおり欄の値の写し。
 /// ⚠ 小さい整数・真偽値・`None` の共有の欄（`INT_CACHE_BASE` より前）は取り出さない。
 pub(super) fn arg_value(args_ptr: *const i64, i: usize, fresh: u32) -> Value {
-    with_state(|s| arg_value_in(&mut s.borrow_mut(), args_ptr, i, fresh))
+    with_state_once(|s| arg_value_in(&mut s.borrow_mut(), args_ptr, i, fresh))
 }
 
 /// [`arg_value`] の本体。スレッドの状態を借りたまま引数を続けて読む所（生成・7-10）が使う。
@@ -186,13 +186,13 @@ fn arg_value_in(st: &mut crate::interpreter::native_api::NativeCallState, args_p
 /// 直接呼び出しの `let self` / `let` 仮引数へ渡す作りたての値（field 76・2-4）。`h` の欄の 1 個は数えずに、
 /// 誰とも共有していなければ複製しない（VM の `copy_value_held` / 受け手の `deep_copy_value` と同じ結果）。
 pub(super) extern "C" fn ar_copy_fresh(h: i64, is_self: i32) -> i64 {
-    let (has_err, val, interp_ptr) = with_state(|s| {
+    let (has_err, val, interp_ptr) = with_state_once(|s| {
         let st = s.borrow();
         (st.error.is_some(), st.clone_value(h), st.interp_ptr)
     });
     if has_err { return TL_NONE; }
     if interp_ptr.is_null() {
-        with_state(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for copy_fresh".to_string()));
+        with_state_once(|s| s.borrow_mut().error = Some("NativeError: interpreter not set for copy_fresh".to_string()));
         return TL_NONE;
     }
     let interp = unsafe { &mut *interp_ptr };
@@ -211,7 +211,7 @@ pub(super) extern "C" fn ar_copy_fresh(h: i64, is_self: i32) -> i64 {
         Ok(v) if crate::interpreter::Interpreter::same_heap_value(&v, &val) => h,
         Ok(v) => push_handle(v),
         Err(e) => {
-            with_state(|s| s.borrow_mut().error = Some(e));
+            with_state_once(|s| s.borrow_mut().error = Some(e));
             TL_NONE
         }
     }
@@ -232,7 +232,7 @@ pub(super) extern "C" fn ar_borrow_or_copy(h: i64, is_self: i32, name_ptr: *cons
         let cell = unsafe { &*(cell as *const AtomicU64) };
         let mut known = cell.load(Ordering::Relaxed);
         if known == 0 {
-            let interp_ptr = with_state(|s| s.borrow().interp_ptr);
+            let interp_ptr = with_state_once(|s| s.borrow().interp_ptr);
             if let (Some(name), false) = (native_str(name_ptr, name_len, "function name"), interp_ptr.is_null()) {
                 let interp = unsafe { &*interp_ptr };
                 let ok = if is_self == 2 {
@@ -249,7 +249,7 @@ pub(super) extern "C" fn ar_borrow_or_copy(h: i64, is_self: i32, name_ptr: *cons
                 return h;
             }
             // 仮引数: `__copy__` を持つクラスの値は今までどおり `__copy__` を呼ぶ
-            let (val, interp_ptr) = with_state(|s| {
+            let (val, interp_ptr) = with_state_once(|s| {
                 let st = s.borrow();
                 (st.clone_value(h), st.interp_ptr)
             });
@@ -275,13 +275,13 @@ fn construct_by_name(
     fresh: u32,
 ) -> i64 {
     let Some(name) = native_str(name_ptr, name_len, "class name") else { return TL_NONE };
-    let (has_err, interp_ptr) = with_state(|s| {
+    let (has_err, interp_ptr) = with_state_once(|s| {
         let st = s.borrow();
         (st.error.is_some(), st.interp_ptr)
     });
     if has_err { return TL_NONE; }
     if interp_ptr.is_null() {
-        with_state(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set (constructing '{name}')")));
+        with_state_once(|s| s.borrow_mut().error = Some(format!("NativeError: interpreter not set (constructing '{name}')")));
         return TL_NONE;
     }
     let interp = unsafe { &mut *interp_ptr };
@@ -310,7 +310,7 @@ fn construct_class(
     // 作りたての印の付いた引数は欄から取り出す（2-4・参照の数を VM と同じにして、束縛と格納の複製を省く）。
     // 並びは置き場から取り（`instantiate_evaled` が戻す）、引数は状態を 1 回借りて全部読む（7-10）
     let mut evaled = interp.take_evaled_buf();
-    with_state(|s| {
+    with_state_once(|s| {
         let mut st = s.borrow_mut();
         evaled.extend(
             (0..n_args.max(0) as usize).map(|i| (None, arg_value_in(&mut st, args_ptr, i, fresh), mask_arg_is_mut(mut_mask, i))),
@@ -323,7 +323,7 @@ fn finish_construct(r: Result<Value, String>) -> i64 {
     match r {
         Ok(v) => push_handle(v),
         Err(e) => {
-            with_state(|s| s.borrow_mut().error = Some(e));
+            with_state_once(|s| s.borrow_mut().error = Some(e));
             TL_NONE
         }
     }
@@ -394,7 +394,7 @@ pub(super) extern "C" fn ar_new_instance(
     if cell.is_null() || checked.is_null() || desc.is_null() || out.is_null() || n <= 0 || slots.is_null() {
         return 0;
     }
-    let (has_err, interp_ptr) = with_state(|s| {
+    let (has_err, interp_ptr) = with_state_once(|s| {
         let st = s.borrow();
         (st.error.is_some(), st.interp_ptr)
     });
