@@ -242,22 +242,40 @@ thread_local! {
     static STATE_PTR: std::cell::Cell<*const RefCell<NativeCallState>> = const { std::cell::Cell::new(std::ptr::null()) };
 }
 
-/// スレッドの状態（[`STATE`]）を借りる**唯一の入口**（7-6）。`STATE.with(..)` と同じ意味で、取り出しが安い。
+/// スレッドの状態（[`STATE`]）を借りる入口（7-6。ほかは [`with_state_once`] だけ）。`STATE.with(..)` と同じ意味で、取り出しが安い。
 /// ⚠ 以前はコールバックのたびに `STATE.with` を通っていた。試作の A/B でコンパイル済みの k1 1.12x・フィールドの読み書きの
 ///   単価 1.18〜1.27x（借用と本体は変えていない＝取り出しの固定費だけの差）。
 #[inline(always)]
 fn with_state<R>(f: impl FnOnce(&RefCell<NativeCallState>) -> R) -> R {
+    let p = STATE_PTR.with(|c| c.get());
+    if !p.is_null() {
+        // SAFETY: `STATE` はスレッドが終わるまで動かない。消えるときは `Drop` が番地を空にする
+        return f(unsafe { &*p });
+    }
+    STATE.with(|s| {
+        STATE_PTR.with(|c| c.set(s as *const _));
+        f(s)
+    })
+}
+
+/// [`with_state`] と同じ意味で、`f` を呼ぶのが 1 か所だけの形。`f`（コールバックの本体）がインライン化されやすい。
+///
+/// [`with_state`] は `f` を速い道と遅い道の 2 か所で呼ぶので、`f` がインライン化されるかはコンパイラの判断になる。
+/// `callbacks.rs` を分けたとき `callbacks/blocks.rs` の本体が外れて k1 が 1.12 倍・k2 が 1.08 倍遅くなったので、
+/// `blocks.rs` と `construct.rs` はこちらを使う。
+/// ⚠ **全部をこちらにしない**。数値のフィールドの書き込み（`assign_number_ic_hit`）は、こちらにすると 26 → 35 ns に
+///   遅くなった（実測）。使う所を変えるときは k1〜k6 と、`speed_modes.ps1 -Micro` のフィールドの書き込みの単価の両方を測る。
+#[inline(always)]
+fn with_state_once<R>(f: impl FnOnce(&RefCell<NativeCallState>) -> R) -> R {
     let mut p = STATE_PTR.with(|c| c.get());
     if p.is_null() {
         p = init_state_ptr();
     }
-    // ⚠ `f` を呼ぶのはここ 1 か所だけにする。2 か所（速い道と遅い道）で呼ぶと、コールバックの本体（クロージャ）が
-    //   インライン化されるかがファイルの分け方で変わる（callbacks.rs を分けたとき k1 が 1.12 倍遅くなった）
-    // SAFETY: `STATE` はスレッドが終わるまで動かない。消えるときは `Drop` が番地を空にする
+    // SAFETY: [`with_state`] と同じ
     f(unsafe { &*p })
 }
 
-/// [`with_state`] がスレッドで初めて通るとき（と `STATE` が消えた後）の道: `STATE` を作り、その番地を覚える。
+/// [`with_state_once`] がスレッドで初めて通るとき（と `STATE` が消えた後）の道: `STATE` を作り、その番地を覚える。
 #[cold]
 #[inline(never)]
 fn init_state_ptr() -> *const RefCell<NativeCallState> {
