@@ -28,7 +28,7 @@ src/interpreter/
 ├── exceptions.rs  — get_context_lines, exc_matches, exc_set_args (built-in exception args / str(e))
 ├── async_mgr.rs   — AsyncManagerData, AsyncStatus, thread spawning via std::thread
 ├── native_api.rs  — i64 handle arena, ArCallbacks struct, C callback implementations
-├── py_interop.rs  — PyO3 runtime bridge (import[py] execution on CPython)
+├── py_interop.rs + py_interop/  — PyO3 runtime bridge (import[py] execution on CPython)
 ├── debugger.rs    — break_point REPL, step mode, DBG_MODE thread-local
 ├── msvc_errors.rs — MSVC-style error message formatting
 └── tests.rs       — interpreter integration tests
@@ -329,5 +329,5 @@ For the typed-ABI pointer-argument extension used by `import[cpp-dll]`/`import[c
 | Exception machinery | `src/interpreter/exceptions.rs` | `make_error_class`, sentinel string |
 | Async task threads | `src/interpreter/async_mgr.rs` | `AsyncManagerData`, `SendableEnv` |
 | Native ABI handle table | `src/interpreter/native_api.rs` | `VALUE_ARENA`, `ArCallbacks` |
-| PyO3 interop | `src/interpreter/py_interop.rs` | `load_py_int_module`, value conversion |
+| PyO3 interop | `src/interpreter/py_interop.rs` + `py_interop/` | `load_py_int_module`, value conversion |
 | Debugger | `src/interpreter/debugger.rs` | `break_point`, step mode |

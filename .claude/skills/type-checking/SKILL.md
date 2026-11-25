@@ -121,7 +121,7 @@ Template params are written with `[T: Trait and Trait2]` syntax on function/clas
 
 ## Type Inference Rules
 
-Defined in `src/type_check/infer.rs`. The checker calls `infer(expr)` recursively.
+Defined in `src/type_check/infer.rs` (`infer` itself; helpers per topic in `src/type_check/infer/`). The checker calls `infer(expr)` recursively.
 
 ### Literals
 
@@ -143,7 +143,7 @@ Defined in `src/type_check/infer.rs`. The checker calls `infer(expr)` recursivel
 ### Identifiers
 
 Returns the type recorded in scope; if not in scope, the function-value type from `visible_fn_sigs`
-(else `Unresolved`). A name **not in scope** always goes through `check_name_defined` (`infer.rs`,
+(else `Unresolved`). A name **not in scope** always goes through `check_name_defined` (`infer/names.rs`,
 rule in the `type_check::names` module doc, `implementation_plans/name_scope_plan.md` phase 1), and so does an
 assignment target (`x = ..` / `x += ..`). It passes only for: runtime builtin names, class / trait /
 protocol / template names, visible type variables, `Self`, `_`, and — **inside a deferred body**
@@ -536,7 +536,7 @@ Calling a field (1-11): `obj.f(x)` with no method `f` but a field / `const` / `s
 returns its return type (`check_fn_type_call`), `TypeValOf(NamedInstance)` constructs, anything else goes
 through `check_callable` (`'int' is not callable`).
 
-Descriptors (1-12): `TypeChecker::class_descriptor(class, attr)` (`infer.rs`) recognizes a class-level member
+Descriptors (1-12): `TypeChecker::class_descriptor(class, attr)` (`infer/attr.rs`) recognizes a class-level member
 (`const` / `static mut`) whose declared type is a class with `__get__`. Reads (`infer_attr`, also `C.x`) and
 calls (1-11 path) use `__get__`'s return type; an assignment through an instance (`check_assign` in
 `stmt/check.rs`) is checked against `__set__`'s `value` type when the descriptor is a data descriptor
